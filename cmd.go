@@ -160,7 +160,7 @@ func cmdUp(args []string) error {
 			}
 			return fmt.Errorf("cannot read the source .env from the main worktree: %w", err)
 		}
-		fmt.Println("creating .env (copied from the main worktree)")
+		fmt.Fprintln(stdout, "creating .env (copied from the main worktree)")
 	} else if err != nil {
 		return err
 	}

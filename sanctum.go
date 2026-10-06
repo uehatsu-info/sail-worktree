@@ -70,9 +70,10 @@ func sanctumUnquote(raw string) (value, quote string) {
 }
 
 // statefulDisabled reports whether the value turns Sanctum's stateful domains off: Laravel's env() maps these words
-// to null, false or "", true becomes "1", and Sanctum drops empty entries.
+// (compared without trimming, so " null " is a plain string) to null, false or "", true becomes "1", and Sanctum drops
+// empty entries.
 func statefulDisabled(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
+	switch strings.ToLower(v) {
 	case "", "null", "(null)", "false", "(false)", "true", "(true)", "empty", "(empty)":
 		return true
 	}
@@ -100,7 +101,7 @@ func addStatefulDomain(env *envFile, u *url.URL) (added, warning string) {
 	}
 	for _, e := range strings.Split(value, ",") {
 		if e == sanctumCurrentHost {
-			e = entry
+			return "", "" // the request's host and port, which is the worktree's URL
 		}
 		if e = strings.TrimSpace(e); e != "" && strIs(e+"/*", entry+"/") {
 			return "", ""

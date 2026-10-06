@@ -78,6 +78,7 @@ func TestAddStatefulDomain(t *testing.T) {
 		{"(true)", "S=(true)", "", false},
 		{"(empty)", "S=(empty)", "", false},
 		{"only commas", "S= , ,", "", false},
+		{"null with spaces is a plain string", `S=" null "`, `S=" null ,store.test:8082"`, false},
 		{"plain list", "S=store.test,localhost:5173", "S=store.test,localhost:5173,store.test:8082", false},
 		{"already there", "S=localhost,store.test:8082", "", false},
 		{"spaces around", `S="localhost, store.test:8082 "`, "", false},
