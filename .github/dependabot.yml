@@ -1,6 +1,6 @@
 version: 2
 updates:
-  # アクションはコミット SHA で固定しているので、更新は Dependabot の PR で行う。
+  # Actions are pinned to commit SHAs, so updates come as Dependabot PRs.
   - package-ecosystem: github-actions
     directory: /
     schedule:

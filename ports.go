@@ -9,10 +9,10 @@ import (
 	"syscall"
 )
 
-// portFree は p が全インターフェースと 127.0.0.1 の両方で空いているか確かめる
-// (macOS は SO_REUSEADDR により、127.0.0.1 だけに束縛した他プロセスがいても ":p" の束縛に成功し得るため)。
-// 全インターフェースの束縛が失敗した (権限エラーを含む) ときは常に「塞がり」とする。
-// 127.0.0.1 の束縛の失敗の扱いは loopbackBindBlocked を見ること。
+// portFree checks that p is free on both all interfaces and 127.0.0.1
+// (on macOS, SO_REUSEADDR lets binding ":p" succeed even if another process is bound only to 127.0.0.1).
+// If binding on all interfaces fails (including a permission error) the port is always considered taken.
+// See loopbackBindBlocked for how a failure to bind 127.0.0.1 is treated.
 func portFree(p int) bool {
 	l, err := net.Listen("tcp", fmt.Sprintf(":%d", p))
 	if err != nil {
@@ -27,13 +27,13 @@ func portFree(p int) bool {
 	return true
 }
 
-// loopbackBindBlocked は 127.0.0.1 への束縛が err で失敗したとき、ポートが塞がっているとみなすか。
-//   - 権限エラー: macOS は特権ポート (1024 未満) の 127.0.0.1 への束縛を一般ユーザーに許さないが、
-//     Docker は束縛できるので「塞がり」とみなさない。他の OS では塞がりとみなす (Windows の権限エラーは
-//     他のプロセスが排他的に使っていることがあるため)。
-//   - EADDRNOTAVAIL: 127.0.0.1 が無い環境。ここでは使用中かどうか分からないので、塞がりとみなさない。
-//     Windows のエラーコード (WSA*) は syscall.EADDRNOTAVAIL と一致しないので、Windows では塞がり扱いになる (安全側)。
-//   - それ以外 (EADDRINUSE 等): 塞がり。
+// loopbackBindBlocked reports whether the port is considered taken when binding 127.0.0.1 failed with err.
+//   - Permission error: macOS does not let an unprivileged user bind a privileged port (below 1024) on 127.0.0.1,
+//     but Docker can, so it is not considered taken. On other OSes it is considered taken (on Windows a permission
+//     error can mean another process uses the port exclusively).
+//   - EADDRNOTAVAIL: there is no 127.0.0.1. Whether the port is in use is unknown here, so it is not considered taken.
+//     Windows error codes (WSA*) do not match syscall.EADDRNOTAVAIL, so on Windows it is considered taken (the safe side).
+//   - Anything else (EADDRINUSE etc.): taken.
 func loopbackBindBlocked(err error, goos string) bool {
 	switch {
 	case errors.Is(err, os.ErrPermission):
@@ -44,11 +44,10 @@ func loopbackBindBlocked(err error, goos string) bool {
 	return true
 }
 
-// allocatePorts は各ポート変数に衝突しないポートを割り当てる。
-// 既存割り当て(current)があればそれを優先して再利用する(自身のコンテナが
-// 使用中でも維持するため空き確認はしない)。
-// 新規は default+1 から順に、他ワークツリーの割当・今回の割当・ホスト上の使用中を避けて探す。
-// default 自体はメインワークツリー用に空ける。
+// allocatePorts assigns a non-conflicting port to each port variable.
+// An existing assignment (current) is reused first (without checking that it is free, since the worktree's own
+// containers may be using it). A new port is searched from default+1 upwards, skipping ports assigned to other
+// worktrees, ports assigned in this call and ports in use on the host. The default itself is left to the main worktree.
 func allocatePorts(vars []PortVar, current map[string]int, taken map[int]bool, free func(int) bool) (map[string]int, error) {
 	out := map[string]int{}
 	inThis := map[int]bool{}
@@ -73,7 +72,7 @@ func allocatePorts(vars []PortVar, current map[string]int, taken map[int]bool, f
 			break
 		}
 		if !found {
-			return nil, fmt.Errorf("%s に割り当て可能なポートがありません", v.Name)
+			return nil, fmt.Errorf("no port available for %s", v.Name)
 		}
 	}
 	return out, nil

@@ -7,10 +7,10 @@ import (
 	"syscall"
 )
 
-// openNoFollow は open(2) の O_NOFOLLOW (末尾がシンボリックリンクなら失敗する)。
+// openNoFollow is open(2)'s O_NOFOLLOW (the open fails if the last component is a symbolic link).
 const openNoFollow = syscall.O_NOFOLLOW
 
-// openNonBlock は open(2) の O_NONBLOCK (FIFO の open でブロックしない)。
+// openNonBlock is open(2)'s O_NONBLOCK (opening a FIFO does not block).
 const openNonBlock = syscall.O_NONBLOCK
 
 func hasMultipleLinks(fi os.FileInfo) bool {

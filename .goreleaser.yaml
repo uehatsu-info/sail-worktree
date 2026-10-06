@@ -25,29 +25,29 @@ archives:
 checksum:
   name_template: checksums.txt
 
-# リリースノートは、コミットの題名の接頭辞 (feat: fix: ...) で見出しごとにまとめる。
+# Group the release notes under headings by the prefix of the commit subject (feat: fix: ...).
 changelog:
   sort: asc
   use: git
-  abbrev: -1 # コミットのハッシュは載せない
+  abbrev: -1 # do not show commit hashes
   format: "{{ .Message }}"
   groups:
-    - title: "新機能"
+    - title: "Features"
       regexp: '^feat(\([^)]*\))?!?:'
       order: 0
-    - title: "修正"
+    - title: "Bug fixes"
       regexp: '^fix(\([^)]*\))?!?:'
       order: 1
-    - title: "リファクタリング・性能"
+    - title: "Refactoring and performance"
       regexp: '^(refactor|perf)(\([^)]*\))?!?:'
       order: 2
-    - title: "ドキュメント"
+    - title: "Documentation"
       regexp: '^docs?(\([^)]*\))?!?:'
       order: 3
-    - title: "CI・ビルド"
+    - title: "CI and build"
       regexp: '^(ci|build|chore)(\([^)]*\))?!?:'
       order: 4
-    - title: "その他"
+    - title: "Other"
       order: 99
   filters:
     exclude:
@@ -57,15 +57,15 @@ changelog:
 release:
   footer: |
 
-    ## インストール
+    ## Installation
 
     ```sh
     go install github.com/uehatsu-info/sail-worktree@{{ .Tag }}
     ```
 
-    または、お使いの OS・CPU に合う添付のアーカイブを展開して、`sail-worktree` を PATH の通った場所に置いてください
-    (macOS は `darwin`、Windows は `windows`・zip)。`checksums.txt` で検証できます。
+    Or extract the attached archive that matches your OS and CPU and put `sail-worktree` somewhere on your PATH
+    (`darwin` is macOS; the `windows` archives are zip files). You can verify the download with `checksums.txt`.
 
     ```sh
-    sha256sum --check --ignore-missing checksums.txt   # macOS は shasum -a 256 -c checksums.txt --ignore-missing
+    sha256sum --check --ignore-missing checksums.txt   # on macOS: shasum -a 256 -c checksums.txt --ignore-missing
     ```

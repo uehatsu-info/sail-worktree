@@ -17,8 +17,8 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: false # 依存が無く go.sum も無いので、キャッシュは使わない
-      - name: テスト
+          cache: false # there are no dependencies and no go.sum, so do not use the cache
+      - name: Test
         run: go test ./...
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
@@ -28,12 +28,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # 配布したバイナリが、タグどおりの版を表示することを確かめる。
+  # Check that the published binary prints the version of the tag.
   verify:
     needs: release
     runs-on: ubuntu-latest
     steps:
-      - name: linux/amd64 のバイナリで version を確かめる
+      - name: Check the version of the linux/amd64 binary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}

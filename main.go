@@ -6,14 +6,14 @@ import (
 	"runtime/debug"
 )
 
-const usage = `sail-worktree - Laravel Sail 用 git worktree ポート割り当てツール
+const usage = `sail-worktree - assign non-conflicting ports to Laravel Sail projects running in git worktrees
 
-使い方:
-  sail-worktree init            対象プロジェクトに .sail-worktree.json を生成
-  sail-worktree up [args...]    .env を生成/修正して sail up を実行 (例: up -d)
-  sail-worktree stop            sail stop を実行
-  sail-worktree rm [-y]         コンテナ/ネットワーク/ボリューム/ビルドイメージを削除し、ポート割り当てを解放
-  sail-worktree version         版を表示 (go install ...@vX.Y.Z ならタグ、手元ビルドは (devel) か疑似バージョン)
+Usage:
+  sail-worktree init            create .sail-worktree.json for the project
+  sail-worktree up [args...]    create or update .env, then run sail up (e.g. up -d)
+  sail-worktree stop            run sail stop
+  sail-worktree rm [-y]         remove containers, networks, volumes and built images, and release the ports
+  sail-worktree version         print the version (the tag for go install ...@vX.Y.Z; (devel) or a pseudo-version for a local build)
 `
 
 func version() string {
@@ -46,11 +46,11 @@ func main() {
 		fmt.Print(usage)
 		return
 	default:
-		fmt.Fprintf(os.Stderr, "不明なコマンド: %s\n\n%s", os.Args[1], usage)
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n%s", os.Args[1], usage)
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "エラー:", err)
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }

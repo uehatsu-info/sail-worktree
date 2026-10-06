@@ -17,8 +17,8 @@ func gitOut(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// worktreeRoot は dir を含むワークツリーのルートを返す。
-// シンボリックリンクは解決した実パスで返す(プロジェクト名のハッシュが呼び出し経路で変わらないように)。
+// worktreeRoot returns the root of the worktree that contains dir.
+// Symlinks are resolved so that the hash in the project name does not depend on the path used to get here.
 func worktreeRoot(dir string) (string, error) {
 	out, err := gitOut(dir, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -35,7 +35,7 @@ func realPath(p string) (string, error) {
 	return filepath.Clean(r), nil
 }
 
-// mainWorktree は最初に列挙されるワークツリー(メイン)のパスを返す。
+// mainWorktree returns the path of the first listed worktree (the main one).
 func mainWorktree(dir string) (string, error) {
 	out, err := gitOut(dir, "worktree", "list", "--porcelain")
 	if err != nil {
@@ -43,12 +43,12 @@ func mainWorktree(dir string) (string, error) {
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if p, ok := strings.CutPrefix(line, "worktree "); ok {
-			// メインのディレクトリが消えている (prunable) 等で実パスにできないときは Clean で続ける。
+			// If the real path cannot be resolved (e.g. the main directory is gone and prunable), continue with the cleaned path.
 			if r, err := realPath(p); err == nil {
 				return r, nil
 			}
 			return filepath.Clean(p), nil
 		}
 	}
-	return "", fmt.Errorf("メインワークツリーを特定できません")
+	return "", fmt.Errorf("cannot determine the main worktree")
 }

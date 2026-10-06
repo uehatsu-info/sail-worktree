@@ -4,10 +4,10 @@ package main
 
 import "os"
 
-// unix 以外では O_NOFOLLOW もハードリンク数の検査もない (Lstat の検査だけ)。
+// Outside unix there is neither O_NOFOLLOW nor a hard link count check (only the Lstat check).
 const openNoFollow = 0
 
-// openNonBlock も同様に使わない (FIFO は Lstat と開いた後の Stat で弾く)。
+// openNonBlock is not used either (a FIFO is rejected by Lstat and by the Stat after opening).
 const openNonBlock = 0
 
 func hasMultipleLinks(os.FileInfo) bool { return false }
