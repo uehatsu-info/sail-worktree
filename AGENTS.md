@@ -28,14 +28,15 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `version`. See `README.md` 
 
 | File | Role |
 |---|---|
-| `main.go` | Command dispatch, usage text, `version` |
+| `main.go` | Command dispatch, usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, error messages, `cleanEnv`/`filterEnv` |
-| `env.go` | `.env` parsing and writing, port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular` |
-| `config.go` | `.sail-worktree.json` (project config), the port registry, `unsafeComposePath`, `composeInsideWorktree`, `Registry.migrate` |
+| `env.go` | `.env` parsing and writing, port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
+| `config.go` | `.sail-worktree.json` (project config), the port registry, `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
-| `git.go` | Worktree root and main worktree detection (real paths) |
+| `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
+| `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject`, `within`), not-found errors and their hints, the main worktree's counterpart |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
-| `sail_worktree_test.go`, `links_unix_test.go` | Tests |
+| `sail_worktree_test.go`, `project_test.go`, `links_unix_test.go` | Tests |
 | `.github/workflows/ci.yml`, `release.yml`, `.github/dependabot.yml`, `.goreleaser.yaml` | CI and release |
 
 State outside the repository: the port registry is `os.UserConfigDir()/sail-worktree/registry.json`. The project
@@ -72,32 +73,64 @@ does not verify the symlink-refusal paths (nor the optional link check in the `r
 
 These come from deliberate decisions; change them only on purpose and update the tests and both READMEs.
 
-- **`.env` is never written through a link.** `up` and `rm` refuse a symlinked or hard-linked `.env`
-  (`checkOwnEnv`). Writing opens with `O_NOFOLLOW`, checks the opened file, then truncates. A new `.env` is created
-  with mode 0600; an existing file keeps its mode. Duplicate keys that `up` writes are collapsed to the first line.
+- **`.env` and `.sail-worktree.json` are never written through a link.** `up` and `rm` refuse a symlinked or
+  hard-linked `.env` (`checkOwnEnv`). Both files are written by `writeFileNoFollow`: `Lstat` (the only link check on
+  Windows), open with `O_NOFOLLOW|O_NONBLOCK`, check that the opened file is regular and (Unix) not hard-linked, then
+  truncate. Its refusals wrap `errNotOwnFile`, so `init` adds advice only to them. A new `.env` is created with mode
+  0600 and a new `.sail-worktree.json` with 0644; an existing file keeps its mode. Duplicate keys that `up` writes are
+  collapsed to the first line. Reading is asymmetric on purpose: `up`, `stop` and `rm` read a symlinked
+  `.sail-worktree.json`; only writing refuses links, so do not "unify" the two.
 - **Override keys differ per command.** `up` refuses `COMPOSE_FILE`, `COMPOSE_ENV_FILES` and `SAIL_FILES` in `.env`
   (compose would not read the ports and project name `up` writes). `COMPOSE_PROFILES` is allowed. `rm` also refuses
   `COMPOSE_PROFILES` because it cannot be undone. `stop` refuses nothing and only warns (best effort, non-main
   worktrees, regular files only).
-- **`rm` is guarded.** It recomputes the worktree's project name and requires `COMPOSE_PROJECT_NAME` in `.env` to
+- **`rm` is guarded.** It recomputes the project name and requires `COMPOSE_PROJECT_NAME` in `.env` to
   match exactly. Every refusing check runs *before* the confirmation prompt. It pins `--project-name`,
   `--project-directory` and `-f`, and runs without `COMPOSE_*` from the environment. Values from `.env` are untrusted:
   they are shown with `%+q`, and only names matching `safeProjectName` are put into a suggested shell command.
-  The compose file is resolved through its links (`composeInsideWorktree`) and refused unless its real path is a
-  regular file inside the worktree; `-f` gets that real path, so do not "simplify" it back to `Join(root, compose)`.
+  The compose file is resolved through its links (`composeInsideProject`) and refused unless its real path is a
+  regular file inside the project directory; `-f` gets that real path, so do not "simplify" it back to `Join(root, compose)`.
   Only `rm` has this check: `up`, `stop` and `init` do not run docker with `-f` (Sail finds the file itself), so their
-  `os.Stat` is not a regression. Limits: Windows junctions are not followed (Go 1.23+ `EvalSymlinks`), a link swapped
+  `os.Stat` (in `findMarker`) is not a regression. Limits: Windows junctions are not followed (Go 1.23+ `EvalSymlinks`), a link swapped
   after the check is not caught, and what the compose file refers to is not checked (relative `include:` and `extends:`
   paths of a file reached through a link are resolved from its target's directory). A compose file that is a hard link
-  to a file outside the worktree is not detected, by choice: a path check cannot see one, only the link count could, and
+  to a file outside the project directory is not detected, by choice: a path check cannot see one, only the link count could, and
   compose files are sometimes shared that way. A plain checkout cannot create one because git stores no hard links, but a
-  script or the user can. Hard-link detection exists only for `.env`, and only on Unix.
+  script or the user can. Hard-link detection exists only for the files this tool writes (`.env`,
+  `.sail-worktree.json`), and only on Unix.
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
   case-insensitively) from the environment passed to `sail` and `docker`. It must never return `nil`: a `nil`
   `exec.Cmd.Env` inherits the whole parent environment.
-- **Paths are real paths.** The worktree root and the main worktree are resolved through symlinks, because the project
-  name contains a hash of the path. `Registry.migrate` merges keys an older version recorded under a symlinked path;
-  it only changes memory and the caller saves on success.
+- **Paths are real paths.** The worktree root, the main worktree and the project directory are resolved through
+  symlinks, because the project name contains a hash of the project directory. `Registry.migrate` merges keys an older
+  version recorded under a symlinked path; it only changes memory and the caller saves on success.
+- **Project directory.** The project directory is the nearest directory, from the cwd up to the worktree root, with
+  `.sail-worktree.json` (`up`, `stop`, `rm`) or a compose file (`init`). `ctx.root`/`ctx.main` are the project
+  directories, `ctx.wtTop`/`ctx.mainTop` the worktree roots; the registry keys are project directories (the JSON name
+  `worktrees` stays). Rules:
+  - The cwd below the root comes from the same git call as the root (`git rev-parse --show-toplevel --show-prefix`),
+    parsed by the pure `parseTopAndPrefix`: exactly two lines, an absolute root, `\r` removed only on Windows. Do not
+    walk `os.Getwd` instead: it keeps the case the user typed (macOS) and short names (Windows), which would change
+    the hash.
+  - `projectCandidates` never looks above the root, refuses empty, `.` and `..` elements, checks every candidate with
+    `within` before anything is `Stat`ed, and skips candidates below a `vendor` or `node_modules` element of the prefix
+    (not of the root itself). The chosen directory goes through `realPath` and `within` again.
+  - The first marker name that exists decides; one that is not a regular file is an error, never a reason to fall
+    back to a parent.
+  - The project name is `projectName(mainTop, wtTop, root)`: the slug comes from the two worktree names and the hash
+    from the project directory, so a project at the root keeps the name older versions wrote (a test pins the old
+    formula). Production code calls `ctx.projectName()`.
+  - `isMain` decides on the worktree roots, with the project directories compared as well (defense in depth).
+  - The main worktree's counterpart (`counterpart`) is the same relative path there. It may not exist, but it must not
+    resolve outside the main worktree, because `up` copies `.env` from it and Sail sources it. Only the directory is
+    contained: the `.env` file in it may still be a link, as for a root project. A missing path is checked only
+    lexically, so a broken link in the middle passes, but nothing can be read through it. Windows junctions are not
+    followed by `EvalSymlinks`, here as for the compose check.
+  - The hints in the not-found errors enter only plain directories (no links, no junctions) and skip `vendor`,
+    `node_modules` and `.git`.
+- **Error output.** `main` prints the final error through `printErr`, which escapes what `strconv.IsPrint` rejects and
+  invalid UTF-8 bytes; `\n` is kept for the layout (a newline inside a path can still start a line of its own).
+  New messages with paths use `%q`, so printable non-ASCII stays readable; values from `.env` keep `%+q`.
 - **Registry handling in `rm`.** Read the registry once before the prompt (to fail early on a broken file) and again
   after `docker` (so an update made meanwhile by another `up` is not lost); release the worktree only after docker
   succeeds.
@@ -106,14 +139,16 @@ These come from deliberate decisions; change them only on purpose and update the
   `loopbackBindBlocked` decides how a failure on `127.0.0.1` is treated per OS.
 - **Sail sources `.env`.** `vendor/bin/sail` runs `source ./.env` (or `.env.$APP_ENV`), so `.env` is executed as shell
   code. `stop` does not refuse a symlinked `.env` for this reason: calling `sail` directly has the same exposure.
-- `compose` in `.sail-worktree.json` must be a relative path inside the worktree (`unsafeComposePath`), including on
-  Windows forms such as `C:x`, `\\srv\x` and `/x`. That check only reads the string; `rm` also checks the real path
-  with `composeInsideWorktree` (see "`rm` is guarded").
+- `compose` in `.sail-worktree.json` must be a relative path inside the project directory (`unsafeComposePath`),
+  including on Windows forms such as `C:x`, `\\srv\x` and `/x`. That check only reads the string; `rm` also checks the
+  real path with `composeInsideProject` (see "`rm` is guarded").
 
 ## Testing notes
 
 - `setupWorktreeRepo` creates a real main worktree and a linked worktree in a temp dir, points `HOME`/`XDG_CONFIG_HOME`
   at temp dirs so the real registry is never touched, and `chdir`s into the linked worktree.
+  `setupSubdirWorktreeRepo` does the same with the project in `laravel/` (optionally only on the feature branch) and
+  `chdir`s into `wt/laravel`; `initRepo` is a single repository for `init`.
 - Tests replace package variables (`runner`, `stdin`, `stderr`) through helpers such as `captureRunner` and
   `captureStderr`; restore them with `t.Cleanup`. These tests use `t.Setenv`/`t.Chdir`, so they cannot run in parallel.
 - A refusal that must happen before the prompt is tested by checking that stdin was not consumed and no command ran.
