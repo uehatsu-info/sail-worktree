@@ -126,9 +126,7 @@ func TestCheckOwnEnv(t *testing.T) {
 		t.Errorf("a regular file is allowed: %v", err)
 	}
 	link := filepath.Join(dir, "sym")
-	if err := os.Symlink(real, link); err != nil {
-		t.Skip("cannot create symbolic links here:", err)
-	}
+	symlinkOrSkip(t, real, link)
 	if err := checkOwnEnv(link); err == nil {
 		t.Error("symbolic link not refused")
 	}
@@ -454,9 +452,7 @@ func TestUpRefusesSymlinkEnv(t *testing.T) {
 	if err := os.WriteFile(target, []byte("APP_URL=http://localhost\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, filepath.Join(wt, ".env")); err != nil {
-		t.Skip("cannot create symbolic links here:", err)
-	}
+	symlinkOrSkip(t, target, filepath.Join(wt, ".env"))
 	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "symbolic link") {
 		t.Errorf("up does not refuse a symbolic link: %v", err)
 	}
@@ -468,9 +464,7 @@ func TestUpRefusesSymlinkEnv(t *testing.T) {
 func TestProjectNameIsStableAcrossSymlinkedPaths(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	link := filepath.Join(filepath.Dir(wt), "via-link")
-	if err := os.Symlink(wt, link); err != nil {
-		t.Skip("cannot create symbolic links here:", err)
-	}
+	symlinkOrSkip(t, wt, link)
 	root, err := worktreeRoot(link)
 	if err != nil {
 		t.Fatal(err)
@@ -683,9 +677,7 @@ func TestStopAllowsSymlinkEnv(t *testing.T) {
 	if err := os.WriteFile(target, []byte("COMPOSE_PROJECT_NAME=other-project\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, filepath.Join(wt, ".env")); err != nil {
-		t.Skip("cannot create symbolic links here:", err)
-	}
+	symlinkOrSkip(t, target, filepath.Join(wt, ".env"))
 	warn := captureStderr(t)
 	calls := captureRunner(t)
 	if err := cmdStop(nil); err != nil || len(*calls) != 1 {
@@ -772,6 +764,7 @@ func TestReadEnvIfRegularSkipsNonRegular(t *testing.T) {
 	} else if v, _ := e.Get("A"); v != "1" {
 		t.Errorf("A=%q", v)
 	}
+	// An extra check only when a link can be made; the rest of the test needs no link, so do not skip the whole test.
 	if err := os.Symlink(real, filepath.Join(dir, "link")); err == nil {
 		if _, ok := readEnvIfRegular(filepath.Join(dir, "link")); ok {
 			t.Error("read a link")
@@ -794,9 +787,7 @@ func newLinkedDir(t *testing.T, names ...string) (real string, links []string) {
 	}
 	for _, n := range names {
 		l := filepath.Join(base, n)
-		if err := os.Symlink(real, l); err != nil {
-			t.Skip("cannot create symbolic links here:", err)
-		}
+		symlinkOrSkip(t, real, l)
 		links = append(links, l)
 	}
 	return real, links
@@ -848,9 +839,7 @@ func TestUpReusesPortsRecordedUnderSymlinkedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	alias := filepath.Join(t.TempDir(), "alias")
-	if err := os.Symlink(wt, alias); err != nil {
-		t.Skip("cannot create symbolic links here:", err)
-	}
+	symlinkOrSkip(t, wt, alias)
 	reg, err := loadRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -904,9 +893,7 @@ func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 
 	// Keys recorded under an alias are all released by rm.
 	alias := filepath.Join(t.TempDir(), "alias")
-	if err := os.Symlink(wt, alias); err != nil {
-		t.Skip("cannot create symbolic links here:", err)
-	}
+	symlinkOrSkip(t, wt, alias)
 	reg := &Registry{Worktrees: map[string]map[string]int{alias: {"APP_PORT": 8123}, "/other/wt": {"APP_PORT": 8200}}}
 	if err := reg.save(); err != nil {
 		t.Fatal(err)
@@ -986,11 +973,18 @@ func realTempDir(t *testing.T) string {
 	return d
 }
 
+// symlinkOrSkip creates a symbolic link. Only Windows may lack the right to create one; elsewhere a failure is a real
+// error, because skipping would let the symlink-refusal tests pass without running.
 func symlinkOrSkip(t *testing.T, oldname, newname string) {
 	t.Helper()
-	if err := os.Symlink(oldname, newname); err != nil {
-		t.Skip("cannot create symbolic links here:", err)
+	err := os.Symlink(oldname, newname)
+	if err == nil {
+		return
 	}
+	if runtime.GOOS == "windows" {
+		t.Skipf("cannot create symbolic links here: %v", err)
+	}
+	t.Fatalf("cannot create symbolic links: %v", err)
 }
 
 func writeFile(t *testing.T, path, content string) {
