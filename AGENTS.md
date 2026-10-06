@@ -30,13 +30,13 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `version`. See `README.md` 
 |---|---|
 | `main.go` | Command dispatch, usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, error messages, `cleanEnv`/`filterEnv` |
-| `env.go` | `.env` parsing and writing, port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
+| `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config), the port registry, `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject`, `within`), not-found errors and their hints, the main worktree's counterpart |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
-| `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `addStatefulDomain` |
+| `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `sanctumUnquote`, `statefulDisabled`, `addStatefulDomain` |
 | `sail_worktree_test.go`, `project_test.go`, `sanctum_test.go`, `links_unix_test.go` | Tests |
 | `.github/workflows/ci.yml`, `release.yml`, `.github/dependabot.yml`, `.goreleaser.yaml` | CI and release |
 
@@ -145,14 +145,17 @@ These come from deliberate decisions; change them only on purpose and update the
 - **`SANCTUM_STATEFUL_DOMAINS`.** Only when `up` rewrites `APP_URL` and `.env` sets the key, `addStatefulDomain`
   appends the new `APP_URL`'s entry (lower-case host, `:port` unless it is the scheme's default; IPv6 canonical with
   brackets). It follows Sanctum's `fromFrontend`: an element equal (before trimming) to
-  `__SANCTUM_CURRENT_REQUEST_HOST__` is `getHttpHost()`, i.e. the entry itself; otherwise `strIs(trim(e)+"/*",
-  entry+"/")`. It only ever appends. An absent key, Laravel's disabling words (compared lower-cased, not trimmed) and a
-  value of only commas are left alone. Because Sail sources `.env`, the entry and the value must pass allow-lists, and
-  anything else is left alone with a warning naming the entry to add; do not loosen them to "escape" values instead.
-  `Get` keeps stripping any quotes at both ends; `sanctumUnquote` strips one matching pair and keeps the inner spaces
-  (phpdotenv does). `Set` collapses duplicate lines of the key. The added line and the warning are printed after
-  `.env` and the registry are saved. Known limit (existing): `up` writes `APP_URL` back unquoted, so `&`, `;`, `#`,
-  `$` or `(` in it that quotes protected are no longer protected.
+  `__SANCTUM_CURRENT_REQUEST_HOST__` is `getHttpHost()`, which is the entry itself as long as the browser reaches the
+  worktree at `APP_URL` with an unchanged Host header (Sail's normal setup; not behind a proxy that rewrites it);
+  otherwise `strIs(trim(e)+"/*", entry+"/")`. It only ever appends. An absent key, Laravel's disabling words and a value
+  of only commas are left alone; the words are compared lower-cased after `sanctumUnquote`, which trims spaces outside
+  quotes (as phpdotenv does) but not inside them, so `" null "` is a plain string. Because Sail sources `.env`, the
+  entry and the value must pass allow-lists, and anything else is left alone with a warning naming the entry to add (it
+  repeats on every `up`); do not loosen them to "escape" values instead. `Get` keeps stripping any quotes at both ends.
+  `Set` collapses duplicate lines of the key and drops an `export` prefix, as for every key `up` writes. The added line
+  and the warning are printed after `.env` and the registry are saved. Known limit (existing): `up` writes `APP_URL`
+  back unquoted, so shell metacharacters in it that quotes protected (such as `&`, `;`, `#`, `$`, `(`, `|` or a space in
+  the query) are no longer protected.
 - `compose` in `.sail-worktree.json` must be a relative path inside the project directory (`unsafeComposePath`),
   including on Windows forms such as `C:x`, `\\srv\x` and `/x`. That check only reads the string; `rm` also checks the
   real path with `composeInsideProject` (see "`rm` is guarded").
@@ -163,8 +166,9 @@ These come from deliberate decisions; change them only on purpose and update the
   at temp dirs so the real registry is never touched, and `chdir`s into the linked worktree.
   `setupSubdirWorktreeRepo` does the same with the project in `laravel/` (optionally only on the feature branch) and
   `chdir`s into `wt/laravel`; `initRepo` is a single repository for `init`.
-- Tests replace package variables (`runner`, `stdin`, `stderr`) through helpers such as `captureRunner` and
-  `captureStderr`; restore them with `t.Cleanup`. These tests use `t.Setenv`/`t.Chdir`, so they cannot run in parallel.
+- Tests replace package variables (`runner`, `stdin`, `stdout`, `stderr`) through helpers such as `captureRunner`,
+  `captureStdout` and `captureStderr`; restore them with `t.Cleanup`. These tests use `t.Setenv`/`t.Chdir`, so they
+  cannot run in parallel.
 - A refusal that must happen before the prompt is tested by checking that stdin was not consumed and no command ran.
 - Compare messages that quote a path with `fmt.Sprintf("%q", path)` or `strconv.Quote`, never with a hand-written
   backslash string, so the same test passes on Windows.
