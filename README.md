@@ -74,7 +74,7 @@ Prints the version (the tag for `go install ...@vX.Y.Z`; a local `go build` prin
 
 ## Upgrading
 
-- The worktree path is now resolved through symlinks (for example `/tmp` → `/private/tmp` on macOS), and the project name contains a hash of that path. If you ran `up` through a symlinked path with an older version, the name changes: `up` writes the new name and leaves the old containers and volumes behind, and `rm` refuses with "does not match". Remove the old project by hand (`docker compose -p <old name> down -v`) or put the old name back in `.env`.
+- The worktree path is now resolved through symlinks (for example `/tmp` → `/private/tmp` on macOS), and the project name contains a hash of that path. If you ran `up` through a symlinked path with an older version, the name changes: `up` writes the new name and leaves the old containers and volumes behind, and `rm` refuses with "does not match". Remove the old project by hand (`docker compose -p <old name> down -v`) or put the old name back in `.env`. The port registry is migrated automatically: entries recorded under a symlinked path are merged into the real path on the next `up` or `rm` (an entry that already exists for the real path wins; entries for paths that no longer exist are left alone).
 - An existing `SESSION_COOKIE` in a worktree `.env` is overwritten on the next `up`, so you are logged out of that worktree once.
 - For `up` and `rm`, a symlinked or hard-linked `.env` is now an error. `up` also rejects `COMPOSE_FILE`, `COMPOSE_ENV_FILES` and `SAIL_FILES` lines in `.env` (also ones copied from the main worktree), and `rm` additionally rejects `COMPOSE_PROFILES` (`up` accepts it). Replace the link with a real file, or delete the line. `stop` no longer refuses these; it only warns.
 

@@ -109,6 +109,7 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
+	reg.migrate(c.root) // allocatePorts の前に、旧版の別名のキーを自分の割り当てとして取り込む (保存は up 成功時)
 	src := envOwn
 	env, err := readEnv(envPath)
 	if os.IsNotExist(err) {
@@ -219,10 +220,11 @@ func nameMismatchError(got, want string) error {
 	}
 	msg := fmt.Sprintf(".env の COMPOSE_PROJECT_NAME を %s に直して、もう一度 rm を実行してください (現在の %+q はこのワークツリーの名前と一致しないため rm できません)。", shown, got)
 	if safeProjectName.MatchString(got) {
-		msg += fmt.Sprintf("\n古い版が別の名前で作ったプロジェクトを消す場合だけ、次を実行します。"+
-			"\n  先に `docker compose ls -a` で、%s が他のワークツリーやプロジェクトのものでなく、このワークツリーのものであることを確認してください。"+
-			"\n  シェルに COMPOSE_* の環境変数があると対象が変わるので、先に unset してください。"+
-			"\n  docker compose -p %s down -v --rmi local --remove-orphans   (-v でボリューム=DB データも消え、取り返しがつきません)", got, got)
+		msg += fmt.Sprintf("\n古い版が別の名前で作ったプロジェクトを消す場合だけ、次の順に行ってください。"+
+			"\n  1. `docker compose ls -a` で、%s が他のワークツリーやプロジェクトのものでなく、このワークツリーのものであることを確認する。"+
+			"\n  2. シェルに COMPOSE_* の環境変数があると対象が変わるので、`env | grep ^COMPOSE_` で確認し、あれば unset する。"+
+			"\n  3. 次を実行する (-v でボリューム=DB データも消え、取り返しがつきません):"+
+			"\n  docker compose -p %s down -v --rmi local --remove-orphans", got, got)
 	} else {
 		msg += "\n.env の名前は小文字英数字・_・- だけでない (大文字などは compose が使う名前と異なり得る) ため、手動で消すコマンドは示しません。`docker compose ls -a` で対象を確認してください。"
 	}
@@ -287,8 +289,7 @@ func cmdRm(args []string) error {
 	if fi, err := os.Stat(composePath); err != nil || !fi.Mode().IsRegular() {
 		return fmt.Errorf("compose ファイルが見つかりません: %s", composePath)
 	}
-	reg, err := loadRegistry() // 読めない (壊れている) ときも、消す前に失敗させる。
-	if err != nil {
+	if _, err := loadRegistry(); err != nil { // 読めない (壊れている) ときも、消す前に失敗させる。
 		return err
 	}
 	if !yes {
@@ -303,6 +304,12 @@ func cmdRm(args []string) error {
 	if err := runner(c.root, cleanEnv(nil), "docker", rmArgs(proj, c.root, composePath)...); err != nil {
 		return err
 	}
+	// docker の実行中に別の up がレジストリを更新していても失わないよう、消した後に読み直して解放する。
+	reg, err := loadRegistry()
+	if err != nil {
+		return err
+	}
+	reg.migrate(c.root)
 	delete(reg.Worktrees, c.root)
 	if err := reg.save(); err != nil {
 		return err

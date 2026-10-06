@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -89,6 +90,29 @@ func (r *Registry) save() error {
 	}
 	b, _ := json.MarshalIndent(r, "", "  ")
 	return os.WriteFile(p, append(b, '\n'), 0o644)
+}
+
+// migrate は、root と同じ実体を指す別名のキー (旧版がシンボリックリンク経由のパスで記録したもの) を
+// root に統合する。メモリ上だけの操作で、保存は呼び出し側が成功時に行う。root に既存のエントリがあればそちらを優先し、
+// 無ければ別名のうち辞書順で最小のキーのエントリを採る (別名のポートは used に残らない)。
+// realPath にできない (消えた) パスのキーは触らない。
+func (r *Registry) migrate(root string) {
+	var aliases []string
+	for k := range r.Worktrees {
+		if k == root {
+			continue
+		}
+		if rp, err := realPath(k); err == nil && rp == root {
+			aliases = append(aliases, k)
+		}
+	}
+	sort.Strings(aliases)
+	for _, k := range aliases {
+		if _, ok := r.Worktrees[root]; !ok {
+			r.Worktrees[root] = r.Worktrees[k]
+		}
+		delete(r.Worktrees, k)
+	}
 }
 
 // used は other 以外のワークツリーに割り当て済みのポート集合を返す。

@@ -729,3 +729,141 @@ func TestReadEnvIfRegularSkipsNonRegular(t *testing.T) {
 		t.Error("ディレクトリを読んだ")
 	}
 }
+
+func newLinkedDir(t *testing.T, names ...string) (real string, links []string) {
+	t.Helper()
+	base, err := realPath(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real = filepath.Join(base, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range names {
+		l := filepath.Join(base, n)
+		if err := os.Symlink(real, l); err != nil {
+			t.Skip("シンボリックリンクを作れない環境:", err)
+		}
+		links = append(links, l)
+	}
+	return real, links
+}
+
+func TestRegistryMigrate(t *testing.T) {
+	real, links := newLinkedDir(t, "b-link", "a-link")
+	gone := filepath.Join(filepath.Dir(real), "gone")
+
+	// 別名のキーが root に統合され、別名は残らない。消えたパスのキーは保持する。
+	r := &Registry{Worktrees: map[string]map[string]int{links[0]: {"APP_PORT": 81}, gone: {"APP_PORT": 82}}}
+	r.migrate(real)
+	if got := r.Worktrees[real]["APP_PORT"]; got != 81 {
+		t.Errorf("統合されていない: %v", r.Worktrees)
+	}
+	if _, ok := r.Worktrees[links[0]]; ok {
+		t.Errorf("別名が残った: %v", r.Worktrees)
+	}
+	if r.Worktrees[gone]["APP_PORT"] != 82 {
+		t.Errorf("消えたパスのキーを触った: %v", r.Worktrees)
+	}
+
+	// root が既にあればそちらを優先し、別名は消す (別名のポートは used に残らない)。
+	r = &Registry{Worktrees: map[string]map[string]int{real: {"APP_PORT": 90}, links[0]: {"APP_PORT": 81}}}
+	r.migrate(real)
+	if r.Worktrees[real]["APP_PORT"] != 90 || len(r.Worktrees) != 1 || r.used("other")[81] {
+		t.Errorf("root 優先になっていない: %v", r.Worktrees)
+	}
+
+	// k == root は変えない。
+	r = &Registry{Worktrees: map[string]map[string]int{real: {"APP_PORT": 90}}}
+	r.migrate(real)
+	if r.Worktrees[real]["APP_PORT"] != 90 || len(r.Worktrees) != 1 {
+		t.Errorf("k==root を変えた: %v", r.Worktrees)
+	}
+
+	// 複数の別名があり root に無いときは、辞書順で最小のキー (a-link) を採る。
+	r = &Registry{Worktrees: map[string]map[string]int{links[0]: {"APP_PORT": 81}, links[1]: {"APP_PORT": 82}}}
+	r.migrate(real)
+	if r.Worktrees[real]["APP_PORT"] != 82 || len(r.Worktrees) != 1 {
+		t.Errorf("決定的に採用されていない: %v", r.Worktrees)
+	}
+}
+
+func TestUpReusesPortsRecordedUnderSymlinkedPath(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	if err := os.WriteFile(filepath.Join(main, ".env"), []byte("APP_URL=http://localhost\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(wt, alias); err != nil {
+		t.Skip("シンボリックリンクを作れない環境:", err)
+	}
+	reg, err := loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Worktrees[alias] = map[string]int{"APP_PORT": 8123}
+	if err := reg.save(); err != nil {
+		t.Fatal(err)
+	}
+	captureRunner(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := readEnv(filepath.Join(wt, ".env"))
+	if v, _ := e.Get("APP_PORT"); v != "8123" {
+		t.Errorf("別名で記録したポートを再利用していない: APP_PORT=%q", v)
+	}
+	reg, _ = loadRegistry()
+	if _, ok := reg.Worktrees[alias]; ok || reg.Worktrees[wt]["APP_PORT"] != 8123 {
+		t.Errorf("レジストリが移行されていない: %v", reg.Worktrees)
+	}
+}
+
+func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	proj := projectName(main, wt)
+	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// レジストリが壊れていると、docker も stdin も使わずに失敗する。
+	p, err := registryPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := strings.NewReader("y\n")
+	old := stdin
+	stdin = in
+	t.Cleanup(func() { stdin = old })
+	calls := captureRunner(t)
+	if err := cmdRm(nil); err == nil || len(*calls) != 0 || in.Len() != 2 {
+		t.Fatalf("壊れたレジストリで失敗していない: err=%v calls=%d", err, len(*calls))
+	}
+
+	// 別名で記録されたキーも rm で全て解放される。
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(wt, alias); err != nil {
+		t.Skip("シンボリックリンクを作れない環境:", err)
+	}
+	reg := &Registry{Worktrees: map[string]map[string]int{alias: {"APP_PORT": 8123}, "/other/wt": {"APP_PORT": 8200}}}
+	if err := reg.save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdRm([]string{"-y"}); err != nil || len(*calls) != 1 {
+		t.Fatalf("rm: err=%v calls=%d", err, len(*calls))
+	}
+	reg, _ = loadRegistry()
+	if len(reg.Worktrees) != 1 || reg.Worktrees["/other/wt"]["APP_PORT"] != 8200 {
+		t.Errorf("別名のキーが解放されていない、または他のワークツリーを消した: %v", reg.Worktrees)
+	}
+}
