@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -255,24 +256,65 @@ func TestRmRefusesMismatchedProjectName(t *testing.T) {
 
 func TestNameMismatchErrorGuidance(t *testing.T) {
 	msg := nameMismatchError("old-name", "app-feat-abc123").Error()
-	for _, want := range []string{`"old-name"`, `"app-feat-abc123"`, "docker compose ls -a", "docker compose -p old-name down -v --rmi local --remove-orphans", "取り返しがつきません"} {
+	if first, _, _ := strings.Cut(msg, "\n"); !strings.Contains(first, ".env の COMPOSE_PROJECT_NAME を app-feat-abc123 に直して") {
+		t.Errorf("1 行目に主軸の手順がない: %s", msg)
+	}
+	for _, want := range []string{`"old-name"`, "docker compose ls -a", "他のワークツリー", "unset", "docker compose -p old-name down -v --rmi local --remove-orphans", "取り返しがつきません"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("%q が含まれない: %s", want, msg)
 		}
 	}
-	// 安全でない文字種の名前は、コマンドに埋め込まず、表示は %+q でエスケープする。
+}
+
+func TestNameMismatchErrorEscapesUntrustedNames(t *testing.T) {
 	for _, bad := range []string{"x; rm -rf ~", "$(id)", "a`id`", "line1\nline2", "esc\x1b[31m", "-rf", "UPPER", "名前", "", strings.Repeat("a", 65)} {
 		msg := nameMismatchError(bad, "app-feat-abc123").Error()
 		if strings.Contains(msg, "docker compose -p") {
 			t.Errorf("%q でコマンドを出している: %s", bad, msg)
 		}
-		if strings.ContainsAny(msg, "\x1b") || strings.Count(msg, "\n") != 2 {
-			t.Errorf("%q が未エスケープで出ている: %q", bad, msg)
+		for _, r := range msg {
+			if r != '\n' && r < 0x20 || r == 0x7f {
+				t.Errorf("%q: 制御文字 %U が未エスケープで出ている: %q", bad, r, msg)
+			}
+		}
+		if !strings.Contains(msg, fmt.Sprintf("%+q", bad)) {
+			t.Errorf("%q が %%+q で出ていない: %q", bad, msg)
 		}
 	}
-	// 不正な want も %+q で出す。
-	if msg := nameMismatchError("old", "bad\nname").Error(); strings.Contains(msg, "bad\nname") {
-		t.Errorf("want が未エスケープ: %q", msg)
+	// 不正な want は引用符つきでエスケープして出し、コマンドには混ぜない。
+	msg := nameMismatchError("old-name", "bad\nname $(id)").Error()
+	if strings.Contains(msg, "bad\nname") || !strings.Contains(msg, `"bad\nname $(id)"`) {
+		t.Errorf("want のエスケープが不正: %q", msg)
+	}
+	if strings.Contains(msg, "-p bad") || strings.Contains(msg, "-p \"bad") {
+		t.Errorf("want がコマンドに混ざっている: %q", msg)
+	}
+}
+
+func TestRmRefusalsDoNotReadStdin(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	proj := projectName(main, wt)
+	cases := map[string]struct{ env, want string }{
+		"名前不一致":      {"COMPOSE_PROJECT_NAME=other\n", "一致しない"},
+		"拒否キー":       {"COMPOSE_PROJECT_NAME=" + proj + "\nCOMPOSE_PROFILES=x\n", "rm の前に .env からその行を消してください"},
+		"compose 欠落": {"COMPOSE_PROJECT_NAME=" + proj + "\n", "compose ファイルが見つかりません"},
+	}
+	for name, c := range cases {
+		if err := os.WriteFile(filepath.Join(wt, ".env"), []byte(c.env), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		in := strings.NewReader("y\n")
+		old := stdin
+		stdin = in
+		calls := captureRunner(t)
+		err := cmdRm(nil)
+		stdin = old
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: 期待した拒否になっていない: %v", name, err)
+		}
+		if in.Len() != 2 || len(*calls) != 0 {
+			t.Errorf("%s: プロンプト前の拒否のはずが stdin を読んだ/実行した", name)
+		}
 	}
 }
 

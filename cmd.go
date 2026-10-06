@@ -174,6 +174,8 @@ const (
 
 func upOverrideError(key string, src envSource) error {
 	switch src {
+	case envOwn:
+		return fmt.Errorf(".env に %s があるため up できません (別の compose ファイルを指し得るため)。.env からその行を消してください", key)
 	case envFromMain:
 		return fmt.Errorf("メインワークツリーの .env に %s があり、それをコピーした .env にも入るため up できません (別の compose ファイルを指し得るため)。"+
 			"メインの .env から消す (他のワークツリーの元にも影響します) か、このワークツリーに .env を先に作って、その行を入れずに up してください", key)
@@ -181,7 +183,7 @@ func upOverrideError(key string, src envSource) error {
 		return fmt.Errorf("メインワークツリーの .env.example に %s があり、それをコピーした .env にも入るため up できません (別の compose ファイルを指し得るため)。"+
 			".env.example から消すか、このワークツリーに .env を先に作って、その行を入れずに up してください", key)
 	}
-	return fmt.Errorf(".env に %s があるため up できません (別の compose ファイルを指し得るため)。.env からその行を消してください", key)
+	return fmt.Errorf("不明な .env の出所: %d", src)
 }
 
 func cmdStop(args []string) error {
@@ -207,17 +209,22 @@ var (
 // シェルや docker のオプションとして解釈されない文字種だけを許す (先頭は英数字、長さ上限あり)。
 var safeProjectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
-// nameMismatchError は rm が拒否したときのエラー。.env の名前 (got) とこのワークツリーの名前 (want) は
-// どちらも %+q で表示し、復旧コマンドには安全な文字種だけの got を埋め込む。
+// nameMismatchError は rm が拒否したときのエラー。1 行目に主軸の手順 (.env を本来の名前に直す) を置く。
+// .env の名前 (got) は信頼できない入力なので %+q で表示し、復旧コマンドには安全な文字種だけの got を埋め込む。
+// このワークツリーの名前 (want) は projectName が安全な文字種で作るが、念のため同じ検証で表示を分ける。
 func nameMismatchError(got, want string) error {
-	msg := fmt.Sprintf(".env の COMPOSE_PROJECT_NAME (%+q) がこのワークツリーの名前 (%+q) と一致しないため、rm できません。"+
-		"\n対処: .env の COMPOSE_PROJECT_NAME を %+q に直して、もう一度 rm を実行してください。", got, want, want)
+	shown := fmt.Sprintf("%+q", want)
+	if safeProjectName.MatchString(want) {
+		shown = want // 引用符なし (そのまま .env に書ける)
+	}
+	msg := fmt.Sprintf(".env の COMPOSE_PROJECT_NAME を %s に直して、もう一度 rm を実行してください (現在の %+q はこのワークツリーの名前と一致しないため rm できません)。", shown, got)
 	if safeProjectName.MatchString(got) {
-		msg += fmt.Sprintf("\n古い版が別の名前で作ったプロジェクトを消す場合だけ、`docker compose ls -a` でその名前のプロジェクトが本当にこのワークツリーのものか確認してから、"+
-			"次を実行してください (-v でボリューム=DB データも消え、取り返しがつきません。環境の COMPOSE_* があると結果が変わります):"+
-			"\n  docker compose -p %s down -v --rmi local --remove-orphans", got)
+		msg += fmt.Sprintf("\n古い版が別の名前で作ったプロジェクトを消す場合だけ、次を実行します。"+
+			"\n  先に `docker compose ls -a` で、%s が他のワークツリーやプロジェクトのものでなく、このワークツリーのものであることを確認してください。"+
+			"\n  シェルに COMPOSE_* の環境変数があると対象が変わるので、先に unset してください。"+
+			"\n  docker compose -p %s down -v --rmi local --remove-orphans   (-v でボリューム=DB データも消え、取り返しがつきません)", got, got)
 	} else {
-		msg += "\n.env の名前が安全な文字種 (小文字英数字・_・-) でないため、手動で消すコマンドは示しません。`docker compose ls -a` で対象を確認してください。"
+		msg += "\n.env の名前は小文字英数字・_・- だけでない (大文字などは compose が使う名前と異なり得る) ため、手動で消すコマンドは示しません。`docker compose ls -a` で対象を確認してください。"
 	}
 	return fmt.Errorf("%s", msg)
 }
@@ -280,6 +287,10 @@ func cmdRm(args []string) error {
 	if fi, err := os.Stat(composePath); err != nil || !fi.Mode().IsRegular() {
 		return fmt.Errorf("compose ファイルが見つかりません: %s", composePath)
 	}
+	reg, err := loadRegistry() // 読めない (壊れている) ときも、消す前に失敗させる。
+	if err != nil {
+		return err
+	}
 	if !yes {
 		fmt.Printf("プロジェクト %q のコンテナ・ネットワーク・ボリューム(DBデータ含む)・ビルドイメージを削除します。よろしいですか? [y/N] ", proj)
 		ans, _ := bufio.NewReader(stdin).ReadString('\n')
@@ -290,10 +301,6 @@ func cmdRm(args []string) error {
 	}
 	// プロジェクト名・ディレクトリ・compose ファイルを明示し、環境の COMPOSE_* を外して実行する。
 	if err := runner(c.root, cleanEnv(nil), "docker", rmArgs(proj, c.root, composePath)...); err != nil {
-		return err
-	}
-	reg, err := loadRegistry()
-	if err != nil {
 		return err
 	}
 	delete(reg.Worktrees, c.root)
