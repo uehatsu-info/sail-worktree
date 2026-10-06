@@ -975,3 +975,178 @@ func TestRmDoesNotSaveRegistryWhenDockerFails(t *testing.T) {
 		t.Errorf("changed the registry when docker failed: %v", reg.Worktrees)
 	}
 }
+
+// realTempDir returns a temporary directory whose path has no links in it (macOS TempDir is under /var -> /private/var).
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func symlinkOrSkip(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if err := os.Symlink(oldname, newname); err != nil {
+		t.Skip("cannot create symbolic links here:", err)
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// rmWorktree prepares a worktree that gets past every rm check but the compose one, with compose set to rel.
+func rmWorktree(t *testing.T, rel string) (wt string) {
+	t.Helper()
+	main, wt := setupWorktreeRepo(t)
+	writeFile(t, filepath.Join(wt, ".env"), "COMPOSE_PROJECT_NAME="+projectName(main, wt)+"\n")
+	cfg := fmt.Sprintf(`{"compose":%q,"port_vars":[{"name":"APP_PORT","default":80}]}`, rel)
+	writeFile(t, filepath.Join(wt, configName), cfg)
+	return wt
+}
+
+// expectRmRefusedBeforePrompt runs rm and checks the error, that stdin was not read and that no command ran.
+func expectRmRefusedBeforePrompt(t *testing.T, want string) {
+	t.Helper()
+	in := strings.NewReader("y\n")
+	old := stdin
+	stdin = in
+	t.Cleanup(func() { stdin = old })
+	calls := captureRunner(t)
+	err := cmdRm(nil)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want it to contain %q", err, want)
+	}
+	if in.Len() != 2 || len(*calls) != 0 {
+		t.Errorf("should refuse before the prompt but read stdin or ran a command: remaining=%d calls=%d", in.Len(), len(*calls))
+	}
+}
+
+// expectRmUsesComposeFile runs rm -y and checks the path given to -f.
+func expectRmUsesComposeFile(t *testing.T, want string) {
+	t.Helper()
+	calls := captureRunner(t)
+	if err := cmdRm([]string{"-y"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("number of calls = %d", len(*calls))
+	}
+	args := (*calls)[0].args
+	for i, a := range args {
+		if a == "-f" && i+1 < len(args) {
+			if args[i+1] != want {
+				t.Errorf("-f = %q, want %q", args[i+1], want)
+			}
+			return
+		}
+	}
+	t.Errorf("no -f in %v", args)
+}
+
+func TestRmRefusesComposeLinkedOutsideWorktree(t *testing.T) {
+	wt := rmWorktree(t, "compose.yaml")
+	outside := filepath.Join(realTempDir(t), "compose.yaml")
+	writeFile(t, outside, "services: {}\n")
+	symlinkOrSkip(t, outside, filepath.Join(wt, "compose.yaml"))
+	expectRmRefusedBeforePrompt(t, "resolves outside the worktree")
+}
+
+func TestRmRefusesComposeBehindLinkedDirectory(t *testing.T) {
+	wt := rmWorktree(t, "sub/compose.yaml")
+	outsideDir := realTempDir(t)
+	writeFile(t, filepath.Join(outsideDir, "compose.yaml"), "services: {}\n")
+	symlinkOrSkip(t, outsideDir, filepath.Join(wt, "sub"))
+	expectRmRefusedBeforePrompt(t, "resolves outside the worktree")
+}
+
+func TestRmRefusesComposeChainThatLeavesWorktree(t *testing.T) {
+	wt := rmWorktree(t, "a.yaml")
+	outside := filepath.Join(realTempDir(t), "compose.yaml")
+	writeFile(t, outside, "services: {}\n")
+	symlinkOrSkip(t, outside, filepath.Join(wt, "b.yaml"))
+	symlinkOrSkip(t, filepath.Join(wt, "b.yaml"), filepath.Join(wt, "a.yaml"))
+	expectRmRefusedBeforePrompt(t, "resolves outside the worktree")
+}
+
+func TestRmAcceptsComposeChainInsideWorktreeAndPassesRealPath(t *testing.T) {
+	wt := rmWorktree(t, "a.yaml")
+	real := filepath.Join(wt, "real", "compose.yaml")
+	writeFile(t, real, "services: {}\n")
+	symlinkOrSkip(t, real, filepath.Join(wt, "b.yaml"))
+	symlinkOrSkip(t, filepath.Join(wt, "b.yaml"), filepath.Join(wt, "a.yaml"))
+	// docker must get the checked real path, not the configured one (which would be resolved again).
+	if real == filepath.Join(wt, "a.yaml") {
+		t.Fatal("the test needs the real path to differ from the configured one")
+	}
+	expectRmUsesComposeFile(t, real)
+}
+
+func TestRmRefusesBrokenComposeLink(t *testing.T) {
+	wt := rmWorktree(t, "compose.yaml")
+	symlinkOrSkip(t, filepath.Join(wt, "missing.yaml"), filepath.Join(wt, "compose.yaml"))
+	expectRmRefusedBeforePrompt(t, "compose file not found")
+}
+
+func TestRmRefusesComposeLinkedToDirectory(t *testing.T) {
+	wt := rmWorktree(t, "compose.yaml")
+	if err := os.Mkdir(filepath.Join(wt, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	symlinkOrSkip(t, filepath.Join(wt, "dir"), filepath.Join(wt, "compose.yaml"))
+	expectRmRefusedBeforePrompt(t, "is not a regular file")
+}
+
+func TestRmThroughWorktreeAliasIsNotRefused(t *testing.T) {
+	wt := rmWorktree(t, "compose.yaml")
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services: {}\n")
+	alias := filepath.Join(realTempDir(t), "alias")
+	symlinkOrSkip(t, wt, alias)
+	t.Chdir(alias)
+	expectRmUsesComposeFile(t, filepath.Join(wt, "compose.yaml"))
+}
+
+func TestComposeInsideWorktree(t *testing.T) {
+	root := realTempDir(t)
+	writeFile(t, filepath.Join(root, "compose.yaml"), "services: {}\n")
+	writeFile(t, filepath.Join(root, "..foo.yaml"), "services: {}\n")
+	writeFile(t, filepath.Join(root, "..d", "compose.yaml"), "services: {}\n")
+	writeFile(t, filepath.Join(filepath.Dir(root), "outside.yaml"), "services: {}\n")
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, rel, want string // want is an error substring; empty means accepted
+	}{
+		{"regular file", "compose.yaml", ""},
+		{"name that starts with two dots", "..foo.yaml", ""},
+		{"directory that starts with two dots", filepath.Join("..d", "compose.yaml"), ""},
+		{"missing file", "missing.yaml", "compose file not found"},
+		{"directory", "dir", "is not a regular file"},
+		{"the worktree itself", ".", "is not a regular file"},
+		{"parent directory", "..", "resolves outside the worktree"},
+		{"file in the parent directory", filepath.Join("..", "outside.yaml"), "resolves outside the worktree"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := composeInsideWorktree(root, c.rel)
+			if c.want == "" {
+				if err != nil || got != filepath.Join(root, c.rel) {
+					t.Errorf("got %q, %v; want the file itself", got, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error = %v, want it to contain %q", err, c.want)
+			}
+		})
+	}
+}
