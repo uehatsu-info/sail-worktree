@@ -125,10 +125,18 @@ func TestCheckOwnEnv(t *testing.T) {
 	if err := checkOwnEnv(real); err != nil {
 		t.Errorf("a regular file is allowed: %v", err)
 	}
-	link := filepath.Join(dir, "sym")
-	if err := os.Symlink(real, link); err != nil {
+}
+
+// Kept apart from TestCheckOwnEnv so that its missing-file and regular-file checks are reported as run on Windows
+// without the right to create links.
+func TestCheckOwnEnvRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.WriteFile(real, []byte("A=1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	link := filepath.Join(dir, "sym")
+	symlinkOrSkip(t, real, link)
 	if err := checkOwnEnv(link); err == nil {
 		t.Error("symbolic link not refused")
 	}
@@ -274,9 +282,7 @@ func setupWorktreeRepo(t *testing.T) (main, wt string) {
 	}
 	runGit(t, main, "init", "-q", "-b", "main")
 	cfg := `{"compose":"compose.yaml","port_vars":[{"name":"APP_PORT","default":80}]}`
-	if err := os.WriteFile(filepath.Join(main, configName), []byte(cfg), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(main, configName), cfg)
 	runGit(t, main, "add", ".")
 	runGit(t, main, "commit", "-q", "-m", "init")
 	runGit(t, main, "worktree", "add", "-q", wt, "-b", "feat")
@@ -454,9 +460,7 @@ func TestUpRefusesSymlinkEnv(t *testing.T) {
 	if err := os.WriteFile(target, []byte("APP_URL=http://localhost\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, filepath.Join(wt, ".env")); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, target, filepath.Join(wt, ".env"))
 	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "symbolic link") {
 		t.Errorf("up does not refuse a symbolic link: %v", err)
 	}
@@ -468,9 +472,7 @@ func TestUpRefusesSymlinkEnv(t *testing.T) {
 func TestProjectNameIsStableAcrossSymlinkedPaths(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	link := filepath.Join(filepath.Dir(wt), "via-link")
-	if err := os.Symlink(wt, link); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, wt, link)
 	root, err := worktreeRoot(link)
 	if err != nil {
 		t.Fatal(err)
@@ -503,17 +505,13 @@ func TestLoadConfigRejectsUnsafeCompose(t *testing.T) {
 	for _, c := range bad {
 		dir := t.TempDir()
 		b := `{"compose":` + strconvQuote(c) + `,"port_vars":[]}`
-		if err := os.WriteFile(filepath.Join(dir, configName), []byte(b), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeFile(t, filepath.Join(dir, configName), b)
 		if _, err := loadConfig(dir); err == nil {
 			t.Errorf("compose=%q is not refused", c)
 		}
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, configName), []byte(`{"compose":"docker/compose.yaml","port_vars":[]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(dir, configName), `{"compose":"docker/compose.yaml","port_vars":[]}`)
 	if _, err := loadConfig(dir); err != nil {
 		t.Errorf("a relative path is allowed: %v", err)
 	}
@@ -550,9 +548,7 @@ func TestRmPassesPinnedArguments(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wt, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services: {}\n")
 	t.Setenv("COMPOSE_FILE", "/evil.yaml")
 	calls := captureRunner(t)
 	if err := cmdRm([]string{"-y"}); err != nil {
@@ -578,9 +574,7 @@ func TestRmPassesPinnedArguments(t *testing.T) {
 
 func TestUpWritesEnvAndCleansSailEnvironment(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	if err := os.WriteFile(filepath.Join(main, ".env"), []byte("APP_URL=http://localhost\nSESSION_COOKIE=old\nSESSION_COOKIE=older\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(main, ".env"), "APP_URL=http://localhost\nSESSION_COOKIE=old\nSESSION_COOKIE=older\n")
 	if err := os.MkdirAll(filepath.Join(wt, "vendor", "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -683,9 +677,7 @@ func TestStopAllowsSymlinkEnv(t *testing.T) {
 	if err := os.WriteFile(target, []byte("COMPOSE_PROJECT_NAME=other-project\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, filepath.Join(wt, ".env")); err != nil {
-		t.Skip("cannot create symbolic links here:", err)
-	}
+	symlinkOrSkip(t, target, filepath.Join(wt, ".env"))
 	warn := captureStderr(t)
 	calls := captureRunner(t)
 	if err := cmdStop(nil); err != nil || len(*calls) != 1 {
@@ -772,7 +764,8 @@ func TestReadEnvIfRegularSkipsNonRegular(t *testing.T) {
 	} else if v, _ := e.Get("A"); v != "1" {
 		t.Errorf("A=%q", v)
 	}
-	if err := os.Symlink(real, filepath.Join(dir, "link")); err == nil {
+	// An extra check: the rest of the test needs no link, so do not skip the whole test on Windows.
+	if trySymlink(t, real, filepath.Join(dir, "link")) {
 		if _, ok := readEnvIfRegular(filepath.Join(dir, "link")); ok {
 			t.Error("read a link")
 		}
@@ -794,9 +787,7 @@ func newLinkedDir(t *testing.T, names ...string) (real string, links []string) {
 	}
 	for _, n := range names {
 		l := filepath.Join(base, n)
-		if err := os.Symlink(real, l); err != nil {
-			t.Skip("cannot create symbolic links here:", err)
-		}
+		symlinkOrSkip(t, real, l)
 		links = append(links, l)
 	}
 	return real, links
@@ -848,9 +839,7 @@ func TestUpReusesPortsRecordedUnderSymlinkedPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	alias := filepath.Join(t.TempDir(), "alias")
-	if err := os.Symlink(wt, alias); err != nil {
-		t.Skip("cannot create symbolic links here:", err)
-	}
+	symlinkOrSkip(t, wt, alias)
 	reg, err := loadRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -879,20 +868,13 @@ func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wt, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services: {}\n")
 	// A broken registry fails without using docker or stdin.
 	p, err := registryPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, []byte("{broken"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, p, "{broken")
 	in := strings.NewReader("y\n")
 	old := stdin
 	stdin = in
@@ -904,9 +886,7 @@ func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 
 	// Keys recorded under an alias are all released by rm.
 	alias := filepath.Join(t.TempDir(), "alias")
-	if err := os.Symlink(wt, alias); err != nil {
-		t.Skip("cannot create symbolic links here:", err)
-	}
+	symlinkOrSkip(t, wt, alias)
 	reg := &Registry{Worktrees: map[string]map[string]int{alias: {"APP_PORT": 8123}, "/other/wt": {"APP_PORT": 8200}}}
 	if err := reg.save(); err != nil {
 		t.Fatal(err)
@@ -925,9 +905,7 @@ func writeRmFixtures(t *testing.T, main, wt string) {
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+projectName(main, wt)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wt, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services: {}\n")
 }
 
 func TestRmKeepsRegistryUpdatesMadeWhileDockerRuns(t *testing.T) {
@@ -973,5 +951,205 @@ func TestRmDoesNotSaveRegistryWhenDockerFails(t *testing.T) {
 	reg, _ = loadRegistry()
 	if reg.Worktrees[wt]["APP_PORT"] != 8123 {
 		t.Errorf("changed the registry when docker failed: %v", reg.Worktrees)
+	}
+}
+
+// realTempDir returns a temporary directory whose path has no links in it (macOS TempDir is under /var -> /private/var).
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	d, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// trySymlink creates a symbolic link and reports whether it exists. Only Windows may lack the right to create one;
+// elsewhere a failure is a real error, because skipping would let the symlink-refusal tests pass without running.
+func trySymlink(t *testing.T, oldname, newname string) bool {
+	t.Helper()
+	err := os.Symlink(oldname, newname)
+	if err == nil {
+		return true
+	}
+	if runtime.GOOS != "windows" {
+		t.Fatalf("cannot create symbolic links (required off Windows, see AGENTS.md): %v", err)
+	}
+	// Shown with -v or on failure: tell why the symlink-refusal check was not verified.
+	t.Logf("symbolic link check not verified: cannot create symbolic links here: %v", err)
+	return false
+}
+
+// symlinkOrSkip is trySymlink for a test that cannot run without the link: it skips on Windows only and fails
+// everywhere else.
+func symlinkOrSkip(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if !trySymlink(t, oldname, newname) {
+		t.Skip("cannot create symbolic links here")
+	}
+}
+
+// writeFile is for 0644 fixtures. Fixtures that must keep another mode (.env 0600, the sail script 0755 so that it is
+// executable) call os.WriteFile themselves, so do not fold them into this helper.
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// rmWorktree prepares a worktree that gets past every rm check but the compose one, with compose set to rel.
+func rmWorktree(t *testing.T, rel string) (wt string) {
+	t.Helper()
+	main, wt := setupWorktreeRepo(t)
+	writeFile(t, filepath.Join(wt, ".env"), "COMPOSE_PROJECT_NAME="+projectName(main, wt)+"\n")
+	cfg := fmt.Sprintf(`{"compose":%q,"port_vars":[{"name":"APP_PORT","default":80}]}`, rel)
+	writeFile(t, filepath.Join(wt, configName), cfg)
+	return wt
+}
+
+// expectRmRefusedBeforePrompt runs rm and checks the error, that stdin was not read and that no command ran.
+func expectRmRefusedBeforePrompt(t *testing.T, want string) {
+	t.Helper()
+	in := strings.NewReader("y\n")
+	old := stdin
+	stdin = in
+	t.Cleanup(func() { stdin = old })
+	calls := captureRunner(t)
+	err := cmdRm(nil)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want it to contain %q", err, want)
+	}
+	if in.Len() != 2 || len(*calls) != 0 {
+		t.Errorf("should refuse before the prompt but read stdin or ran a command: remaining=%d calls=%d", in.Len(), len(*calls))
+	}
+}
+
+// expectRmUsesComposeFile runs rm -y and checks the path given to -f.
+func expectRmUsesComposeFile(t *testing.T, want string) {
+	t.Helper()
+	calls := captureRunner(t)
+	if err := cmdRm([]string{"-y"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("number of calls = %d", len(*calls))
+	}
+	args := (*calls)[0].args
+	for i, a := range args {
+		if a == "-f" && i+1 < len(args) {
+			if args[i+1] != want {
+				t.Errorf("-f = %q, want %q", args[i+1], want)
+			}
+			return
+		}
+	}
+	t.Errorf("no -f in %v", args)
+}
+
+func TestRmRefusesComposeLinkedOutsideWorktree(t *testing.T) {
+	wt := rmWorktree(t, "compose.yaml")
+	outside := filepath.Join(realTempDir(t), "compose.yaml")
+	writeFile(t, outside, "services: {}\n")
+	symlinkOrSkip(t, outside, filepath.Join(wt, "compose.yaml"))
+	expectRmRefusedBeforePrompt(t, "resolves outside the worktree")
+}
+
+func TestRmRefusesComposeBehindLinkedDirectory(t *testing.T) {
+	wt := rmWorktree(t, "sub/compose.yaml")
+	outsideDir := realTempDir(t)
+	writeFile(t, filepath.Join(outsideDir, "compose.yaml"), "services: {}\n")
+	symlinkOrSkip(t, outsideDir, filepath.Join(wt, "sub"))
+	expectRmRefusedBeforePrompt(t, "resolves outside the worktree")
+}
+
+func TestRmRefusesComposeChainThatLeavesWorktree(t *testing.T) {
+	wt := rmWorktree(t, "a.yaml")
+	outside := filepath.Join(realTempDir(t), "compose.yaml")
+	writeFile(t, outside, "services: {}\n")
+	symlinkOrSkip(t, outside, filepath.Join(wt, "b.yaml"))
+	symlinkOrSkip(t, filepath.Join(wt, "b.yaml"), filepath.Join(wt, "a.yaml"))
+	expectRmRefusedBeforePrompt(t, "resolves outside the worktree")
+}
+
+func TestRmAcceptsComposeChainInsideWorktreeAndPassesRealPath(t *testing.T) {
+	wt := rmWorktree(t, "a.yaml")
+	real := filepath.Join(wt, "real", "compose.yaml")
+	writeFile(t, real, "services: {}\n")
+	symlinkOrSkip(t, real, filepath.Join(wt, "b.yaml"))
+	symlinkOrSkip(t, filepath.Join(wt, "b.yaml"), filepath.Join(wt, "a.yaml"))
+	// docker must get the checked real path, not the configured one (which would be resolved again).
+	if real == filepath.Join(wt, "a.yaml") {
+		t.Fatal("the test needs the real path to differ from the configured one")
+	}
+	expectRmUsesComposeFile(t, real)
+}
+
+func TestRmRefusesBrokenComposeLink(t *testing.T) {
+	wt := rmWorktree(t, "compose.yaml")
+	symlinkOrSkip(t, filepath.Join(wt, "missing.yaml"), filepath.Join(wt, "compose.yaml"))
+	expectRmRefusedBeforePrompt(t, "compose file not found")
+}
+
+func TestRmRefusesComposeLinkedToDirectory(t *testing.T) {
+	wt := rmWorktree(t, "compose.yaml")
+	if err := os.Mkdir(filepath.Join(wt, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	symlinkOrSkip(t, filepath.Join(wt, "dir"), filepath.Join(wt, "compose.yaml"))
+	expectRmRefusedBeforePrompt(t, "is not a regular file")
+}
+
+func TestRmThroughWorktreeAliasIsNotRefused(t *testing.T) {
+	wt := rmWorktree(t, "compose.yaml")
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services: {}\n")
+	alias := filepath.Join(realTempDir(t), "alias")
+	symlinkOrSkip(t, wt, alias)
+	t.Chdir(alias)
+	expectRmUsesComposeFile(t, filepath.Join(wt, "compose.yaml"))
+}
+
+func TestComposeInsideWorktree(t *testing.T) {
+	root := realTempDir(t)
+	writeFile(t, filepath.Join(root, "compose.yaml"), "services: {}\n")
+	writeFile(t, filepath.Join(root, "..foo.yaml"), "services: {}\n")
+	writeFile(t, filepath.Join(root, "..d", "compose.yaml"), "services: {}\n")
+	writeFile(t, filepath.Join(filepath.Dir(root), "outside.yaml"), "services: {}\n")
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const notRegular = "is not a regular file"
+	const notRegularHint = "point compose at a regular file inside the worktree"
+	cases := []struct {
+		name, rel, want string // want is an error substring; empty means accepted
+	}{
+		{"regular file", "compose.yaml", ""},
+		{"name that starts with two dots", "..foo.yaml", ""},
+		{"directory that starts with two dots", filepath.Join("..d", "compose.yaml"), ""},
+		{"missing file", "missing.yaml", "compose file not found"},
+		{"directory", "dir", notRegular},
+		{"the worktree itself", ".", notRegular},
+		{"parent directory", "..", "resolves outside the worktree"},
+		{"file in the parent directory", filepath.Join("..", "outside.yaml"), "resolves outside the worktree"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := composeInsideWorktree(root, c.rel)
+			if c.want == "" {
+				if err != nil || got != filepath.Join(root, c.rel) {
+					t.Errorf("got %q, %v; want the file itself", got, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("error = %v, want it to contain %q", err, c.want)
+			}
+			if c.want == notRegular && !strings.Contains(err.Error(), notRegularHint) {
+				t.Errorf("error = %v, want it to say how to recover: %q", err, notRegularHint)
+			}
+		})
 	}
 }

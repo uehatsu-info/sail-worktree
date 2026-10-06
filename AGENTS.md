@@ -31,7 +31,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `version`. See `README.md` 
 | `main.go` | Command dispatch, usage text, `version` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, error messages, `cleanEnv`/`filterEnv` |
 | `env.go` | `.env` parsing and writing, port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular` |
-| `config.go` | `.sail-worktree.json` (project config), the port registry, `unsafeComposePath`, `Registry.migrate` |
+| `config.go` | `.sail-worktree.json` (project config), the port registry, `unsafeComposePath`, `composeInsideWorktree`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and main worktree detection (real paths) |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
@@ -51,8 +51,12 @@ gofmt -l .                      # must print nothing
 ```
 
 CI runs `gofmt`, `go vet`, `go mod tidy` (no diff), a build of every release target, and `go test ./...` on
-ubuntu, macOS and Windows. Windows really runs the tests, so write tests that also work there (skip when symlinks
-cannot be created, avoid unix-only paths outside `links_unix_test.go`).
+ubuntu, macOS and Windows. Windows really runs the tests, so write tests that also work there (avoid unix-only paths
+outside `links_unix_test.go`). We assume that only Windows may lack the right to create symbolic links, so create them
+with `symlinkOrSkip` (skips on Windows only, fails elsewhere) or, for an optional extra check, `trySymlink` (returns
+false on Windows only, fails elsewhere), and never call `t.Skip` on an `os.Symlink` or `Mkfifo` error yourself. A Unix
+environment that forbids links or FIFOs therefore fails these tests by design, and a Windows runner without the right
+does not verify the symlink-refusal paths (nor the optional link check in the `readEnvIfRegular` test).
 
 ## Conventions
 
@@ -79,6 +83,15 @@ These come from deliberate decisions; change them only on purpose and update the
   match exactly. Every refusing check runs *before* the confirmation prompt. It pins `--project-name`,
   `--project-directory` and `-f`, and runs without `COMPOSE_*` from the environment. Values from `.env` are untrusted:
   they are shown with `%+q`, and only names matching `safeProjectName` are put into a suggested shell command.
+  The compose file is resolved through its links (`composeInsideWorktree`) and refused unless its real path is a
+  regular file inside the worktree; `-f` gets that real path, so do not "simplify" it back to `Join(root, compose)`.
+  Only `rm` has this check: `up`, `stop` and `init` do not run docker with `-f` (Sail finds the file itself), so their
+  `os.Stat` is not a regression. Limits: Windows junctions are not followed (Go 1.23+ `EvalSymlinks`), a link swapped
+  after the check is not caught, and what the compose file refers to is not checked (relative `include:` and `extends:`
+  paths of a file reached through a link are resolved from its target's directory). A compose file that is a hard link
+  to a file outside the worktree is not detected, by choice: a path check cannot see one, only the link count could, and
+  compose files are sometimes shared that way. A plain checkout cannot create one because git stores no hard links, but a
+  script or the user can. Hard-link detection exists only for `.env`, and only on Unix.
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
   case-insensitively) from the environment passed to `sail` and `docker`. It must never return `nil`: a `nil`
   `exec.Cmd.Env` inherits the whole parent environment.
@@ -94,7 +107,8 @@ These come from deliberate decisions; change them only on purpose and update the
 - **Sail sources `.env`.** `vendor/bin/sail` runs `source ./.env` (or `.env.$APP_ENV`), so `.env` is executed as shell
   code. `stop` does not refuse a symlinked `.env` for this reason: calling `sail` directly has the same exposure.
 - `compose` in `.sail-worktree.json` must be a relative path inside the worktree (`unsafeComposePath`), including on
-  Windows forms such as `C:x`, `\\srv\x` and `/x`.
+  Windows forms such as `C:x`, `\\srv\x` and `/x`. That check only reads the string; `rm` also checks the real path
+  with `composeInsideWorktree` (see "`rm` is guarded").
 
 ## Testing notes
 

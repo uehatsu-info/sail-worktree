@@ -38,12 +38,35 @@ func loadConfig(root string) (*Config, error) {
 // unsafeComposePath reports whether the compose value is not a relative path inside the worktree. It is passed to
 // rm's -f, so besides empty, absolute and ".." paths it also rejects forms that point at a drive or a server on
 // Windows ("C:x", "\\srv\x") and rooted paths without a drive letter ("/x", "\x": filepath.IsAbs is false for them).
+// It only reads the string; composeInsideWorktree checks where the file really is.
 func unsafeComposePath(p string) bool {
 	if p == "" || filepath.IsAbs(p) || filepath.VolumeName(p) != "" || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
 		return true
 	}
 	cl := filepath.Clean(p)
 	return cl == "." || cl == ".." || strings.HasPrefix(cl, ".."+string(filepath.Separator))
+}
+
+// composeInsideWorktree resolves the compose file under root (a real path) through every link and returns the real
+// path that rm passes to -f: down -v cannot be undone, so a link that leaves the worktree must not choose the file.
+// Only rm calls it; up, stop and init do not run docker with -f and keep findCompose's os.Stat.
+// Limits: EvalSymlinks does not follow Windows junctions (Go 1.23+), so they are not detected, and a link swapped
+// after the check is not caught (best effort).
+func composeInsideWorktree(root, rel string) (string, error) {
+	joined := filepath.Join(root, rel)
+	resolved, err := realPath(joined)
+	if err != nil {
+		return "", fmt.Errorf("compose file not found: %+q: %w", joined, err)
+	}
+	// Rel is lexical, and "..foo" is a legitimate name, so compare with ".." and ".."+separator only.
+	r, err := filepath.Rel(root, resolved)
+	if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("compose file %+q resolves outside the worktree (%+q); replace the link with a real file or a link whose target is inside the worktree", rel, resolved)
+	}
+	if fi, err := os.Stat(resolved); err != nil || !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("compose file %+q is not a regular file (%+q); point compose at a regular file inside the worktree", rel, resolved)
+	}
+	return resolved, nil
 }
 
 func findCompose(root string) (string, error) {

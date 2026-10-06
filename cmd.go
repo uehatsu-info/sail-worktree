@@ -286,9 +286,10 @@ func cmdRm(args []string) error {
 		return nameMismatchError(proj, want)
 	}
 	// Do every refusing check before the confirmation prompt (never refuse after the user answered y).
-	composePath := filepath.Join(c.root, c.cfg.Compose)
-	if fi, err := os.Stat(composePath); err != nil || !fi.Mode().IsRegular() {
-		return fmt.Errorf("compose file not found: %s", composePath)
+	// -f gets the checked real path, not the configured one, so docker does not resolve the links again.
+	composePath, err := composeInsideWorktree(c.root, c.cfg.Compose)
+	if err != nil {
+		return err
 	}
 	// This read only detects a broken registry before anything is removed (the value is unused). The registry is read
 	// again after docker for the release. Do not remove it.

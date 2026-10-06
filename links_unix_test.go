@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestCheckOwnEnvRejectsHardLink(t *testing.T) {
+func TestCheckOwnEnvRefusesHardLink(t *testing.T) {
 	dir := t.TempDir()
 	real := filepath.Join(dir, "real")
 	if err := os.WriteFile(real, []byte("A=1\n"), 0o600); err != nil {
@@ -40,9 +40,7 @@ func TestOpenNoFollowRefusesSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := filepath.Join(dir, "sym")
-	if err := os.Symlink(real, link); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, real, link)
 	if f, err := os.OpenFile(link, os.O_WRONLY|openNoFollow, 0o600); err == nil {
 		f.Close()
 		t.Error("O_NOFOLLOW followed a symbolic link")
@@ -55,7 +53,9 @@ func TestOpenNoFollowRefusesSymlink(t *testing.T) {
 func TestReadEnvIfRegularDoesNotBlockOnFIFO(t *testing.T) {
 	p := filepath.Join(t.TempDir(), ".env")
 	if err := syscall.Mkfifo(p, 0o600); err != nil {
-		t.Skip(err)
+		// A skip would let the FIFO check pass without running. A filesystem that cannot hold a FIFO (FUSE, a network
+		// mount, FAT) under TMPDIR is the likely cause.
+		t.Fatalf("cannot create a FIFO (set TMPDIR to a filesystem that supports them): %v", err)
 	}
 	done := make(chan bool, 1)
 	go func() { _, ok := readEnvIfRegular(p); done <- ok }()
