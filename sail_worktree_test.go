@@ -282,9 +282,7 @@ func setupWorktreeRepo(t *testing.T) (main, wt string) {
 	}
 	runGit(t, main, "init", "-q", "-b", "main")
 	cfg := `{"compose":"compose.yaml","port_vars":[{"name":"APP_PORT","default":80}]}`
-	if err := os.WriteFile(filepath.Join(main, configName), []byte(cfg), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(main, configName), cfg)
 	runGit(t, main, "add", ".")
 	runGit(t, main, "commit", "-q", "-m", "init")
 	runGit(t, main, "worktree", "add", "-q", wt, "-b", "feat")
@@ -507,17 +505,13 @@ func TestLoadConfigRejectsUnsafeCompose(t *testing.T) {
 	for _, c := range bad {
 		dir := t.TempDir()
 		b := `{"compose":` + strconvQuote(c) + `,"port_vars":[]}`
-		if err := os.WriteFile(filepath.Join(dir, configName), []byte(b), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeFile(t, filepath.Join(dir, configName), b)
 		if _, err := loadConfig(dir); err == nil {
 			t.Errorf("compose=%q is not refused", c)
 		}
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, configName), []byte(`{"compose":"docker/compose.yaml","port_vars":[]}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(dir, configName), `{"compose":"docker/compose.yaml","port_vars":[]}`)
 	if _, err := loadConfig(dir); err != nil {
 		t.Errorf("a relative path is allowed: %v", err)
 	}
@@ -554,9 +548,7 @@ func TestRmPassesPinnedArguments(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wt, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services: {}\n")
 	t.Setenv("COMPOSE_FILE", "/evil.yaml")
 	calls := captureRunner(t)
 	if err := cmdRm([]string{"-y"}); err != nil {
@@ -582,9 +574,7 @@ func TestRmPassesPinnedArguments(t *testing.T) {
 
 func TestUpWritesEnvAndCleansSailEnvironment(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	if err := os.WriteFile(filepath.Join(main, ".env"), []byte("APP_URL=http://localhost\nSESSION_COOKIE=old\nSESSION_COOKIE=older\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(main, ".env"), "APP_URL=http://localhost\nSESSION_COOKIE=old\nSESSION_COOKIE=older\n")
 	if err := os.MkdirAll(filepath.Join(wt, "vendor", "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -878,20 +868,13 @@ func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wt, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services: {}\n")
 	// A broken registry fails without using docker or stdin.
 	p, err := registryPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, []byte("{broken"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, p, "{broken")
 	in := strings.NewReader("y\n")
 	old := stdin
 	stdin = in
@@ -922,9 +905,7 @@ func writeRmFixtures(t *testing.T, main, wt string) {
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+projectName(main, wt)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(wt, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services: {}\n")
 }
 
 func TestRmKeepsRegistryUpdatesMadeWhileDockerRuns(t *testing.T) {
