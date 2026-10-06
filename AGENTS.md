@@ -83,7 +83,8 @@ These come from deliberate decisions; change them only on purpose and update the
   regular file inside the worktree; `-f` gets that real path, so do not "simplify" it back to `Join(root, compose)`.
   Only `rm` has this check: `up`, `stop` and `init` do not run docker with `-f` (Sail finds the file itself), so their
   `os.Stat` is not a regression. Limits: Windows junctions are not followed (Go 1.23+ `EvalSymlinks`), a link swapped
-  after the check is not caught, and what the compose file refers to is not checked.
+  after the check is not caught, and what the compose file refers to is not checked (relative `include:` and
+  `extends:` paths of a file reached through a link are resolved from its target's directory).
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
   case-insensitively) from the environment passed to `sail` and `docker`. It must never return `nil`: a `nil`
   `exec.Cmd.Env` inherits the whole parent environment.
