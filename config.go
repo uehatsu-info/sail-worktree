@@ -51,7 +51,8 @@ func unsafeComposePath(p string) bool {
 // composeInsideProject resolves the compose file under root (the project directory, a real path) through every link
 // and returns the real path that rm passes to -f: down -v cannot be undone, so a link that leaves the project directory
 // must not choose the file.
-// Only rm calls it; up, stop and init do not run docker with -f and keep findMarker's os.Stat.
+// Only rm calls it: up, stop and init do not run docker with -f (init stats and reads the compose file, up and stop
+// stat compose names only for a not-found hint).
 // Limits: EvalSymlinks does not follow Windows junctions (Go 1.23+), so they are not detected, and a link swapped
 // after the check is not caught (best effort).
 func composeInsideProject(root, rel string) (string, error) {

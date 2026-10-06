@@ -89,7 +89,7 @@ composer install
 sail-worktree up -d
 ```
 
-- The branch you check out must contain the committed `.sail-worktree.json` (a branch created before that commit does not have it; merge or rebase it first).
+- The branch you check out must contain the committed `.sail-worktree.json` (a branch created before that commit does not have it: merge that commit into the branch, or rebase the branch onto it, first).
 - The main worktree needs the project at the same relative path: `up` copies `.env` from `<main worktree>/laravel/.env` (or `.env.example`). That directory must not resolve outside the main worktree (followed through symbolic links; Windows junctions are not followed). Only the directory is checked: a `.env` there that is itself a link is followed, as for a project at the root.
 - A project directory that resolves outside the worktree is an error. As with the compose check, a link swapped in after these checks is not caught.
 - When you run `up`, `stop` or `rm` below the project directory (for example in `laravel/app`), it prints `project directory: "<path>"` to stderr.

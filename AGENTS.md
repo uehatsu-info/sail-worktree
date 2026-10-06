@@ -91,13 +91,14 @@ These come from deliberate decisions; change them only on purpose and update the
   The compose file is resolved through its links (`composeInsideProject`) and refused unless its real path is a regular
   file inside the project directory; `-f` gets that real path, so do not "simplify" it back to `Join(root, compose)`.
   Only `rm` has this check: `up`, `stop` and `init` do not run docker with `-f` (Sail finds the file itself), so `init`
-  stats it only in `findMarker` and `up`/`stop` do not touch it, which is not a regression. Limits: Windows junctions
-  are not followed (Go 1.23+ `EvalSymlinks`), a link swapped after the check is not caught, and what the compose file
-  refers to is not checked (relative `include:` and `extends:` paths of a file reached through a link are resolved from
-  its target's directory). A compose file that is a hard link to a file outside the project directory is not detected,
-  by choice: a path check cannot see one, only the link count could, and compose files are sometimes shared that way. A
-  plain checkout cannot create one because git stores no hard links, but a script or the user can. Hard-link detection
-  exists only for the files this tool writes (`.env`, `.sail-worktree.json`), and only on Unix.
+  only stats it in `findMarker` and reads it, and `up`/`stop` stat compose names only for the hint in a not-found error;
+  that is not a regression. Limits: Windows junctions are not followed (Go 1.23+ `EvalSymlinks`), a link swapped after
+  the check is not caught, and what the compose file refers to is not checked (relative `include:` and `extends:` paths
+  of a file reached through a link are resolved from its target's directory). A compose file that is a hard link to a
+  file outside the project directory is not detected, by choice: a path check cannot see one, only the link count could,
+  and compose files are sometimes shared that way. A plain checkout cannot create one because git stores no hard links,
+  but a script or the user can. Hard-link detection exists only for the files this tool writes (`.env`,
+  `.sail-worktree.json`), and only on Unix.
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
   case-insensitively) from the environment passed to `sail` and `docker`. It must never return `nil`: a `nil`
   `exec.Cmd.Env` inherits the whole parent environment.
