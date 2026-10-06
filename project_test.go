@@ -64,6 +64,7 @@ func TestProjectCandidates(t *testing.T) {
 		{"a/../../b/", nil},
 		{"a//b/", nil},
 		{"./a/", nil},
+		{"/", nil},
 	}
 	for _, c := range cases {
 		got, err := projectCandidates(top, c.prefix)
@@ -259,6 +260,9 @@ func TestUpInSubdirProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if v, _ := e.Get("APP_URL"); !strings.HasPrefix(v, "http://localhost:") {
+		t.Errorf("APP_URL=%q (not copied from the main worktree's laravel/.env)", v)
+	}
 	if v, _ := e.Get("COMPOSE_PROJECT_NAME"); v != projectName(main, wt, root) || !strings.HasPrefix(v, "app-app-feat-") {
 		t.Errorf("COMPOSE_PROJECT_NAME=%q", v)
 	}
@@ -429,9 +433,7 @@ func TestMainCounterpartOutsideMainWorktreeIsRefused(t *testing.T) {
 	main, wt := setupSubdirWorktreeRepo(t, true)
 	outside := realTempDir(t)
 	writeFile(t, filepath.Join(outside, ".env"), "APP_KEY=secret\n")
-	if !trySymlink(t, outside, filepath.Join(main, "laravel")) {
-		return
-	}
+	symlinkOrSkip(t, outside, filepath.Join(main, "laravel"))
 	writeFakeSail(t, filepath.Join(wt, "laravel"))
 	calls := captureRunner(t)
 	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "resolves outside the main worktree") {
@@ -439,5 +441,23 @@ func TestMainCounterpartOutsideMainWorktreeIsRefused(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(wt, "laravel", ".env")); !os.IsNotExist(err) || len(*calls) != 0 {
 		t.Errorf(".env was written or sail ran: %v, %v", err, *calls)
+	}
+}
+
+func TestWithin(t *testing.T) {
+	base := filepath.Join(realTempDir(t), "wt")
+	for rel, want := range map[string]bool{
+		".":                            true,
+		"a":                            true,
+		"..foo":                        true,
+		filepath.Join("a", ".."):       true,
+		"..":                           false,
+		filepath.Join("..", "x"):       false,
+		filepath.Join("..", "wt2"):     false,
+		filepath.Join("a", "..", ".."): false,
+	} {
+		if got := within(base, filepath.Join(base, rel)); got != want {
+			t.Errorf("within(base, base/%s) = %v", rel, got)
+		}
 	}
 }

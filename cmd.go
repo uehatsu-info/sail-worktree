@@ -74,11 +74,11 @@ func loadCtx() (*ctx, error) {
 	if err != nil {
 		return nil, err
 	}
-	root, cand, found, err := findProject(wtTop, prefix, []string{configName})
+	root, cand, err := findProject(wtTop, prefix, []string{configName})
 	if err != nil {
 		return nil, err
 	}
-	if !found {
+	if cand == nil {
 		return nil, configNotFoundError(wtTop, prefix)
 	}
 	main, err := counterpart(mainTop, cand.rel)
@@ -145,7 +145,10 @@ func cmdUp(args []string) error {
 			env, err = readEnv(filepath.Join(c.main, ".env.example"))
 		}
 		if err != nil {
-			return fmt.Errorf("cannot read the source .env from the main worktree's project directory %q (the main worktree needs the project at the same relative path): %w", c.main, err)
+			if c.main != c.mainTop {
+				return fmt.Errorf("cannot read the source .env from the main worktree's project directory %q (the main worktree needs the project at the same relative path): %w", c.main, err)
+			}
+			return fmt.Errorf("cannot read the source .env from the main worktree: %w", err)
 		}
 		fmt.Println("creating .env (copied from the main worktree)")
 	} else if err != nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -38,11 +39,11 @@ func skippedDir(name string) bool {
 // prefix are checked for vendor and node_modules, so a worktree that itself lives under a "vendor" directory works.
 // Every candidate is checked to be inside wtTop before anything looks at it.
 func projectCandidates(wtTop, prefix string) ([]candidate, error) {
+	if strings.HasPrefix(prefix, "/") {
+		return nil, fmt.Errorf("unexpected path from git: %q", prefix)
+	}
 	var elems []string
 	if p := strings.TrimSuffix(prefix, "/"); p != "" {
-		if strings.HasPrefix(p, "/") {
-			return nil, fmt.Errorf("unexpected path from git: %q", prefix)
-		}
 		elems = strings.Split(p, "/")
 	}
 	for _, e := range elems {
@@ -89,37 +90,38 @@ func findMarker(dir string, names []string) (string, bool, error) {
 }
 
 // findProject returns the real path of the nearest candidate that holds one of names, and the candidate itself.
-// found is false when no candidate has one.
-func findProject(wtTop, prefix string, names []string) (root string, c candidate, found bool, err error) {
+// The candidate is nil when none has one.
+func findProject(wtTop, prefix string, names []string) (string, *candidate, error) {
 	cands, err := projectCandidates(wtTop, prefix)
 	if err != nil {
-		return "", candidate{}, false, err
+		return "", nil, err
 	}
-	for _, c := range cands {
-		_, ok, err := findMarker(c.dir, names)
+	for i := range cands {
+		_, ok, err := findMarker(cands[i].dir, names)
 		if err != nil {
-			return "", candidate{}, false, err
+			return "", nil, err
 		}
 		if !ok {
 			continue
 		}
 		// The candidate is built from real paths already; resolving it again normalizes what git may leave as typed
 		// (case and short names on Windows), so the hash in the project name is stable.
-		root, err := realPath(c.dir)
+		root, err := realPath(cands[i].dir)
 		if err != nil {
-			return "", candidate{}, false, err
+			return "", nil, err
 		}
 		if !within(wtTop, root) {
-			return "", candidate{}, false, fmt.Errorf("the project directory %q resolves outside the worktree %q", c.dir, wtTop)
+			return "", nil, fmt.Errorf("the project directory %q resolves outside the worktree %q", cands[i].dir, wtTop)
 		}
-		return root, c, true, nil
+		return root, &cands[i], nil
 	}
-	return "", candidate{}, false, nil
+	return "", nil, nil
 }
 
 // subdirsWith lists the direct subdirectories of the cwd's directory and of wtTop that hold one of names, relative to
 // wtTop, for the hint in a not-found error. Only plain directories are entered (no links, no Windows junctions);
-// vendor, node_modules and .git are skipped. It is best effort: errors only shorten the list.
+// vendor, node_modules and .git are skipped. A marker that is itself a link is still followed, as when reading it. It
+// is best effort: errors only shorten the list.
 func subdirsWith(wtTop, prefix string, names []string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -168,7 +170,7 @@ func configNotFoundError(wtTop, prefix string) error {
 	} else if dirs := subdirsWith(wtTop, prefix, composeNames); len(dirs) > 0 {
 		msg += fmt.Sprintf("\na compose file found in: %s (run `sail-worktree init` there first)", quoteList(dirs))
 	}
-	return fmt.Errorf("%s", msg)
+	return errors.New(msg)
 }
 
 // counterpart returns the main worktree's directory at the same relative path as the project directory. It may not
