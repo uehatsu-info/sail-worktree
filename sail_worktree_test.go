@@ -1214,3 +1214,36 @@ func TestPrintErrEscapes(t *testing.T) {
 		t.Errorf("printErr wrote %+q, want %+q", got, want)
 	}
 }
+
+func TestWriteFileNoFollowRefusesLinksAndDirectories(t *testing.T) {
+	dir := realTempDir(t)
+	if err := os.Mkdir(filepath.Join(dir, "d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileNoFollow(filepath.Join(dir, "d"), []byte("x"), 0o600); err == nil {
+		t.Error("wrote to a directory")
+	}
+	target := filepath.Join(dir, "target")
+	writeFile(t, target, "keep\n")
+	link := filepath.Join(dir, "link")
+	symlinkOrSkip(t, target, link)
+	if err := writeFileNoFollow(link, []byte("x"), 0o600); err == nil {
+		t.Error("wrote through a symbolic link")
+	}
+	if b, _ := os.ReadFile(target); string(b) != "keep\n" {
+		t.Errorf("link target was rewritten: %q", b)
+	}
+}
+
+func TestWriteFileNoFollowCreatesAndReplaces(t *testing.T) {
+	p := filepath.Join(realTempDir(t), "f")
+	if err := writeFileNoFollow(p, []byte("long content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileNoFollow(p, []byte("short\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "short\n" {
+		t.Errorf("content = %q (not truncated)", b)
+	}
+}
