@@ -20,8 +20,8 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `version`. See `README.md` 
   developers who do not read Japanese.
 - **The only exception is `README_JA.md`**, which is a Japanese translation of `README.md`. When you change
   `README.md`, change `README_JA.md` to match (same sections, same facts).
-- Do not add Japanese anywhere else. Code points such as `"名前"` in tests are fine when a test needs
-  non-ASCII input.
+- Do not add Japanese anywhere else. When a test needs non-ASCII input, write it as a Go escape sequence
+  (for example `"\u00e9"`) instead of a literal character.
 - The existing commit history before `v0.3.0` is in Japanese. Do not rewrite it.
 
 ## Layout
