@@ -341,14 +341,21 @@ func runSail(root string, cfg *Config, args []string) error {
 // cleanEnv は現在の環境から、COMPOSE_ で始まる全ての変数・SAIL_FILES・drop の変数を外した環境を返す
 // (別の compose ファイル・プロジェクトを指し得るため)。DOCKER_HOST 等は意図して使う利用者がいるので外さない。
 // これは環境変数の除去で、.env のキーを拒否する upOverrideKeys / rmOverrideKeys とは別の仕組み。
-func cleanEnv(drop []string) []string {
+func cleanEnv(drop []string) []string { return filterEnv(os.Environ(), drop) }
+
+// filterEnv は environ から cleanEnv の対象を外す。名前は大文字小文字を区別せずに比べる
+// (Windows の環境変数名は区別されないため。unix で小文字の compose_ まで外れるのは安全側)。
+// 結果は、全て外れたときも nil にしない: exec.Cmd の Env が nil だと親の環境を丸ごと継承してしまう。
+// Windows の "=C:=C:\..." のような名前が空の変数は残す。
+func filterEnv(environ, drop []string) []string {
 	skip := map[string]bool{"SAIL_FILES": true}
 	for _, k := range drop {
-		skip[k] = true
+		skip[strings.ToUpper(k)] = true
 	}
-	var out []string
-	for _, kv := range os.Environ() {
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
 		k, _, _ := strings.Cut(kv, "=")
+		k = strings.ToUpper(k)
 		if !skip[k] && !strings.HasPrefix(k, "COMPOSE_") {
 			out = append(out, kv)
 		}

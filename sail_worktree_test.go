@@ -191,6 +191,22 @@ func TestCleanEnv(t *testing.T) {
 	}
 }
 
+func TestFilterEnv(t *testing.T) {
+	environ := []string{"compose_file=x", "Compose_Project_Name=y", "sail_files=z", "app_port=1", "KEEP=1", "=C:=C:\\", "PATH=/bin"}
+	got := filterEnv(environ, []string{"APP_PORT"})
+	want := []string{"KEEP=1", "=C:=C:\\", "PATH=/bin"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("got %v want %v", got, want)
+	}
+	// 全て外れても nil にしない (nil だと exec.Cmd が親の環境を継承する)。
+	if got := filterEnv([]string{"COMPOSE_FILE=x"}, nil); got == nil || len(got) != 0 {
+		t.Errorf("空の結果が nil: %#v", got)
+	}
+	if got := filterEnv(nil, nil); got == nil {
+		t.Error("入力が空のとき nil")
+	}
+}
+
 func TestPortFreeDetectsLoopbackOnly(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -266,7 +282,7 @@ func TestNameMismatchErrorGuidance(t *testing.T) {
 	}
 	// 番号付きの手順で、取り返しがつかない注意が実行コマンドより前にある。
 	idx := func(s string) int { return strings.Index(msg, s) }
-	if !(idx("1. ") < idx("2. ") && idx("2. ") < idx("3. ") && idx("取り返しがつきません") < idx("docker compose -p old-name")) {
+	if !(idx("\n  1. ") >= 0 && idx("\n  1. ") < idx("\n  2. ") && idx("\n  2. ") < idx("\n  3. ") && idx("取り返しがつきません") < idx("docker compose -p old-name")) {
 		t.Errorf("手順の順序が崩れている: %s", msg)
 	}
 }
