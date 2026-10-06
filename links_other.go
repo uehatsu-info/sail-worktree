@@ -4,5 +4,7 @@ package main
 
 import "os"
 
-// unix 以外ではハードリンク数を調べない。
+// unix 以外では O_NOFOLLOW もハードリンク数の検査もない (Lstat の検査だけ)。
+const openNoFollow = 0
+
 func hasMultipleLinks(os.FileInfo) bool { return false }

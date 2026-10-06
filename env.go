@@ -66,7 +66,9 @@ func keyOf(line string) (string, bool) {
 	if t == "" || strings.HasPrefix(t, "#") {
 		return "", false
 	}
-	t = strings.TrimPrefix(t, "export ")
+	if rest, ok := strings.CutPrefix(t, "export"); ok && rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
+		t = strings.TrimSpace(rest)
+	}
 	k, _, ok := strings.Cut(t, "=")
 	if !ok {
 		return "", false
@@ -84,19 +86,25 @@ func (e *envFile) Get(key string) (string, bool) {
 	return "", false
 }
 
-// Set は同じキーの行を全て置き換える (Sail は最後の値・Laravel の Dotenv は最初の値を使うので、
-// 重複行が残ると両者の値が割れる)。無ければ追記する。
+// Set は同じキーの最初の行を置き換え、重複する後ろの行は取り除く (Sail は最後の値・Laravel の Dotenv は
+// 最初の値を使うので、重複行が残ると両者の値が割れる)。無ければ追記する。
 func (e *envFile) Set(key, value string) {
+	out := e.lines[:0:0]
 	found := false
-	for i, l := range e.lines {
+	for _, l := range e.lines {
 		if k, ok := keyOf(l); ok && k == key {
-			e.lines[i] = key + "=" + value
+			if found {
+				continue
+			}
 			found = true
+			l = key + "=" + value
 		}
+		out = append(out, l)
 	}
 	if !found {
-		e.lines = append(e.lines, key+"="+value)
+		out = append(out, key+"="+value)
 	}
+	e.lines = out
 }
 
 // Write は .env を書き出す。書き込み前に checkOwnEnv を通す。
@@ -109,15 +117,26 @@ func (e *envFile) Write(path string) error {
 	if !strings.HasSuffix(s, "\n") {
 		s += "\n"
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	// O_TRUNC は検査の前に切り詰めてしまうので、開いた後に検査してから Truncate する。
+	// O_NOFOLLOW (unix) で、Lstat から open までの間にシンボリックリンクへ差し替えられても辿らない。
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|openNoFollow, 0o600)
 	if err != nil {
 		return err
 	}
-	if _, err := f.WriteString(s); err != nil {
-		f.Close()
-		return err
+	fi, err := f.Stat()
+	if err == nil && (!fi.Mode().IsRegular() || hasMultipleLinks(fi)) {
+		err = fmt.Errorf("%s は通常のファイルでないか、ほかのファイルとハードリンクされています", path)
 	}
-	return f.Close()
+	if err == nil {
+		err = f.Truncate(0)
+	}
+	if err == nil {
+		_, err = f.WriteString(s)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // checkOwnEnv はワークツリー自身の .env を読み書きしてよいか確かめる。

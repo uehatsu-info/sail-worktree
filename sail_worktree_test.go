@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -75,20 +77,19 @@ func TestSessionCookieName(t *testing.T) {
 	}
 }
 
-func TestEnvSetReplacesAllDuplicates(t *testing.T) {
+func TestEnvSetCollapsesDuplicates(t *testing.T) {
 	e := &envFile{lines: []string{"APP_PORT=80", "X=1", "export APP_PORT=90", "APP_PORT=95"}}
 	e.Set("APP_PORT", "81")
-	for _, l := range e.lines {
-		if k, ok := keyOf(l); ok && k == "APP_PORT" && l != "APP_PORT=81" {
-			t.Errorf("置き換わっていない行: %q", l)
-		}
-	}
-	if len(e.lines) != 4 {
-		t.Errorf("行数が変わった: %v", e.lines)
+	want := []string{"APP_PORT=81", "X=1"}
+	if strings.Join(e.lines, "|") != strings.Join(want, "|") {
+		t.Errorf("got %v want %v", e.lines, want)
 	}
 }
 
 func TestEnvWriteMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows にはファイルのパーミッションの 0600 がない")
+	}
 	dir := t.TempDir()
 	p := filepath.Join(dir, ".env")
 	e := &envFile{lines: []string{"A=1"}}
@@ -136,16 +137,6 @@ func TestCheckOwnEnv(t *testing.T) {
 	if b, _ := os.ReadFile(real); string(b) != "A=1\n" {
 		t.Errorf("リンク先が書き換わった: %q", b)
 	}
-	hard := filepath.Join(dir, "hard")
-	if err := os.Link(real, hard); err != nil {
-		t.Fatal(err)
-	}
-	if !hasMultipleLinks(mustStat(t, hard)) {
-		t.Skip("このプラットフォームはハードリンク数を調べない")
-	}
-	if err := checkOwnEnv(hard); err == nil {
-		t.Error("ハードリンクを拒否していない")
-	}
 }
 
 func mustStat(t *testing.T, p string) os.FileInfo {
@@ -171,10 +162,12 @@ func TestCheckNoComposeOverrides(t *testing.T) {
 func TestCleanEnv(t *testing.T) {
 	t.Setenv("COMPOSE_FILE", "/evil.yaml")
 	t.Setenv("COMPOSE_PROJECT_NAME", "other")
+	t.Setenv("COMPOSE_PATH_SEPARATOR", ";")
+	t.Setenv("SAIL_FILES", "x")
 	t.Setenv("APP_PORT", "9999")
 	t.Setenv("KEEP_ME", "1")
 	got := strings.Join(cleanEnv([]string{"APP_PORT"}), "\n")
-	for _, k := range []string{"COMPOSE_FILE=", "COMPOSE_PROJECT_NAME=", "APP_PORT="} {
+	for _, k := range []string{"COMPOSE_FILE=", "COMPOSE_PROJECT_NAME=", "COMPOSE_PATH_SEPARATOR=", "SAIL_FILES=", "APP_PORT="} {
 		if strings.Contains(got, k) {
 			t.Errorf("%s が残っている", k)
 		}
@@ -200,15 +193,19 @@ func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
 
 // メインと worktree を作って worktree に移動する。
+// 実ユーザーのレジストリ・設定を読み書きしないよう、HOME と XDG_CONFIG_HOME を一時ディレクトリへ向ける。
 func setupWorktreeRepo(t *testing.T) (main, wt string) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -289,5 +286,162 @@ func TestProjectNameIsStableAcrossSymlinkedPaths(t *testing.T) {
 	}
 	if projectName(main, root) != projectName(main, wt) {
 		t.Error("呼び出し経路でプロジェクト名が変わる")
+	}
+}
+
+func TestKeyOfHandlesExportWithTab(t *testing.T) {
+	for _, l := range []string{"export COMPOSE_FILE=x", "export\tCOMPOSE_FILE=x", "  export   COMPOSE_FILE = x"} {
+		if k, ok := keyOf(l); !ok || k != "COMPOSE_FILE" {
+			t.Errorf("%q: key=%q ok=%v", l, k, ok)
+		}
+	}
+	if k, _ := keyOf("exported=1"); k != "exported" {
+		t.Errorf("export で始まるだけのキー: %q", k)
+	}
+}
+
+func TestLoadConfigRejectsUnsafeCompose(t *testing.T) {
+	for _, c := range []string{"", "/etc/compose.yaml", "../compose.yaml", "a/../../compose.yaml", "."} {
+		dir := t.TempDir()
+		b := `{"compose":` + strconvQuote(c) + `,"port_vars":[]}`
+		if err := os.WriteFile(filepath.Join(dir, configName), []byte(b), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadConfig(dir); err == nil {
+			t.Errorf("compose=%q を拒否していない", c)
+		}
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, configName), []byte(`{"compose":"docker/compose.yaml","port_vars":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(dir); err != nil {
+		t.Errorf("相対パスは許す: %v", err)
+	}
+}
+
+func strconvQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+type call struct {
+	dir  string
+	env  []string
+	name string
+	args []string
+}
+
+// runner を差し替えて呼び出しを記録する。
+func captureRunner(t *testing.T) *[]call {
+	t.Helper()
+	var calls []call
+	old := runner
+	runner = func(dir string, env []string, name string, args ...string) error {
+		calls = append(calls, call{dir, env, name, args})
+		return nil
+	}
+	t.Cleanup(func() { runner = old })
+	return &calls
+}
+
+func TestRmPassesPinnedArguments(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	proj := projectName(main, wt)
+	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOSE_FILE", "/evil.yaml")
+	calls := captureRunner(t)
+	if err := cmdRm([]string{"-y"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("呼び出し数=%d", len(*calls))
+	}
+	c := (*calls)[0]
+	want := strings.Join(rmArgs(proj, wt, filepath.Join(wt, "compose.yaml")), " ")
+	if c.name != "docker" || strings.Join(c.args, " ") != want {
+		t.Errorf("引数=%v", c.args)
+	}
+	for _, f := range []string{"--project-name " + proj, "--project-directory " + wt, "-f " + filepath.Join(wt, "compose.yaml")} {
+		if !strings.Contains(want, f) {
+			t.Errorf("%q が固定されていない: %s", f, want)
+		}
+	}
+	if strings.Contains(strings.Join(c.env, "\n"), "COMPOSE_FILE=") {
+		t.Error("COMPOSE_FILE が環境に残っている")
+	}
+}
+
+func TestUpWritesEnvAndCleansSailEnvironment(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	if err := os.WriteFile(filepath.Join(main, ".env"), []byte("APP_URL=http://localhost\nSESSION_COOKIE=old\nSESSION_COOKIE=older\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(wt, "vendor", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "vendor", "bin", "sail"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("APP_PORT", "9999")
+	t.Setenv("COMPOSE_PROFILES", "x")
+	calls := captureRunner(t)
+	if err := cmdUp([]string{"-d"}); err != nil {
+		t.Fatal(err)
+	}
+	e, err := readEnv(filepath.Join(wt, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj := projectName(main, wt)
+	if v, _ := e.Get("COMPOSE_PROJECT_NAME"); v != proj {
+		t.Errorf("COMPOSE_PROJECT_NAME=%q", v)
+	}
+	if v, _ := e.Get("SESSION_COOKIE"); v != proj+"-session" {
+		t.Errorf("SESSION_COOKIE=%q", v)
+	}
+	n := 0
+	for _, l := range e.lines {
+		if k, _ := keyOf(l); k == "SESSION_COOKIE" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("SESSION_COOKIE の行数=%d", n)
+	}
+	if port, _ := e.Get("APP_PORT"); port == "" || port == "80" || port == "9999" {
+		t.Errorf("APP_PORT=%q", port)
+	}
+	if u, _ := e.Get("APP_URL"); !strings.HasPrefix(u, "http://localhost:") {
+		t.Errorf("APP_URL=%q", u)
+	}
+	if fi, _ := os.Stat(filepath.Join(wt, ".env")); fi.Mode().Perm() != 0o600 {
+		t.Errorf(".env のモード=%v", fi.Mode().Perm())
+	}
+	if len(*calls) != 1 || (*calls)[0].args[0] != "up" || (*calls)[0].args[1] != "-d" {
+		t.Fatalf("sail の呼び出し=%v", *calls)
+	}
+	env := strings.Join((*calls)[0].env, "\n")
+	if strings.Contains(env, "APP_PORT=") || strings.Contains(env, "COMPOSE_PROFILES=") {
+		t.Error("ポート変数・COMPOSE_* が sail の環境に残っている")
+	}
+}
+
+func TestStopRefusesComposeOverrides(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_FILE=/evil.yaml\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := captureRunner(t)
+	if err := cmdStop(nil); err == nil || !strings.Contains(err.Error(), "COMPOSE_FILE") {
+		t.Errorf("stop が COMPOSE_FILE を拒否していない: %v", err)
+	}
+	if len(*calls) != 0 {
+		t.Error("拒否したのに実行した")
 	}
 }

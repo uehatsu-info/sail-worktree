@@ -1,0 +1,48 @@
+//go:build unix
+
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestCheckOwnEnvRejectsHardLink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.WriteFile(real, []byte("A=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hard := filepath.Join(dir, "hard")
+	if err := os.Link(real, hard); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkOwnEnv(hard); err == nil {
+		t.Error("ハードリンクを拒否していない")
+	}
+	e := &envFile{lines: []string{"A=2"}}
+	if err := e.Write(hard); err == nil {
+		t.Error("ハードリンクへ書いた")
+	}
+	if b, _ := os.ReadFile(real); string(b) != "A=1\n" {
+		t.Errorf("リンク先が書き換わった: %q", b)
+	}
+}
+
+// Lstat の検査をすり抜けても、O_NOFOLLOW でシンボリックリンクを辿らない。
+func TestOpenNoFollowRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.WriteFile(real, []byte("A=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "sym")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := os.OpenFile(link, os.O_WRONLY|openNoFollow, 0o600); err == nil {
+		f.Close()
+		t.Error("O_NOFOLLOW がシンボリックリンクを辿った")
+	}
+}
