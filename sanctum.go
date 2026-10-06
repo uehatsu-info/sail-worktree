@@ -97,10 +97,14 @@ func addStatefulDomain(env *envFile, u *url.URL) (added, warning string) {
 		return "", fmt.Sprintf("the host of APP_URL %+q has characters that up does not write to %s (or is an IPv6 zone or IPv4-mapped address); add it yourself if you need it", u.String(), sanctumKey)
 	}
 	if !statefulValueRe.MatchString(value) || quote == "" && strings.Contains(value, " ") {
-		// The entry the warning asks for, added by hand, ends the warning.
-		for _, e := range strings.Split(value, ",") {
-			if strings.TrimSpace(e) == entry {
-				return "", ""
+		// The entry the warning asks for, added by hand, ends the warning, but only where the text is the value:
+		// outside quotes, phpdotenv ends the value at "#" (with or without a space before it) and rejects spaces, tabs
+		// and quotes.
+		if quote != "" || !strings.ContainsAny(value, " \t\v\f\r#\"'") {
+			for _, e := range strings.Split(value, ",") {
+				if strings.Trim(e, " \t\n\r\x00\x0b") == entry { // PHP's trim
+					return "", ""
+				}
 			}
 		}
 		return "", fmt.Sprintf("%s %+q is not a plain list, so it is left unchanged; add %s to it yourself", sanctumKey, raw, entry)

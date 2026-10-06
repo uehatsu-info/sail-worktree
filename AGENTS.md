@@ -151,11 +151,12 @@ These come from deliberate decisions; change them only on purpose and update the
   of only commas are left alone; the words are compared lower-cased after `sanctumUnquote`, which trims spaces outside
   quotes (as phpdotenv does) but not inside them, so `" null "` is a plain string. Because Sail sources `.env`, the
   entry and the value must pass allow-lists, and anything else is left alone with a warning naming the entry to add (it
-  repeats on every `up` until a literal element equals the entry); do not loosen them to "escape" values instead. `Get`
-  keeps stripping any quotes at both ends. `Set` collapses duplicate lines of the key and drops an `export` prefix, as
-  for every key `up` writes. The added line and the warning are printed after `.env` and the registry are saved. Known
-  limit (existing): `up` writes `APP_URL` back unquoted, so shell metacharacters in it that quotes protected (such as
-  `&`, `;`, `#`, `$`, `(`, `|` or a space in the query) are no longer protected.
+  repeats on every `up` until, in a value that is quoted or has no space, tab, `#` or quote, an element (trimmed like
+  PHP's `trim`) equals the entry); do not loosen them to "escape" values instead. `Get` keeps stripping any quotes at
+  both ends. `Set` collapses duplicate lines of the key and drops an `export` prefix, as for every key `up` writes. The
+  added line and the warning are printed after `.env` and the registry are saved. Known limit (existing): `up` writes
+  `APP_URL` back unquoted, so shell metacharacters in it that quotes protected (such as `&`, `;`, `#`, `$`, `(`, `|` or
+  a space in the query) are no longer protected.
 - `compose` in `.sail-worktree.json` must be a relative path inside the project directory (`unsafeComposePath`),
   including on Windows forms such as `C:x`, `\\srv\x` and `/x`. That check only reads the string; `rm` also checks the
   real path with `composeInsideProject` (see "`rm` is guarded").
