@@ -21,18 +21,18 @@ func TestCheckOwnEnvRejectsHardLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := checkOwnEnv(hard); err == nil {
-		t.Error("ハードリンクを拒否していない")
+		t.Error("hard link not refused")
 	}
 	e := &envFile{lines: []string{"A=2"}}
 	if err := e.Write(hard); err == nil {
-		t.Error("ハードリンクへ書いた")
+		t.Error("wrote through a hard link")
 	}
 	if b, _ := os.ReadFile(real); string(b) != "A=1\n" {
-		t.Errorf("リンク先が書き換わった: %q", b)
+		t.Errorf("link target was rewritten: %q", b)
 	}
 }
 
-// Lstat の検査をすり抜けても、O_NOFOLLOW でシンボリックリンクを辿らない。
+// Even if the Lstat check is bypassed, O_NOFOLLOW does not follow a symbolic link.
 func TestOpenNoFollowRefusesSymlink(t *testing.T) {
 	dir := t.TempDir()
 	real := filepath.Join(dir, "real")
@@ -45,12 +45,13 @@ func TestOpenNoFollowRefusesSymlink(t *testing.T) {
 	}
 	if f, err := os.OpenFile(link, os.O_WRONLY|openNoFollow, 0o600); err == nil {
 		f.Close()
-		t.Error("O_NOFOLLOW がシンボリックリンクを辿った")
+		t.Error("O_NOFOLLOW followed a symbolic link")
 	}
 }
 
-// Lstat の段階で FIFO を弾くことだけを確かめる。Lstat の後に FIFO へ差し替わる競合は決定的に作れないので、
-// O_NONBLOCK と開いた fd の Stat の再確認 (readEnvIfRegular の二重の備え) はこのテストでは検証できない。
+// This only checks that a FIFO is rejected at the Lstat stage. A race that swaps the path for a FIFO after Lstat
+// cannot be produced deterministically, so O_NONBLOCK and the re-Stat of the opened fd (readEnvIfRegular's second
+// line of defense) are not verified by this test.
 func TestReadEnvIfRegularDoesNotBlockOnFIFO(t *testing.T) {
 	p := filepath.Join(t.TempDir(), ".env")
 	if err := syscall.Mkfifo(p, 0o600); err != nil {
@@ -61,9 +62,9 @@ func TestReadEnvIfRegularDoesNotBlockOnFIFO(t *testing.T) {
 	select {
 	case ok := <-done:
 		if ok {
-			t.Error("FIFO を読んだ")
+			t.Error("read a FIFO")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("FIFO でブロックした")
+		t.Fatal("blocked on a FIFO")
 	}
 }

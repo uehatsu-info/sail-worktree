@@ -26,7 +26,7 @@ func cmdInit() error {
 	}
 	root, err := worktreeRoot(dir)
 	if err != nil {
-		return fmt.Errorf("git リポジトリ内で実行してください: %w", err)
+		return fmt.Errorf("run this inside a git repository: %w", err)
 	}
 	compose, err := findCompose(root)
 	if err != nil {
@@ -38,21 +38,21 @@ func cmdInit() error {
 	}
 	vars := detectPortVars(string(b))
 	if len(vars) == 0 {
-		return fmt.Errorf("%s にポート変数 (${XXX_PORT:-1234}) が見つかりません", compose)
+		return fmt.Errorf("no port variable (${XXX_PORT:-1234}) found in %s", compose)
 	}
 	data, _ := json.MarshalIndent(Config{Compose: compose, PortVars: vars}, "", "  ")
 	path := filepath.Join(root, configName)
 	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("%s を作成しました (コミットして全ワークツリーで共有してください)\n", path)
+	fmt.Printf("created %s (commit it to share it with all worktrees)\n", path)
 	for _, v := range vars {
-		fmt.Printf("  %s (デフォルト %d)\n", v.Name, v.Default)
+		fmt.Printf("  %s (default %d)\n", v.Name, v.Default)
 	}
 	return nil
 }
 
-// ctx は worktree 内で実行するコマンド共通の前提情報。
+// ctx is the information shared by the commands that run inside a worktree.
 type ctx struct {
 	root, main string
 	cfg        *Config
@@ -65,7 +65,7 @@ func loadCtx() (*ctx, error) {
 	}
 	root, err := worktreeRoot(dir)
 	if err != nil {
-		return nil, fmt.Errorf("git リポジトリ内で実行してください: %w", err)
+		return nil, fmt.Errorf("run this inside a git repository: %w", err)
 	}
 	main, err := mainWorktree(root)
 	if err != nil {
@@ -86,11 +86,11 @@ func projectName(main, root string) string {
 	return strings.Trim(slug, "-_") + "-" + hex.EncodeToString(sum[:])[:6]
 }
 
-// sessionCookieName はワークツリーごとのセッション Cookie 名。localhost はポートが違っても Cookie を共有するので、
-// プロジェクト名から作って他のワークツリー・プロジェクトとログインが混ざらないようにする。
+// sessionCookieName is the per-worktree session cookie name. localhost shares cookies across ports, so the name is
+// derived from the project name to keep logins of other worktrees and projects from mixing.
 func sessionCookieName(proj string) string { return proj + "-session" }
 
-// runner は外部コマンドの実行。テストで差し替える。
+// runner runs an external command. Tests replace it.
 var runner = runCmdEnv
 
 func cmdUp(args []string) error {
@@ -99,7 +99,7 @@ func cmdUp(args []string) error {
 		return err
 	}
 	if c.root == c.main {
-		return fmt.Errorf("メインワークツリーでは実行できません。作成済みのワークツリー上で実行してください")
+		return fmt.Errorf("cannot run in the main worktree; run it in a worktree you have created")
 	}
 	envPath := filepath.Join(c.root, ".env")
 	if err := checkOwnEnv(envPath); err != nil {
@@ -109,7 +109,7 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
-	reg.migrate(c.root) // allocatePorts の前に、旧版の別名のキーを自分の割り当てとして取り込む (保存は up 成功時)
+	reg.migrate(c.root) // before allocatePorts, adopt the keys an older version recorded under an alias path (saved when up succeeds)
 	src := envOwn
 	env, err := readEnv(envPath)
 	if os.IsNotExist(err) {
@@ -120,9 +120,9 @@ func cmdUp(args []string) error {
 			env, err = readEnv(filepath.Join(c.main, ".env.example"))
 		}
 		if err != nil {
-			return fmt.Errorf("元になる .env をメインワークツリーから読めません: %w", err)
+			return fmt.Errorf("cannot read the source .env from the main worktree: %w", err)
 		}
-		fmt.Println(".env を新規作成します (メインワークツリーの .env をコピー)")
+		fmt.Println("creating .env (copied from the main worktree)")
 	} else if err != nil {
 		return err
 	}
@@ -164,27 +164,27 @@ func cmdUp(args []string) error {
 	return runSail(c.root, c.cfg, append([]string{"up"}, args...))
 }
 
-// envSource は up が .env の元にした場所。拒否エラーの案内を変えるために覚えておく。
+// envSource is where up took .env from. It is remembered to tailor the guidance in the refusal error.
 type envSource int
 
 const (
-	envOwn             envSource = iota // このワークツリー自身の .env
-	envFromMain                         // メインワークツリーの .env (コピー)
-	envFromMainExample                  // メインワークツリーの .env.example (コピー)
+	envOwn             envSource = iota // the worktree's own .env
+	envFromMain                         // the main worktree's .env (copied)
+	envFromMainExample                  // the main worktree's .env.example (copied)
 )
 
 func upOverrideError(key string, src envSource) error {
 	switch src {
 	case envOwn:
-		return fmt.Errorf(".env に %s があるため up できません (別の compose ファイルを指し得るため)。.env からその行を消してください", key)
+		return fmt.Errorf(".env has %s, so up cannot continue (it could point at another compose file); remove that line from .env", key)
 	case envFromMain:
-		return fmt.Errorf("メインワークツリーの .env に %s があり、それをコピーした .env にも入るため up できません (別の compose ファイルを指し得るため)。"+
-			"メインの .env から消す (他のワークツリーの元にも影響します) か、このワークツリーに .env を先に作って、その行を入れずに up してください", key)
+		return fmt.Errorf("the main worktree's .env has %s, which would be copied into this .env, so up cannot continue (it could point at another compose file). "+
+			"Remove it from the main .env (this also affects the source of other worktrees), or create .env in this worktree first without that line and run up again", key)
 	case envFromMainExample:
-		return fmt.Errorf("メインワークツリーの .env.example に %s があり、それをコピーした .env にも入るため up できません (別の compose ファイルを指し得るため)。"+
-			".env.example から消すか、このワークツリーに .env を先に作って、その行を入れずに up してください", key)
+		return fmt.Errorf("the main worktree's .env.example has %s, which would be copied into this .env, so up cannot continue (it could point at another compose file). "+
+			"Remove it from .env.example, or create .env in this worktree first without that line and run up again", key)
 	}
-	return fmt.Errorf("不明な .env の出所: %d", src)
+	return fmt.Errorf("unknown .env source: %d", src)
 }
 
 func cmdStop(args []string) error {
@@ -192,58 +192,59 @@ func cmdStop(args []string) error {
 	if err != nil {
 		return err
 	}
-	// stop は .env を書き換えず、止めても取り返しがつくので、up・rm のような拒否はしない。
-	// 別のプロジェクトを止め得る場合だけ警告する。
+	// stop never writes .env and stopping can be undone, so it does not refuse like up and rm do.
+	// It only warns when it may stop another project.
 	if c.root != c.main {
 		warnStopTarget(c)
 	}
 	return runSail(c.root, c.cfg, append([]string{"stop"}, args...))
 }
 
-// stdin と stderr は確認プロンプトの入力と警告の出力先 (テストで差し替える)。
+// stdin and stderr are the input of the confirmation prompt and the destination of warnings (replaced by tests).
 var (
 	stdin  io.Reader = os.Stdin
 	stderr io.Writer = os.Stderr
 )
 
-// safeProjectName は復旧コマンドに埋め込んでよい名前。.env の値は信頼できないので、
-// シェルや docker のオプションとして解釈されない文字種だけを許す (先頭は英数字、長さ上限あり)。
+// safeProjectName is a name that may be embedded in a recovery command. Values in .env are untrusted, so only
+// characters that the shell or docker cannot interpret as options are allowed (alphanumeric first, length limit).
 var safeProjectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
-// nameMismatchError は rm が拒否したときのエラー。1 行目に主軸の手順 (.env を本来の名前に直す) を置く。
-// .env の名前 (got) は信頼できない入力なので %+q で表示し、復旧コマンドには安全な文字種だけの got を埋め込む。
-// このワークツリーの名前 (want) は projectName が安全な文字種で作るが、念のため同じ検証で表示を分ける。
+// nameMismatchError is the error when rm refuses. The first line gives the main remedy (set .env back to the
+// worktree's own name). The name in .env (got) is untrusted, so it is shown with %+q and only a got made of safe
+// characters is embedded in the recovery command. The worktree's name (want) is built from safe characters by
+// projectName, but it is displayed through the same check just in case.
 func nameMismatchError(got, want string) error {
 	shown := fmt.Sprintf("%+q", want)
 	if safeProjectName.MatchString(want) {
-		shown = want // 引用符なし (そのまま .env に書ける)
+		shown = want // without quotes (can be written to .env as is)
 	}
-	msg := fmt.Sprintf(".env の COMPOSE_PROJECT_NAME を %s に直して、もう一度 rm を実行してください (現在の %+q はこのワークツリーの名前と一致しないため rm できません)。", shown, got)
+	msg := fmt.Sprintf("set COMPOSE_PROJECT_NAME in .env to %s and run rm again (the current %+q does not match this worktree's name, so rm refuses).", shown, got)
 	if safeProjectName.MatchString(got) {
-		msg += fmt.Sprintf("\n古い版が別の名前で作ったプロジェクトを消す場合だけ、次の順に行ってください。"+
-			"\n  1. `docker compose ls -a` で、%s が他のワークツリーやプロジェクトのものでなく、このワークツリーのものであることを確認する。"+
-			"\n  2. シェルに COMPOSE_* の環境変数があると対象が変わるので、`env | grep '^COMPOSE_'` で確認し、表示された変数を全て unset する。"+
-			"\n  3. 次を実行する (-v でボリューム=DB データも消え、取り返しがつきません):"+
+		msg += fmt.Sprintf("\nOnly to remove a project that an older version created under a different name, do the following in order."+
+			"\n  1. Run `docker compose ls -a` and confirm that %s belongs to this worktree and not to another worktree or project."+
+			"\n  2. COMPOSE_* variables in your shell change the target: check with `env | grep '^COMPOSE_'` and unset every variable shown."+
+			"\n  3. Run the following (-v also removes volumes, i.e. database data, and cannot be undone):"+
 			"\n      docker compose -p %s down -v --rmi local --remove-orphans", got, got)
 	} else {
-		msg += "\n.env の名前は小文字英数字・_・- だけでない (大文字などは compose が使う名前と異なり得る) ため、手動で消すコマンドは示しません。`docker compose ls -a` で対象を確認してください。"
+		msg += "\nThe name in .env is not made only of lowercase letters, digits, _ and - (capitals etc. may differ from the name compose uses), so no manual removal command is shown. Check the target with `docker compose ls -a`."
 	}
 	return fmt.Errorf("%s", msg)
 }
 
-// warnStopTarget は .env が別の compose ファイル・プロジェクトを指していそうなとき、stop の前に警告する。
-// ベストエフォートで、シェル式による上書き等は検出できない。.env が通常ファイルでなければ何もしない。
+// warnStopTarget warns before stop when .env seems to point at another compose file or project.
+// It is best effort and cannot detect overrides by shell expressions. It does nothing unless .env is a regular file.
 func warnStopTarget(c *ctx) {
 	env, ok := readEnvIfRegular(filepath.Join(c.root, ".env"))
 	if !ok {
 		return
 	}
 	if k, ok := env.overrideKey(upOverrideKeys); ok {
-		fmt.Fprintf(stderr, "警告: .env に %s があり、このワークツリー以外の compose プロジェクトを止める可能性があります\n", k)
+		fmt.Fprintf(stderr, "warning: .env has %s, so stop may stop a compose project other than this worktree's\n", k)
 	}
 	if name, ok := env.Get("COMPOSE_PROJECT_NAME"); ok {
 		if want := projectName(c.main, c.root); name != want {
-			fmt.Fprintf(stderr, "警告: .env の COMPOSE_PROJECT_NAME (%+q) がこのワークツリーの名前 (%+q) と異なり、別のプロジェクトを止める可能性があります\n", name, want)
+			fmt.Fprintf(stderr, "warning: COMPOSE_PROJECT_NAME in .env (%+q) differs from this worktree's name (%+q); stop may stop another project\n", name, want)
 		}
 	}
 }
@@ -254,7 +255,7 @@ func cmdRm(args []string) error {
 		if a == "-y" || a == "--yes" {
 			yes = true
 		} else {
-			return fmt.Errorf("不明な引数: %s", a)
+			return fmt.Errorf("unknown argument: %s", a)
 		}
 	}
 	c, err := loadCtx()
@@ -262,7 +263,7 @@ func cmdRm(args []string) error {
 		return err
 	}
 	if c.root == c.main {
-		return fmt.Errorf("メインワークツリーでは実行できません")
+		return fmt.Errorf("cannot run in the main worktree")
 	}
 	envPath := filepath.Join(c.root, ".env")
 	if err := checkOwnEnv(envPath); err != nil {
@@ -270,56 +271,57 @@ func cmdRm(args []string) error {
 	}
 	env, err := readEnv(envPath)
 	if err != nil {
-		return fmt.Errorf(".env を読めません (up 済みのワークツリーで実行してください): %w", err)
+		return fmt.Errorf("cannot read .env (run this in a worktree where up has been run): %w", err)
 	}
 	if k, ok := env.overrideKey(rmOverrideKeys); ok {
-		return fmt.Errorf(".env に %s があるため rm できません (別の compose ファイル・サービスを指し得るため)。rm の前に .env からその行を消してください", k)
+		return fmt.Errorf(".env has %s, so rm cannot continue (it could point at another compose file or set of services); remove that line from .env before rm", k)
 	}
 	proj, ok := env.Get("COMPOSE_PROJECT_NAME")
 	if !ok || proj == "" {
-		return fmt.Errorf(".env に COMPOSE_PROJECT_NAME がありません")
+		return fmt.Errorf("COMPOSE_PROJECT_NAME is missing in .env")
 	}
-	// 取り返しのつかない down -v なので、.env の値を信用せず、このワークツリーの名前を再計算して完全一致を要求する
-	// (別のプロジェクト・別のワークツリーの名前が残っている、手で書き換えた、ワークツリーを移動した、を拒否する)。
+	// down -v cannot be undone, so do not trust the value in .env: recompute this worktree's name and require an exact
+	// match (this refuses a leftover name of another project or worktree, a hand-edited name, or a moved worktree).
 	if want := projectName(c.main, c.root); proj != want {
 		return nameMismatchError(proj, want)
 	}
-	// 拒否の検査は全て確認プロンプトの前に済ませる (y と答えた後に拒否しない)。
+	// Do every refusing check before the confirmation prompt (never refuse after the user answered y).
 	composePath := filepath.Join(c.root, c.cfg.Compose)
 	if fi, err := os.Stat(composePath); err != nil || !fi.Mode().IsRegular() {
-		return fmt.Errorf("compose ファイルが見つかりません: %s", composePath)
+		return fmt.Errorf("compose file not found: %s", composePath)
 	}
-	// ここで読むのは壊れたレジストリを消す前に検出するため (値は使わない)。解放用には docker の後に読み直す。消さないこと。
+	// This read only detects a broken registry before anything is removed (the value is unused). The registry is read
+	// again after docker for the release. Do not remove it.
 	if _, err := loadRegistry(); err != nil {
 		return err
 	}
 	if !yes {
-		fmt.Printf("プロジェクト %q のコンテナ・ネットワーク・ボリューム(DBデータ含む)・ビルドイメージを削除します。よろしいですか? [y/N] ", proj)
+		fmt.Printf("This removes the containers, networks, volumes (including database data) and built images of project %q. Continue? [y/N] ", proj)
 		ans, _ := bufio.NewReader(stdin).ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(ans)); a != "y" && a != "yes" {
-			fmt.Println("中止しました")
+			fmt.Println("aborted")
 			return nil
 		}
 	}
-	// プロジェクト名・ディレクトリ・compose ファイルを明示し、環境の COMPOSE_* を外して実行する。
+	// Pass the project name, directory and compose file explicitly, and run without COMPOSE_* from the environment.
 	if err := runner(c.root, cleanEnv(nil), "docker", rmArgs(proj, c.root, composePath)...); err != nil {
 		return err
 	}
-	// docker の実行中に別の up がレジストリを更新していても失わないよう、消した後に読み直して解放する。
+	// Read the registry again after docker so that an update by another up during the removal is not lost.
 	reg, err := loadRegistry()
 	if err != nil {
-		return fmt.Errorf("docker の削除は完了しましたが、ポート割り当ての記録を読めません: %w", err)
+		return fmt.Errorf("docker finished removing, but the port assignments cannot be read: %w", err)
 	}
 	reg.migrate(c.root)
 	delete(reg.Worktrees, c.root)
 	if err := reg.save(); err != nil {
 		return err
 	}
-	fmt.Println("ポート割り当てを解放しました")
+	fmt.Println("released the port assignments")
 	return nil
 }
 
-// rmArgs は rm が docker に渡す引数。プロジェクト名・ディレクトリ・compose ファイルを全て明示する。
+// rmArgs are the arguments rm passes to docker. The project name, directory and compose file are all explicit.
 func rmArgs(proj, root, composePath string) []string {
 	return []string{"compose", "--project-name", proj, "--project-directory", root,
 		"-f", composePath, "down", "-v", "--rmi", "local", "--remove-orphans"}
@@ -328,9 +330,9 @@ func rmArgs(proj, root, composePath string) []string {
 func runSail(root string, cfg *Config, args []string) error {
 	sail := filepath.Join(root, "vendor", "bin", "sail")
 	if _, err := os.Stat(sail); err != nil {
-		return fmt.Errorf("%s がありません。`composer install` を実行してください", sail)
+		return fmt.Errorf("%s not found; run `composer install`", sail)
 	}
-	// シェルのポート変数は .env より優先されるので、割り当てたポートとずれないよう外す。
+	// Shell variables take precedence over .env, so drop the port variables to keep them in line with the assigned ports.
 	drop := make([]string, 0, len(cfg.PortVars))
 	for _, v := range cfg.PortVars {
 		drop = append(drop, v.Name)
@@ -338,15 +340,16 @@ func runSail(root string, cfg *Config, args []string) error {
 	return runner(root, cleanEnv(drop), sail, args...)
 }
 
-// cleanEnv は現在の環境から、COMPOSE_ で始まる全ての変数・SAIL_FILES・drop の変数を外した環境を返す
-// (別の compose ファイル・プロジェクトを指し得るため)。DOCKER_HOST 等は意図して使う利用者がいるので外さない。
-// これは環境変数の除去で、.env のキーを拒否する upOverrideKeys / rmOverrideKeys とは別の仕組み。
+// cleanEnv returns the current environment without every variable that starts with COMPOSE_, SAIL_FILES and the
+// variables in drop (they can point at another compose file or project). DOCKER_HOST etc. are kept because some
+// users set them on purpose. This removes environment variables; it is separate from upOverrideKeys and
+// rmOverrideKeys, which refuse keys in .env.
 func cleanEnv(drop []string) []string { return filterEnv(os.Environ(), drop) }
 
-// filterEnv は environ から cleanEnv の対象を外す。名前は大文字小文字を区別せずに比べる
-// (Windows の環境変数名は区別されないため。unix で小文字の compose_ まで外れるのは安全側)。
-// 結果は、全て外れたときも nil にしない: exec.Cmd の Env が nil だと親の環境を丸ごと継承してしまう。
-// Windows の "=C:=C:\..." のような名前が空の変数は残す。
+// filterEnv removes cleanEnv's targets from environ. Names are compared case-insensitively (Windows environment
+// variable names are; dropping a lowercase compose_ on unix too is on the safe side). The result is never nil, even
+// when everything is removed: a nil Env makes exec.Cmd inherit the whole parent environment. Variables with an empty
+// name such as Windows' "=C:=C:\..." are kept.
 func filterEnv(environ, drop []string) []string {
 	skip := map[string]bool{"SAIL_FILES": true}
 	for _, k := range drop {

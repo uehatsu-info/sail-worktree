@@ -5,6 +5,8 @@ English | [日本語](README_JA.md)
 A tool for running multiple Laravel Sail projects side by side using `git worktree`.
 It generates a `.env` for each worktree and automatically assigns ports so they never collide.
 
+All output of the tool (usage, messages, warnings and errors) is in English. [README_JA.md](README_JA.md) is a Japanese translation of this document.
+
 ## Installation
 
 ```sh
@@ -84,3 +86,5 @@ Prints the version (the tag for `go install ...@vX.Y.Z`; a local `go build` prin
 go vet ./...
 go test ./...
 ```
+
+Please write code comments, error messages, commit messages and pull request descriptions in English. Commit subjects follow `feat:`, `fix:`, `refactor:`, `docs:`, `ci:` and `test:` prefixes; the release notes are grouped by them.

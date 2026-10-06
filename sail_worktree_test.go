@@ -46,7 +46,7 @@ func TestAllocate(t *testing.T) {
 	if got["DB"] != 3310 || got["APP_PORT"] != 83 {
 		t.Errorf("got %v", got)
 	}
-	// 他ワークツリーに取られた既存割当は再割当てされる
+	// An existing assignment taken by another worktree is reassigned
 	got, _ = allocatePorts(vars, map[string]int{"DB": 3310}, map[int]bool{3310: true}, func(int) bool { return true })
 	if got["DB"] != 3307 {
 		t.Errorf("got %v", got)
@@ -90,7 +90,7 @@ func TestEnvSetCollapsesDuplicates(t *testing.T) {
 
 func TestEnvWriteMode(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("Windows にはファイルのパーミッションの 0600 がない")
+		t.Skip("Windows has no 0600 file permission")
 	}
 	dir := t.TempDir()
 	p := filepath.Join(dir, ".env")
@@ -99,9 +99,9 @@ func TestEnvWriteMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
-		t.Errorf("新規作成のモード=%v", fi.Mode().Perm())
+		t.Errorf("mode of a new file = %v", fi.Mode().Perm())
 	}
-	// 既存ファイルのモードは変えない
+	// The mode of an existing file is unchanged
 	if err := os.Chmod(p, 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -109,35 +109,35 @@ func TestEnvWriteMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o640 {
-		t.Errorf("既存のモードが変わった=%v", fi.Mode().Perm())
+		t.Errorf("mode of an existing file changed to %v", fi.Mode().Perm())
 	}
 }
 
 func TestCheckOwnEnv(t *testing.T) {
 	dir := t.TempDir()
 	if err := checkOwnEnv(filepath.Join(dir, ".env")); err != nil {
-		t.Errorf("無いのは許す: %v", err)
+		t.Errorf("a missing file is allowed: %v", err)
 	}
 	real := filepath.Join(dir, "real")
 	if err := os.WriteFile(real, []byte("A=1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := checkOwnEnv(real); err != nil {
-		t.Errorf("通常ファイルは許す: %v", err)
+		t.Errorf("a regular file is allowed: %v", err)
 	}
 	link := filepath.Join(dir, "sym")
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
 	if err := checkOwnEnv(link); err == nil {
-		t.Error("シンボリックリンクを拒否していない")
+		t.Error("symbolic link not refused")
 	}
 	e := &envFile{lines: []string{"A=2"}}
 	if err := e.Write(link); err == nil {
-		t.Error("シンボリックリンクへ書いた")
+		t.Error("wrote through a symbolic link")
 	}
 	if b, _ := os.ReadFile(real); string(b) != "A=1\n" {
-		t.Errorf("リンク先が書き換わった: %q", b)
+		t.Errorf("link target was rewritten: %q", b)
 	}
 }
 
@@ -152,24 +152,24 @@ func mustStat(t *testing.T, p string) os.FileInfo {
 
 func TestOverrideKey(t *testing.T) {
 	if k, ok := (&envFile{lines: []string{"A=1", "# COMPOSE_FILE=x"}}).overrideKey(rmOverrideKeys); ok {
-		t.Errorf("コメントは許す: %s", k)
+		t.Errorf("a comment is allowed: %s", k)
 	}
 	for _, k := range rmOverrideKeys {
 		if got, ok := (&envFile{lines: []string{k + "=x"}}).overrideKey(rmOverrideKeys); !ok || got != k {
-			t.Errorf("rm が %s を拒否していない", k)
+			t.Errorf("rm does not refuse %s", k)
 		}
 	}
-	// COMPOSE_PROFILES は up では許し、rm では拒否する。
+	// COMPOSE_PROFILES is allowed by up and refused by rm.
 	prof := &envFile{lines: []string{"COMPOSE_PROFILES=x"}}
 	if _, ok := prof.overrideKey(upOverrideKeys); ok {
-		t.Error("up が COMPOSE_PROFILES を拒否している")
+		t.Error("up refuses COMPOSE_PROFILES")
 	}
 	if _, ok := prof.overrideKey(rmOverrideKeys); !ok {
-		t.Error("rm が COMPOSE_PROFILES を拒否していない")
+		t.Error("rm does not refuse COMPOSE_PROFILES")
 	}
 	for _, k := range []string{"COMPOSE_FILE", "COMPOSE_ENV_FILES", "SAIL_FILES"} {
 		if _, ok := (&envFile{lines: []string{k + "=x"}}).overrideKey(upOverrideKeys); !ok {
-			t.Errorf("up が %s を拒否していない", k)
+			t.Errorf("up does not refuse %s", k)
 		}
 	}
 }
@@ -184,11 +184,11 @@ func TestCleanEnv(t *testing.T) {
 	got := strings.Join(cleanEnv([]string{"APP_PORT"}), "\n")
 	for _, k := range []string{"COMPOSE_FILE=", "COMPOSE_PROJECT_NAME=", "COMPOSE_PATH_SEPARATOR=", "SAIL_FILES=", "APP_PORT="} {
 		if strings.Contains(got, k) {
-			t.Errorf("%s が残っている", k)
+			t.Errorf("%s is left", k)
 		}
 	}
 	if !strings.Contains(got, "KEEP_ME=1") {
-		t.Error("無関係な変数まで外れた")
+		t.Error("an unrelated variable was removed")
 	}
 }
 
@@ -199,12 +199,12 @@ func TestFilterEnv(t *testing.T) {
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("got %v want %v", got, want)
 	}
-	// 全て外れても nil にしない (nil だと exec.Cmd が親の環境を継承する)。
+	// Never nil even if everything is removed (a nil Env makes exec.Cmd inherit the parent environment).
 	if got := filterEnv([]string{"COMPOSE_FILE=x"}, nil); got == nil || len(got) != 0 {
-		t.Errorf("空の結果が nil: %#v", got)
+		t.Errorf("empty result is nil: %#v", got)
 	}
 	if got := filterEnv(nil, nil); got == nil {
-		t.Error("入力が空のとき nil")
+		t.Error("nil when the input is empty")
 	}
 }
 
@@ -218,13 +218,13 @@ func TestLoopbackBindBlocked(t *testing.T) {
 		goos string
 		want bool
 	}{
-		{"darwin の権限エラー(特権ポート)は塞がりでない", perm, "darwin", false},
-		{"linux の権限エラーは塞がり", perm, "linux", true},
-		{"windows の権限エラーは塞がり", perm, "windows", true},
-		{"loopback が無い環境は塞がりでない", noAddr, "linux", false},
-		{"使用中は塞がり (darwin)", inUse, "darwin", true},
-		{"使用中は塞がり (linux)", inUse, "linux", true},
-		{"その他のエラーは塞がり", fmt.Errorf("boom"), "linux", true},
+		{"a permission error on darwin (privileged port) is not taken", perm, "darwin", false},
+		{"a permission error on linux is taken", perm, "linux", true},
+		{"a permission error on windows is taken", perm, "windows", true},
+		{"an environment without loopback is not taken", noAddr, "linux", false},
+		{"in use is taken (darwin)", inUse, "darwin", true},
+		{"in use is taken (linux)", inUse, "linux", true},
+		{"any other error is taken", fmt.Errorf("boom"), "linux", true},
 	}
 	for _, c := range cases {
 		if got := loopbackBindBlocked(c.err, c.goos); got != c.want {
@@ -241,7 +241,7 @@ func TestPortFreeDetectsLoopbackOnly(t *testing.T) {
 	defer l.Close()
 	port := l.Addr().(*net.TCPAddr).Port
 	if portFree(port) {
-		t.Errorf("127.0.0.1 だけに束縛されたポート %d を空きと判定した", port)
+		t.Errorf("port %d bound only on 127.0.0.1 was considered free", port)
 	}
 }
 
@@ -256,8 +256,8 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
-// メインと worktree を作って worktree に移動する。
-// 実ユーザーのレジストリ・設定を読み書きしないよう、HOME と XDG_CONFIG_HOME を一時ディレクトリへ向ける。
+// Creates a main worktree and a linked worktree, and changes into the linked one.
+// HOME and XDG_CONFIG_HOME point at temporary directories so that the real user's registry and settings are not touched.
 func setupWorktreeRepo(t *testing.T) (main, wt string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -291,50 +291,50 @@ func TestRmRefusesMismatchedProjectName(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := cmdRm([]string{"-y"})
-	if err == nil || !strings.Contains(err.Error(), "一致しない") {
-		t.Errorf("名前の不一致を拒否していない: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Errorf("a name mismatch is not refused: %v", err)
 	}
 }
 
 func TestNameMismatchErrorGuidance(t *testing.T) {
 	msg := nameMismatchError("old-name", "app-feat-abc123").Error()
-	if first, _, _ := strings.Cut(msg, "\n"); !strings.Contains(first, ".env の COMPOSE_PROJECT_NAME を app-feat-abc123 に直して") {
-		t.Errorf("1 行目に主軸の手順がない: %s", msg)
+	if first, _, _ := strings.Cut(msg, "\n"); !strings.Contains(first, "set COMPOSE_PROJECT_NAME in .env to app-feat-abc123") {
+		t.Errorf("the first line lacks the main remedy: %s", msg)
 	}
-	for _, want := range []string{`"old-name"`, "docker compose ls -a", "他のワークツリー", "unset", "docker compose -p old-name down -v --rmi local --remove-orphans", "取り返しがつきません"} {
+	for _, want := range []string{`"old-name"`, "docker compose ls -a", "another worktree", "unset", "docker compose -p old-name down -v --rmi local --remove-orphans", "cannot be undone"} {
 		if !strings.Contains(msg, want) {
-			t.Errorf("%q が含まれない: %s", want, msg)
+			t.Errorf("%q is missing: %s", want, msg)
 		}
 	}
-	// 番号付きの手順で、取り返しがつかない注意が実行コマンドより前にある。
+	// The steps are numbered and the irreversibility warning comes before the command to run.
 	idx := func(s string) int { return strings.Index(msg, s) }
-	if !(idx("\n  1. ") >= 0 && idx("\n  1. ") < idx("\n  2. ") && idx("\n  2. ") < idx("\n  3. ") && idx("取り返しがつきません") < idx("docker compose -p old-name")) {
-		t.Errorf("手順の順序が崩れている: %s", msg)
+	if !(idx("\n  1. ") >= 0 && idx("\n  1. ") < idx("\n  2. ") && idx("\n  2. ") < idx("\n  3. ") && idx("cannot be undone") < idx("docker compose -p old-name")) {
+		t.Errorf("the order of the steps is broken: %s", msg)
 	}
 }
 
 func TestNameMismatchErrorEscapesUntrustedNames(t *testing.T) {
-	for _, bad := range []string{"x; rm -rf ~", "$(id)", "a`id`", "line1\nline2", "esc\x1b[31m", "-rf", "UPPER", "名前", "", strings.Repeat("a", 65)} {
+	for _, bad := range []string{"x; rm -rf ~", "$(id)", "a`id`", "line1\nline2", "esc\x1b[31m", "-rf", "UPPER", "\u540d\u524d", "", strings.Repeat("a", 65)} {
 		msg := nameMismatchError(bad, "app-feat-abc123").Error()
 		if strings.Contains(msg, "docker compose -p") {
-			t.Errorf("%q でコマンドを出している: %s", bad, msg)
+			t.Errorf("%q produced a command: %s", bad, msg)
 		}
 		for _, r := range msg {
 			if r != '\n' && r < 0x20 || r == 0x7f {
-				t.Errorf("%q: 制御文字 %U が未エスケープで出ている: %q", bad, r, msg)
+				t.Errorf("%q: control character %U is not escaped: %q", bad, r, msg)
 			}
 		}
 		if !strings.Contains(msg, fmt.Sprintf("%+q", bad)) {
-			t.Errorf("%q が %%+q で出ていない: %q", bad, msg)
+			t.Errorf("%q is not shown with %%+q: %q", bad, msg)
 		}
 	}
-	// 不正な want は引用符つきでエスケープして出し、コマンドには混ぜない。
+	// An invalid want is shown quoted and escaped and is not mixed into the command.
 	msg := nameMismatchError("old-name", "bad\nname $(id)").Error()
 	if strings.Contains(msg, "bad\nname") || !strings.Contains(msg, `"bad\nname $(id)"`) {
-		t.Errorf("want のエスケープが不正: %q", msg)
+		t.Errorf("want is not escaped properly: %q", msg)
 	}
 	if strings.Contains(msg, "-p bad") || strings.Contains(msg, "-p \"bad") {
-		t.Errorf("want がコマンドに混ざっている: %q", msg)
+		t.Errorf("want is mixed into the command: %q", msg)
 	}
 }
 
@@ -342,9 +342,9 @@ func TestRmRefusalsDoNotReadStdin(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	proj := projectName(main, wt)
 	cases := map[string]struct{ env, want string }{
-		"名前不一致":      {"COMPOSE_PROJECT_NAME=other\n", "一致しない"},
-		"拒否キー":       {"COMPOSE_PROJECT_NAME=" + proj + "\nCOMPOSE_PROFILES=x\n", "rm の前に .env からその行を消してください"},
-		"compose 欠落": {"COMPOSE_PROJECT_NAME=" + proj + "\n", "compose ファイルが見つかりません"},
+		"name mismatch":   {"COMPOSE_PROJECT_NAME=other\n", "does not match"},
+		"refused key":     {"COMPOSE_PROJECT_NAME=" + proj + "\nCOMPOSE_PROFILES=x\n", "remove that line from .env before rm"},
+		"missing compose": {"COMPOSE_PROJECT_NAME=" + proj + "\n", "compose file not found"},
 	}
 	for name, c := range cases {
 		if err := os.WriteFile(filepath.Join(wt, ".env"), []byte(c.env), 0o600); err != nil {
@@ -357,10 +357,10 @@ func TestRmRefusalsDoNotReadStdin(t *testing.T) {
 		err := cmdRm(nil)
 		stdin = old
 		if err == nil || !strings.Contains(err.Error(), c.want) {
-			t.Errorf("%s: 期待した拒否になっていない: %v", name, err)
+			t.Errorf("%s: not refused as expected: %v", name, err)
 		}
 		if in.Len() != 2 || len(*calls) != 0 {
-			t.Errorf("%s: プロンプト前の拒否のはずが stdin を読んだ/実行した", name)
+			t.Errorf("%s: should refuse before the prompt but read stdin or ran a command", name)
 		}
 	}
 }
@@ -368,7 +368,7 @@ func TestRmRefusalsDoNotReadStdin(t *testing.T) {
 func TestRmRefusesBeforePromptWithoutReadingStdin(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	proj := projectName(main, wt)
-	// compose ファイルが無い (setupWorktreeRepo は作らない) .env だけの状態。
+	// Only .env exists; there is no compose file (setupWorktreeRepo does not create one).
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -378,11 +378,11 @@ func TestRmRefusesBeforePromptWithoutReadingStdin(t *testing.T) {
 	t.Cleanup(func() { stdin = old })
 	calls := captureRunner(t)
 	err := cmdRm(nil)
-	if err == nil || !strings.Contains(err.Error(), "compose ファイルが見つかりません") {
-		t.Fatalf("compose 欠落を拒否していない: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "compose file not found") {
+		t.Fatalf("a missing compose file is not refused: %v", err)
 	}
 	if in.Len() != 2 || len(*calls) != 0 {
-		t.Errorf("プロンプト前の拒否のはずが stdin を読んだ/実行した: remaining=%d calls=%d", in.Len(), len(*calls))
+		t.Errorf("should refuse before the prompt but read stdin or ran a command: remaining=%d calls=%d", in.Len(), len(*calls))
 	}
 }
 
@@ -391,15 +391,15 @@ func TestOverrideErrorsGuideBySource(t *testing.T) {
 		src  envSource
 		want []string
 	}{
-		{envOwn, []string{".env に COMPOSE_FILE があるため", "その行を消してください"}},
-		{envFromMain, []string{"メインワークツリーの .env に COMPOSE_FILE", "他のワークツリーの元にも影響", "先に作って"}},
-		{envFromMainExample, []string{".env.example に COMPOSE_FILE", ".env.example から消す", "先に作って"}},
+		{envOwn, []string{".env has COMPOSE_FILE, so up cannot continue", "remove that line from .env"}},
+		{envFromMain, []string{"the main worktree's .env has COMPOSE_FILE", "also affects the source of other worktrees", "create .env in this worktree first"}},
+		{envFromMainExample, []string{"the main worktree's .env.example has COMPOSE_FILE", "Remove it from .env.example", "create .env in this worktree first"}},
 	}
 	for _, c := range cases {
 		msg := upOverrideError("COMPOSE_FILE", c.src).Error()
 		for _, w := range c.want {
 			if !strings.Contains(msg, w) {
-				t.Errorf("src=%d: %q が含まれない: %s", c.src, w, msg)
+				t.Errorf("src=%d: %q is missing: %s", c.src, w, msg)
 			}
 		}
 	}
@@ -409,27 +409,27 @@ func TestUpOverrideErrorSourceIsTracked(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	writeFakeSail(t, wt)
 	captureRunner(t)
-	// .env が無く、メインの .env に COMPOSE_FILE がある。
+	// There is no .env and the main worktree's .env has COMPOSE_FILE.
 	if err := os.WriteFile(filepath.Join(main, ".env"), []byte("COMPOSE_FILE=x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "メインワークツリーの .env に COMPOSE_FILE") {
-		t.Errorf("メイン .env 由来の案内になっていない: %v", err)
+	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "the main worktree's .env has COMPOSE_FILE") {
+		t.Errorf("the guidance does not come from the main .env: %v", err)
 	}
-	// メインの .env が無く、.env.example に COMPOSE_FILE がある。
+	// There is no main .env and .env.example has COMPOSE_FILE.
 	os.Remove(filepath.Join(main, ".env"))
 	if err := os.WriteFile(filepath.Join(main, ".env.example"), []byte("COMPOSE_FILE=x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), ".env.example に COMPOSE_FILE") {
-		t.Errorf(".env.example 由来の案内になっていない: %v", err)
+	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "the main worktree's .env.example has COMPOSE_FILE") {
+		t.Errorf("the guidance does not come from .env.example: %v", err)
 	}
-	// 自身の .env に COMPOSE_FILE がある。
+	// The worktree's own .env has COMPOSE_FILE.
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_FILE=x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), ".env に COMPOSE_FILE があるため") {
-		t.Errorf("自身の .env の案内になっていない: %v", err)
+	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), ".env has COMPOSE_FILE, so up cannot continue") {
+		t.Errorf("the guidance is not for the worktree's own .env: %v", err)
 	}
 }
 
@@ -441,10 +441,10 @@ func TestRmAndUpRefuseComposeOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := cmdRm([]string{"-y"}); err == nil || !strings.Contains(err.Error(), "COMPOSE_FILE") {
-		t.Errorf("rm が COMPOSE_FILE を拒否していない: %v", err)
+		t.Errorf("rm does not refuse COMPOSE_FILE: %v", err)
 	}
 	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "COMPOSE_FILE") {
-		t.Errorf("up が COMPOSE_FILE を拒否していない: %v", err)
+		t.Errorf("up does not refuse COMPOSE_FILE: %v", err)
 	}
 }
 
@@ -457,11 +457,11 @@ func TestUpRefusesSymlinkEnv(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(wt, ".env")); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "シンボリックリンク") {
-		t.Errorf("up がシンボリックリンクを拒否していない: %v", err)
+	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Errorf("up does not refuse a symbolic link: %v", err)
 	}
 	if b, _ := os.ReadFile(target); string(b) != "APP_URL=http://localhost\n" {
-		t.Errorf("メインの .env が書き換わった: %q", b)
+		t.Errorf("the main .env was rewritten: %q", b)
 	}
 }
 
@@ -476,10 +476,10 @@ func TestProjectNameIsStableAcrossSymlinkedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	if root != wt {
-		t.Errorf("実パスにそろっていない: %q != %q", root, wt)
+		t.Errorf("not resolved to the real path: %q != %q", root, wt)
 	}
 	if projectName(main, root) != projectName(main, wt) {
-		t.Error("呼び出し経路でプロジェクト名が変わる")
+		t.Error("the project name depends on the path used")
 	}
 }
 
@@ -490,14 +490,14 @@ func TestKeyOfHandlesExportWithTab(t *testing.T) {
 		}
 	}
 	if k, _ := keyOf("exported=1"); k != "exported" {
-		t.Errorf("export で始まるだけのキー: %q", k)
+		t.Errorf("a key that only starts with export: %q", k)
 	}
 }
 
 func TestLoadConfigRejectsUnsafeCompose(t *testing.T) {
 	bad := []string{"", "/etc/compose.yaml", `\etc\compose.yaml`, "../compose.yaml", "a/../../compose.yaml", "."}
 	if runtime.GOOS == "windows" {
-		// ドライブ・UNC パスは Windows でだけ特別な意味を持つ (unix では "C:x" は普通のファイル名)。
+		// Drive and UNC paths are special only on Windows ("C:x" is an ordinary file name on unix).
 		bad = append(bad, `C:\compose.yaml`, `C:compose.yaml`, `\\srv\share\compose.yaml`, `..\compose.yaml`)
 	}
 	for _, c := range bad {
@@ -507,7 +507,7 @@ func TestLoadConfigRejectsUnsafeCompose(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := loadConfig(dir); err == nil {
-			t.Errorf("compose=%q を拒否していない", c)
+			t.Errorf("compose=%q is not refused", c)
 		}
 	}
 	dir := t.TempDir()
@@ -515,7 +515,7 @@ func TestLoadConfigRejectsUnsafeCompose(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := loadConfig(dir); err != nil {
-		t.Errorf("相対パスは許す: %v", err)
+		t.Errorf("a relative path is allowed: %v", err)
 	}
 }
 
@@ -531,7 +531,7 @@ type call struct {
 	args []string
 }
 
-// runner を差し替えて呼び出しを記録する (グローバル変数・t.Setenv と t.Chdir も使うので、並列にはできない)。
+// Replaces runner and records the calls (it uses a global variable, t.Setenv and t.Chdir, so tests cannot run in parallel).
 func captureRunner(t *testing.T) *[]call {
 	t.Helper()
 	var calls []call
@@ -559,20 +559,20 @@ func TestRmPassesPinnedArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(*calls) != 1 {
-		t.Fatalf("呼び出し数=%d", len(*calls))
+		t.Fatalf("number of calls = %d", len(*calls))
 	}
 	c := (*calls)[0]
 	want := strings.Join(rmArgs(proj, wt, filepath.Join(wt, "compose.yaml")), " ")
 	if c.name != "docker" || strings.Join(c.args, " ") != want {
-		t.Errorf("引数=%v", c.args)
+		t.Errorf("arguments = %v", c.args)
 	}
 	for _, f := range []string{"--project-name " + proj, "--project-directory " + wt, "-f " + filepath.Join(wt, "compose.yaml")} {
 		if !strings.Contains(want, f) {
-			t.Errorf("%q が固定されていない: %s", f, want)
+			t.Errorf("%q is not pinned: %s", f, want)
 		}
 	}
 	if strings.Contains(strings.Join(c.env, "\n"), "COMPOSE_FILE=") {
-		t.Error("COMPOSE_FILE が環境に残っている")
+		t.Error("COMPOSE_FILE is left in the environment")
 	}
 }
 
@@ -611,7 +611,7 @@ func TestUpWritesEnvAndCleansSailEnvironment(t *testing.T) {
 		}
 	}
 	if n != 1 {
-		t.Errorf("SESSION_COOKIE の行数=%d", n)
+		t.Errorf("number of SESSION_COOKIE lines = %d", n)
 	}
 	if port, _ := e.Get("APP_PORT"); port == "" || port == "80" || port == "9999" {
 		t.Errorf("APP_PORT=%q", port)
@@ -620,14 +620,14 @@ func TestUpWritesEnvAndCleansSailEnvironment(t *testing.T) {
 		t.Errorf("APP_URL=%q", u)
 	}
 	if fi, _ := os.Stat(filepath.Join(wt, ".env")); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
-		t.Errorf(".env のモード=%v", fi.Mode().Perm())
+		t.Errorf(".env mode = %v", fi.Mode().Perm())
 	}
 	if len(*calls) != 1 || (*calls)[0].args[0] != "up" || (*calls)[0].args[1] != "-d" {
-		t.Fatalf("sail の呼び出し=%v", *calls)
+		t.Fatalf("calls to sail = %v", *calls)
 	}
 	env := strings.Join((*calls)[0].env, "\n")
 	if strings.Contains(env, "APP_PORT=") || strings.Contains(env, "COMPOSE_PROFILES=") {
-		t.Error("ポート変数・COMPOSE_* が sail の環境に残っている")
+		t.Error("port variables or COMPOSE_* are left in sail's environment")
 	}
 }
 
@@ -653,7 +653,7 @@ func captureStderr(t *testing.T) *strings.Builder {
 func TestStopDoesNotRefuseAndWarns(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	writeFakeSail(t, wt)
-	// 上書きキー・別プロジェクト名があっても止める (拒否せず警告する)。
+	// stop proceeds even with an override key or another project name (it warns instead of refusing).
 	env := "COMPOSE_FILE=/other.yaml\nCOMPOSE_PROJECT_NAME=other-project\nCOMPOSE_PROFILES=x\n"
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte(env), 0o600); err != nil {
 		t.Fatal(err)
@@ -661,18 +661,18 @@ func TestStopDoesNotRefuseAndWarns(t *testing.T) {
 	warn := captureStderr(t)
 	calls := captureRunner(t)
 	if err := cmdStop(nil); err != nil {
-		t.Fatalf("stop が拒否した: %v", err)
+		t.Fatalf("stop refused: %v", err)
 	}
 	if len(*calls) != 1 || (*calls)[0].args[0] != "stop" {
-		t.Fatalf("sail の呼び出し=%v", *calls)
+		t.Fatalf("calls to sail = %v", *calls)
 	}
 	for _, want := range []string{"COMPOSE_FILE", `"other-project"`, strconvQuote(projectName(main, wt))} {
 		if !strings.Contains(warn.String(), want) {
-			t.Errorf("警告に %s が含まれない: %s", want, warn)
+			t.Errorf("the warning lacks %s: %s", want, warn)
 		}
 	}
 	if strings.Contains(warn.String(), "COMPOSE_PROFILES") {
-		t.Errorf("COMPOSE_PROFILES を警告している: %s", warn)
+		t.Errorf("warned about COMPOSE_PROFILES: %s", warn)
 	}
 }
 
@@ -684,7 +684,7 @@ func TestStopAllowsSymlinkEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, filepath.Join(wt, ".env")); err != nil {
-		t.Skip("シンボリックリンクを作れない環境:", err)
+		t.Skip("cannot create symbolic links here:", err)
 	}
 	warn := captureStderr(t)
 	calls := captureRunner(t)
@@ -692,7 +692,7 @@ func TestStopAllowsSymlinkEnv(t *testing.T) {
 		t.Fatalf("stop: err=%v calls=%v", err, *calls)
 	}
 	if warn.Len() != 0 {
-		t.Errorf("リンクの .env は読まない: %s", warn)
+		t.Errorf("a linked .env is not read: %s", warn)
 	}
 }
 
@@ -735,14 +735,14 @@ func TestUpAllowsProfilesRefusesEnvFiles(t *testing.T) {
 	calls := captureRunner(t)
 	write("COMPOSE_PROFILES=debug\n")
 	if err := cmdUp(nil); err != nil || len(*calls) != 1 {
-		t.Fatalf("up が COMPOSE_PROFILES を拒否した: err=%v", err)
+		t.Fatalf("up refused COMPOSE_PROFILES: err=%v", err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(wt, ".env")); !strings.Contains(string(b), "COMPOSE_PROFILES=debug") {
-		t.Errorf("COMPOSE_PROFILES が消えた: %s", b)
+		t.Errorf("COMPOSE_PROFILES disappeared: %s", b)
 	}
 	write("COMPOSE_ENV_FILES=other.env\n")
 	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "COMPOSE_ENV_FILES") {
-		t.Errorf("up が COMPOSE_ENV_FILES を拒否していない: %v", err)
+		t.Errorf("up does not refuse COMPOSE_ENV_FILES: %v", err)
 	}
 }
 
@@ -754,31 +754,31 @@ func TestRmRefusesProfiles(t *testing.T) {
 	}
 	calls := captureRunner(t)
 	if err := cmdRm([]string{"-y"}); err == nil || !strings.Contains(err.Error(), "COMPOSE_PROFILES") || len(*calls) != 0 {
-		t.Errorf("rm が COMPOSE_PROFILES を拒否していない: %v", err)
+		t.Errorf("rm does not refuse COMPOSE_PROFILES: %v", err)
 	}
 }
 
 func TestReadEnvIfRegularSkipsNonRegular(t *testing.T) {
 	dir := t.TempDir()
 	if _, ok := readEnvIfRegular(filepath.Join(dir, "missing")); ok {
-		t.Error("無いファイルを読んだ")
+		t.Error("read a missing file")
 	}
 	real := filepath.Join(dir, "real")
 	if err := os.WriteFile(real, []byte("A=1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if e, ok := readEnvIfRegular(real); !ok {
-		t.Error("通常ファイルを読めない")
+		t.Error("cannot read a regular file")
 	} else if v, _ := e.Get("A"); v != "1" {
 		t.Errorf("A=%q", v)
 	}
 	if err := os.Symlink(real, filepath.Join(dir, "link")); err == nil {
 		if _, ok := readEnvIfRegular(filepath.Join(dir, "link")); ok {
-			t.Error("リンクを読んだ")
+			t.Error("read a link")
 		}
 	}
 	if _, ok := readEnvIfRegular(dir); ok {
-		t.Error("ディレクトリを読んだ")
+		t.Error("read a directory")
 	}
 }
 
@@ -795,7 +795,7 @@ func newLinkedDir(t *testing.T, names ...string) (real string, links []string) {
 	for _, n := range names {
 		l := filepath.Join(base, n)
 		if err := os.Symlink(real, l); err != nil {
-			t.Skip("シンボリックリンクを作れない環境:", err)
+			t.Skip("cannot create symbolic links here:", err)
 		}
 		links = append(links, l)
 	}
@@ -806,38 +806,38 @@ func TestRegistryMigrate(t *testing.T) {
 	real, links := newLinkedDir(t, "b-link", "a-link")
 	gone := filepath.Join(filepath.Dir(real), "gone")
 
-	// 別名のキーが root に統合され、別名は残らない。消えたパスのキーは保持する。
+	// An alias key is merged into root and no alias remains. A key of a path that no longer exists is kept.
 	r := &Registry{Worktrees: map[string]map[string]int{links[0]: {"APP_PORT": 81}, gone: {"APP_PORT": 82}}}
 	r.migrate(real)
 	if got := r.Worktrees[real]["APP_PORT"]; got != 81 {
-		t.Errorf("統合されていない: %v", r.Worktrees)
+		t.Errorf("not merged: %v", r.Worktrees)
 	}
 	if _, ok := r.Worktrees[links[0]]; ok {
-		t.Errorf("別名が残った: %v", r.Worktrees)
+		t.Errorf("an alias is left: %v", r.Worktrees)
 	}
 	if r.Worktrees[gone]["APP_PORT"] != 82 {
-		t.Errorf("消えたパスのキーを触った: %v", r.Worktrees)
+		t.Errorf("touched the key of a missing path: %v", r.Worktrees)
 	}
 
-	// root が既にあればそちらを優先し、別名は消す (別名のポートは used に残らない)。
+	// An existing root entry wins and the alias is dropped (the alias's ports are not left in used).
 	r = &Registry{Worktrees: map[string]map[string]int{real: {"APP_PORT": 90}, links[0]: {"APP_PORT": 81}}}
 	r.migrate(real)
 	if r.Worktrees[real]["APP_PORT"] != 90 || len(r.Worktrees) != 1 || r.used("other")[81] {
-		t.Errorf("root 優先になっていない: %v", r.Worktrees)
+		t.Errorf("root does not win: %v", r.Worktrees)
 	}
 
-	// k == root は変えない。
+	// k == root is left unchanged.
 	r = &Registry{Worktrees: map[string]map[string]int{real: {"APP_PORT": 90}}}
 	r.migrate(real)
 	if r.Worktrees[real]["APP_PORT"] != 90 || len(r.Worktrees) != 1 {
-		t.Errorf("k==root を変えた: %v", r.Worktrees)
+		t.Errorf("changed k==root: %v", r.Worktrees)
 	}
 
-	// 複数の別名があり root に無いときは、辞書順で最小のキー (a-link) を採る。
+	// With several aliases and no root entry, the smallest key (a-link) is adopted.
 	r = &Registry{Worktrees: map[string]map[string]int{links[0]: {"APP_PORT": 81}, links[1]: {"APP_PORT": 82}}}
 	r.migrate(real)
 	if r.Worktrees[real]["APP_PORT"] != 82 || len(r.Worktrees) != 1 {
-		t.Errorf("決定的に採用されていない: %v", r.Worktrees)
+		t.Errorf("not adopted deterministically: %v", r.Worktrees)
 	}
 }
 
@@ -849,7 +849,7 @@ func TestUpReusesPortsRecordedUnderSymlinkedPath(t *testing.T) {
 	}
 	alias := filepath.Join(t.TempDir(), "alias")
 	if err := os.Symlink(wt, alias); err != nil {
-		t.Skip("シンボリックリンクを作れない環境:", err)
+		t.Skip("cannot create symbolic links here:", err)
 	}
 	reg, err := loadRegistry()
 	if err != nil {
@@ -865,11 +865,11 @@ func TestUpReusesPortsRecordedUnderSymlinkedPath(t *testing.T) {
 	}
 	e, _ := readEnv(filepath.Join(wt, ".env"))
 	if v, _ := e.Get("APP_PORT"); v != "8123" {
-		t.Errorf("別名で記録したポートを再利用していない: APP_PORT=%q", v)
+		t.Errorf("the port recorded under the alias is not reused: APP_PORT=%q", v)
 	}
 	reg, _ = loadRegistry()
 	if _, ok := reg.Worktrees[alias]; ok || reg.Worktrees[wt]["APP_PORT"] != 8123 {
-		t.Errorf("レジストリが移行されていない: %v", reg.Worktrees)
+		t.Errorf("registry not migrated: %v", reg.Worktrees)
 	}
 }
 
@@ -882,7 +882,7 @@ func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// レジストリが壊れていると、docker も stdin も使わずに失敗する。
+	// A broken registry fails without using docker or stdin.
 	p, err := registryPath()
 	if err != nil {
 		t.Fatal(err)
@@ -899,13 +899,13 @@ func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 	t.Cleanup(func() { stdin = old })
 	calls := captureRunner(t)
 	if err := cmdRm(nil); err == nil || len(*calls) != 0 || in.Len() != 2 {
-		t.Fatalf("壊れたレジストリで失敗していない: err=%v calls=%d", err, len(*calls))
+		t.Fatalf("a broken registry does not fail: err=%v calls=%d", err, len(*calls))
 	}
 
-	// 別名で記録されたキーも rm で全て解放される。
+	// Keys recorded under an alias are all released by rm.
 	alias := filepath.Join(t.TempDir(), "alias")
 	if err := os.Symlink(wt, alias); err != nil {
-		t.Skip("シンボリックリンクを作れない環境:", err)
+		t.Skip("cannot create symbolic links here:", err)
 	}
 	reg := &Registry{Worktrees: map[string]map[string]int{alias: {"APP_PORT": 8123}, "/other/wt": {"APP_PORT": 8200}}}
 	if err := reg.save(); err != nil {
@@ -916,7 +916,7 @@ func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 	}
 	reg, _ = loadRegistry()
 	if len(reg.Worktrees) != 1 || reg.Worktrees["/other/wt"]["APP_PORT"] != 8200 {
-		t.Errorf("別名のキーが解放されていない、または他のワークツリーを消した: %v", reg.Worktrees)
+		t.Errorf("the alias key was not released, or another worktree was removed: %v", reg.Worktrees)
 	}
 }
 
@@ -937,7 +937,7 @@ func TestRmKeepsRegistryUpdatesMadeWhileDockerRuns(t *testing.T) {
 	if err := reg.save(); err != nil {
 		t.Fatal(err)
 	}
-	// docker の実行中に、別のワークツリーの up がレジストリを更新した状況。
+	// The situation where another worktree's up updates the registry while docker is running.
 	old := runner
 	runner = func(string, []string, string, ...string) error {
 		r, err := loadRegistry()
@@ -953,7 +953,7 @@ func TestRmKeepsRegistryUpdatesMadeWhileDockerRuns(t *testing.T) {
 	}
 	reg, _ = loadRegistry()
 	if _, ok := reg.Worktrees[wt]; ok || reg.Worktrees["/during/rm"]["APP_PORT"] != 8300 {
-		t.Errorf("docker 実行中の更新を失った、または解放していない: %v", reg.Worktrees)
+		t.Errorf("lost the update made while docker ran, or did not release: %v", reg.Worktrees)
 	}
 }
 
@@ -968,10 +968,10 @@ func TestRmDoesNotSaveRegistryWhenDockerFails(t *testing.T) {
 	runner = func(string, []string, string, ...string) error { return fmt.Errorf("docker failed") }
 	t.Cleanup(func() { runner = old })
 	if err := cmdRm([]string{"-y"}); err == nil {
-		t.Fatal("docker の失敗を返していない")
+		t.Fatal("docker failure is not returned")
 	}
 	reg, _ = loadRegistry()
 	if reg.Worktrees[wt]["APP_PORT"] != 8123 {
-		t.Errorf("docker 失敗時にレジストリを変えた: %v", reg.Worktrees)
+		t.Errorf("changed the registry when docker failed: %v", reg.Worktrees)
 	}
 }

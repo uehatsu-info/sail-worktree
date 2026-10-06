@@ -20,12 +20,12 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: false # 依存が無く go.sum も無いので、キャッシュは使わない
+          cache: false # there are no dependencies and no go.sum, so do not use the cache
       - name: gofmt
         run: |
           unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then
-            echo "gofmt が必要なファイル:"
+            echo "Files that need gofmt:"
             echo "$unformatted"
             exit 1
           fi
@@ -35,7 +35,7 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-      - name: Release 対象を全てビルドできる
+      - name: Every release target builds
         run: |
           for goos in darwin linux windows; do
             for goarch in amd64 arm64; do
@@ -56,6 +56,6 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: false # 依存が無く go.sum も無いので、キャッシュは使わない
+          cache: false # there are no dependencies and no go.sum, so do not use the cache
       - run: go vet ./...
       - run: go test ./...

@@ -11,7 +11,7 @@ import (
 
 const configName = ".sail-worktree.json"
 
-// Config はプロジェクト直下に置く設定。リポジトリにコミットして全ワークツリーで共有する。
+// Config is the project-level setting. It is committed to the repository and shared by all worktrees.
 type Config struct {
 	Compose  string    `json:"compose"`
 	PortVars []PortVar `json:"port_vars"`
@@ -21,23 +21,23 @@ func loadConfig(root string) (*Config, error) {
 	b, err := os.ReadFile(filepath.Join(root, configName))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%s がありません。先に `sail-worktree init` を実行してください", configName)
+			return nil, fmt.Errorf("%s not found; run `sail-worktree init` first", configName)
 		}
 		return nil, err
 	}
 	var c Config
 	if err := json.Unmarshal(b, &c); err != nil {
-		return nil, fmt.Errorf("%s の解析に失敗: %w", configName, err)
+		return nil, fmt.Errorf("failed to parse %s: %w", configName, err)
 	}
 	if unsafeComposePath(c.Compose) {
-		return nil, fmt.Errorf("%s の compose (%q) はワークツリー内の相対パスにしてください", configName, c.Compose)
+		return nil, fmt.Errorf("compose (%q) in %s must be a relative path inside the worktree", c.Compose, configName)
 	}
 	return &c, nil
 }
 
-// unsafeComposePath は compose の値がワークツリー内の相対パスでないとき true を返す。rm の -f に渡るので、
-// 空・絶対パス・.. を含むものに加えて、Windows でドライブやサーバーを指す形 ("C:x"、"\\srv\x") と、
-// ドライブ文字の無いルート指定 ("/x"、"\x": filepath.IsAbs は false になる) も拒否する。
+// unsafeComposePath reports whether the compose value is not a relative path inside the worktree. It is passed to
+// rm's -f, so besides empty, absolute and ".." paths it also rejects forms that point at a drive or a server on
+// Windows ("C:x", "\\srv\x") and rooted paths without a drive letter ("/x", "\x": filepath.IsAbs is false for them).
 func unsafeComposePath(p string) bool {
 	if p == "" || filepath.IsAbs(p) || filepath.VolumeName(p) != "" || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
 		return true
@@ -52,10 +52,10 @@ func findCompose(root string) (string, error) {
 			return n, nil
 		}
 	}
-	return "", fmt.Errorf("compose.yml が見つかりません: %s", root)
+	return "", fmt.Errorf("compose.yml not found in %s", root)
 }
 
-// Registry はワークツリーごとに割り当て済みのポートを記録する (ユーザー全体で共有)。
+// Registry records the ports assigned to each worktree (shared by all projects of the user).
 type Registry struct {
 	Worktrees map[string]map[string]int `json:"worktrees"`
 }
@@ -82,7 +82,7 @@ func loadRegistry() (*Registry, error) {
 		return nil, err
 	}
 	if err := json.Unmarshal(b, r); err != nil {
-		return nil, fmt.Errorf("%s の解析に失敗: %w", p, err)
+		return nil, fmt.Errorf("failed to parse %s: %w", p, err)
 	}
 	if r.Worktrees == nil {
 		r.Worktrees = map[string]map[string]int{}
@@ -102,10 +102,10 @@ func (r *Registry) save() error {
 	return os.WriteFile(p, append(b, '\n'), 0o644)
 }
 
-// migrate は、root と同じ実体を指す別名のキー (旧版がシンボリックリンク経由のパスで記録したもの) を
-// root に統合する。メモリ上だけの操作で、保存は呼び出し側が成功時に行う。root に既存のエントリがあればそちらを優先し、
-// 無ければ別名のうち辞書順で最小のキーのエントリを採る (別名のポートは used に残らない)。
-// realPath にできない (消えた) パスのキーは触らない。
+// migrate merges keys that are aliases of root (recorded by an older version under a symlinked path) into root.
+// It only changes memory; the caller saves on success. An existing entry for root wins; otherwise the entry of the
+// alias with the smallest key (lexicographically) is adopted. The ports of dropped aliases are not left in used.
+// Keys whose path cannot be resolved (it no longer exists) are left alone.
 func (r *Registry) migrate(root string) {
 	var aliases []string
 	for k := range r.Worktrees {
@@ -125,7 +125,7 @@ func (r *Registry) migrate(root string) {
 	}
 }
 
-// used は other 以外のワークツリーに割り当て済みのポート集合を返す。
+// used returns the set of ports assigned to worktrees other than except.
 func (r *Registry) used(except string) map[int]bool {
 	m := map[int]bool{}
 	for wt, ports := range r.Worktrees {
