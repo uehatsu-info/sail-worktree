@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -78,8 +79,8 @@ func TestWriteFileNoFollowRefusesHardLink(t *testing.T) {
 	if err := os.Link(real, filepath.Join(dir, "hard")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeFileNoFollow(filepath.Join(dir, "hard"), []byte("x"), 0o600); err == nil {
-		t.Error("wrote through a hard link")
+	if err := writeFileNoFollow(filepath.Join(dir, "hard"), []byte("x"), 0o600); !errors.Is(err, errNotOwnFile) {
+		t.Errorf("a hard link is not refused as such: %v", err)
 	}
 	if b, _ := os.ReadFile(real); string(b) != "keep\n" {
 		t.Errorf("link target was rewritten: %q", b)

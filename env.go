@@ -146,8 +146,9 @@ func (e *envFile) Write(path string) error {
 	return writeFileNoFollow(path, []byte(s), 0o600)
 }
 
-// errNotOwnFile is wrapped by writeFileNoFollow's refusals, so that callers can tell them from I/O errors.
-var errNotOwnFile = errors.New("refusing to write through a link")
+// errNotOwnFile is wrapped by the refusals writeFileNoFollow's checks make, so that callers can tell them from I/O
+// errors (a link swapped in after the Lstat still fails, with the plain error of O_NOFOLLOW).
+var errNotOwnFile = errors.New("refusing to write to it")
 
 // writeFileNoFollow writes data to path without following a link to another file: a symbolic link, a non-regular
 // file and (on Unix) a file with other hard links are refused. A new file gets perm; an existing one keeps its mode.
