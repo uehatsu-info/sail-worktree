@@ -19,7 +19,8 @@ Usage:
   sail-worktree rm [-y]         remove containers, networks, volumes and built images, and release the ports
   sail-worktree version         print the version (the tag for go install ...@vX.Y.Z; (devel) or a pseudo-version for a local build)
 
-Run the commands in your Laravel project's directory (the one with compose.yaml and .sail-worktree.json) or below it.
+Run the commands in your Laravel project's directory (the one with the compose file, and .sail-worktree.json after
+init) or below it.
 The project may be in a subdirectory of the repository.
 `
 

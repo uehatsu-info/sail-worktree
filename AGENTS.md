@@ -88,16 +88,16 @@ These come from deliberate decisions; change them only on purpose and update the
   match exactly. Every refusing check runs *before* the confirmation prompt. It pins `--project-name`,
   `--project-directory` and `-f`, and runs without `COMPOSE_*` from the environment. Values from `.env` are untrusted:
   they are shown with `%+q`, and only names matching `safeProjectName` are put into a suggested shell command.
-  The compose file is resolved through its links (`composeInsideProject`) and refused unless its real path is a
-  regular file inside the project directory; `-f` gets that real path, so do not "simplify" it back to `Join(root, compose)`.
+  The compose file is resolved through its links (`composeInsideProject`) and refused unless its real path is a regular
+  file inside the project directory; `-f` gets that real path, so do not "simplify" it back to `Join(root, compose)`.
   Only `rm` has this check: `up`, `stop` and `init` do not run docker with `-f` (Sail finds the file itself), so their
-  `os.Stat` (in `findMarker`) is not a regression. Limits: Windows junctions are not followed (Go 1.23+ `EvalSymlinks`), a link swapped
-  after the check is not caught, and what the compose file refers to is not checked (relative `include:` and `extends:`
-  paths of a file reached through a link are resolved from its target's directory). A compose file that is a hard link
-  to a file outside the project directory is not detected, by choice: a path check cannot see one, only the link count could, and
-  compose files are sometimes shared that way. A plain checkout cannot create one because git stores no hard links, but a
-  script or the user can. Hard-link detection exists only for the files this tool writes (`.env`,
-  `.sail-worktree.json`), and only on Unix.
+  `os.Stat` (in `findMarker`) is not a regression. Limits: Windows junctions are not followed (Go 1.23+ `EvalSymlinks`),
+  a link swapped after the check is not caught, and what the compose file refers to is not checked (relative `include:`
+  and `extends:` paths of a file reached through a link are resolved from its target's directory). A compose file that
+  is a hard link to a file outside the project directory is not detected, by choice: a path check cannot see one, only
+  the link count could, and compose files are sometimes shared that way. A plain checkout cannot create one because git
+  stores no hard links, but a script or the user can. Hard-link detection exists only for the files this tool writes
+  (`.env`, `.sail-worktree.json`), and only on Unix.
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
   case-insensitively) from the environment passed to `sail` and `docker`. It must never return `nil`: a `nil`
   `exec.Cmd.Env` inherits the whole parent environment.
@@ -130,7 +130,8 @@ These come from deliberate decisions; change them only on purpose and update the
     `node_modules` and `.git`.
 - **Error output.** `main` prints the final error through `printErr`, which escapes what `strconv.IsPrint` rejects and
   invalid UTF-8 bytes; `\n` is kept for the layout (a newline inside a path can still start a line of its own).
-  New messages with paths use `%q`, so printable non-ASCII stays readable; values from `.env` keep `%+q`.
+  New messages with paths use `%q`, so printable non-ASCII stays readable; values from `.env` and the existing compose
+  errors (`composeInsideProject`) keep `%+q`, so do not "unify" them.
 - **Registry handling in `rm`.** Read the registry once before the prompt (to fail early on a broken file) and again
   after `docker` (so an update made meanwhile by another `up` is not lost); release the worktree only after docker
   succeeds.
@@ -152,6 +153,8 @@ These come from deliberate decisions; change them only on purpose and update the
 - Tests replace package variables (`runner`, `stdin`, `stderr`) through helpers such as `captureRunner` and
   `captureStderr`; restore them with `t.Cleanup`. These tests use `t.Setenv`/`t.Chdir`, so they cannot run in parallel.
 - A refusal that must happen before the prompt is tested by checking that stdin was not consumed and no command ran.
+- Compare messages that quote a path with `fmt.Sprintf("%q", path)` or `strconv.Quote`, never with a hand-written
+  backslash string, so the same test passes on Windows.
 - `readEnvIfRegular`'s defense against a path swapped for a FIFO between `Lstat` and `open` cannot be tested
   deterministically; the FIFO test only covers the `Lstat` stage.
 
