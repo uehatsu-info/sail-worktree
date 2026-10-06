@@ -64,7 +64,7 @@ func composeInsideWorktree(root, rel string) (string, error) {
 		return "", fmt.Errorf("compose file %+q resolves outside the worktree (%+q); replace the link with a real file or a link whose target is inside the worktree", rel, resolved)
 	}
 	if fi, err := os.Stat(resolved); err != nil || !fi.Mode().IsRegular() {
-		return "", fmt.Errorf("compose file %+q is not a regular file (%+q)", rel, resolved)
+		return "", fmt.Errorf("compose file %+q is not a regular file (%+q); point compose at a regular file inside the worktree", rel, resolved)
 	}
 	return resolved, nil
 }

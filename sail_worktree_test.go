@@ -1123,6 +1123,8 @@ func TestComposeInsideWorktree(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "dir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	const notRegular = "is not a regular file"
+	const notRegularHint = "point compose at a regular file inside the worktree"
 	cases := []struct {
 		name, rel, want string // want is an error substring; empty means accepted
 	}{
@@ -1130,8 +1132,8 @@ func TestComposeInsideWorktree(t *testing.T) {
 		{"name that starts with two dots", "..foo.yaml", ""},
 		{"directory that starts with two dots", filepath.Join("..d", "compose.yaml"), ""},
 		{"missing file", "missing.yaml", "compose file not found"},
-		{"directory", "dir", "is not a regular file"},
-		{"the worktree itself", ".", "is not a regular file"},
+		{"directory", "dir", notRegular},
+		{"the worktree itself", ".", notRegular},
 		{"parent directory", "..", "resolves outside the worktree"},
 		{"file in the parent directory", filepath.Join("..", "outside.yaml"), "resolves outside the worktree"},
 	}
@@ -1145,7 +1147,10 @@ func TestComposeInsideWorktree(t *testing.T) {
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), c.want) {
-				t.Errorf("error = %v, want it to contain %q", err, c.want)
+				t.Fatalf("error = %v, want it to contain %q", err, c.want)
+			}
+			if c.want == notRegular && !strings.Contains(err.Error(), notRegularHint) {
+				t.Errorf("error = %v, want it to say how to recover: %q", err, notRegularHint)
 			}
 		})
 	}
