@@ -206,6 +206,7 @@ func setupWorktreeRepo(t *testing.T) (main, wt string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AppData", t.TempDir())
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -332,7 +333,7 @@ type call struct {
 	args []string
 }
 
-// runner を差し替えて呼び出しを記録する。
+// runner を差し替えて呼び出しを記録する (グローバル変数・t.Setenv と t.Chdir も使うので、並列にはできない)。
 func captureRunner(t *testing.T) *[]call {
 	t.Helper()
 	var calls []call
@@ -420,7 +421,7 @@ func TestUpWritesEnvAndCleansSailEnvironment(t *testing.T) {
 	if u, _ := e.Get("APP_URL"); !strings.HasPrefix(u, "http://localhost:") {
 		t.Errorf("APP_URL=%q", u)
 	}
-	if fi, _ := os.Stat(filepath.Join(wt, ".env")); fi.Mode().Perm() != 0o600 {
+	if fi, _ := os.Stat(filepath.Join(wt, ".env")); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf(".env のモード=%v", fi.Mode().Perm())
 	}
 	if len(*calls) != 1 || (*calls)[0].args[0] != "up" || (*calls)[0].args[1] != "-d" {
