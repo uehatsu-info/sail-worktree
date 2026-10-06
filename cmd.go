@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -179,7 +180,7 @@ func cmdUp(args []string) error {
 	env.Set("SESSION_COOKIE", sessionCookieName(proj))
 	if appURL, ok := env.Get("APP_URL"); ok {
 		if u, err := url.Parse(appURL); err == nil && u.Hostname() != "" && ports["APP_PORT"] != 0 {
-			u.Host = u.Hostname() + ":" + strconv.Itoa(ports["APP_PORT"])
+			u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(ports["APP_PORT"])) // keeps the brackets of an IPv6 host
 			env.Set("APP_URL", u.String())
 		}
 	}

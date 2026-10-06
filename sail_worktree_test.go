@@ -1247,3 +1247,21 @@ func TestWriteFileNoFollowCreatesAndReplaces(t *testing.T) {
 		t.Errorf("content = %q (not truncated)", b)
 	}
 }
+
+func TestUpKeepsIPv6BracketsInAppURL(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFile(t, filepath.Join(main, ".env"), "APP_URL=http://[::1]\n")
+	writeFakeSail(t, wt)
+	captureRunner(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	e, err := readEnv(filepath.Join(wt, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, _ := e.Get("APP_PORT")
+	if v, _ := e.Get("APP_URL"); v != "http://[::1]:"+port {
+		t.Errorf("APP_URL=%q", v)
+	}
+}
