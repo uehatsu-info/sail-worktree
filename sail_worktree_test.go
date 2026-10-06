@@ -127,7 +127,7 @@ func TestCheckOwnEnv(t *testing.T) {
 	}
 	link := filepath.Join(dir, "sym")
 	if err := os.Symlink(real, link); err != nil {
-		t.Fatal(err)
+		t.Skip("cannot create symbolic links here:", err)
 	}
 	if err := checkOwnEnv(link); err == nil {
 		t.Error("symbolic link not refused")
@@ -455,7 +455,7 @@ func TestUpRefusesSymlinkEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, filepath.Join(wt, ".env")); err != nil {
-		t.Fatal(err)
+		t.Skip("cannot create symbolic links here:", err)
 	}
 	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "symbolic link") {
 		t.Errorf("up does not refuse a symbolic link: %v", err)
@@ -469,7 +469,7 @@ func TestProjectNameIsStableAcrossSymlinkedPaths(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	link := filepath.Join(filepath.Dir(wt), "via-link")
 	if err := os.Symlink(wt, link); err != nil {
-		t.Fatal(err)
+		t.Skip("cannot create symbolic links here:", err)
 	}
 	root, err := worktreeRoot(link)
 	if err != nil {
