@@ -56,7 +56,7 @@ sail-worktree up -d
 コンテナ・ネットワーク・ボリューム（DB データ含む）・ビルドイメージを削除し、割り当てたポートを解放します。
 `docker compose --project-name <名前> --project-directory <root> -f <compose> down -v --rmi local --remove-orphans` 相当です。確認プロンプトは `-y` で省略できます。
 `.env` は削除しません。
-取り返しがつかないので、`.env` の `COMPOSE_PROJECT_NAME` がこのワークツリー用に再計算した名前と一致しないとき（手で書き換えた・別のワークツリーの名前が残っている・ワークツリーを移動した）と、`.env` に `COMPOSE_FILE`・`COMPOSE_PROFILES`・`COMPOSE_ENV_FILES`・`SAIL_FILES` があるときは拒否します（`up` は `COMPOSE_PROFILES` を許しますが `rm` は許しません。`rm` の前にその行を消してください）。
+取り返しがつかないので、`.env` の `COMPOSE_PROJECT_NAME` がこのワークツリー用に再計算した名前と一致しないとき（手で書き換えた・別のワークツリーの名前が残っている・ワークツリーを移動した）と、`.env` に `COMPOSE_FILE`・`COMPOSE_PROFILES`・`COMPOSE_ENV_FILES`・`SAIL_FILES` があるときは拒否します（`up` は `COMPOSE_PROFILES` を許しますが `rm` は許しません。`rm` の前にその行を消してください）。これらの検査は全て確認プロンプトの前に行います。名前が一致しないときのエラーには復旧手順が出ます。通常は `.env` の `COMPOSE_PROJECT_NAME` を表示された名前に戻してください。古い版が別の名前で作ったプロジェクトを消す場合だけ、手動の `docker compose -p <名前> down -v ...` を示します（名前が安全な文字種＝小文字英数字・`_`・`-` のときのみ）。実行前に `docker compose ls -a` で確認してください。
 
 ### 5. `sail-worktree version`
 

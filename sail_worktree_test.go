@@ -248,8 +248,99 @@ func TestRmRefusesMismatchedProjectName(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := cmdRm([]string{"-y"})
-	if err == nil || !strings.Contains(err.Error(), "一致しません") {
+	if err == nil || !strings.Contains(err.Error(), "一致しない") {
 		t.Errorf("名前の不一致を拒否していない: %v", err)
+	}
+}
+
+func TestNameMismatchErrorGuidance(t *testing.T) {
+	msg := nameMismatchError("old-name", "app-feat-abc123").Error()
+	for _, want := range []string{`"old-name"`, `"app-feat-abc123"`, "docker compose ls -a", "docker compose -p old-name down -v --rmi local --remove-orphans", "取り返しがつきません"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("%q が含まれない: %s", want, msg)
+		}
+	}
+	// 安全でない文字種の名前は、コマンドに埋め込まず、表示は %+q でエスケープする。
+	for _, bad := range []string{"x; rm -rf ~", "$(id)", "a`id`", "line1\nline2", "esc\x1b[31m", "-rf", "UPPER", "名前", "", strings.Repeat("a", 65)} {
+		msg := nameMismatchError(bad, "app-feat-abc123").Error()
+		if strings.Contains(msg, "docker compose -p") {
+			t.Errorf("%q でコマンドを出している: %s", bad, msg)
+		}
+		if strings.ContainsAny(msg, "\x1b") || strings.Count(msg, "\n") != 2 {
+			t.Errorf("%q が未エスケープで出ている: %q", bad, msg)
+		}
+	}
+	// 不正な want も %+q で出す。
+	if msg := nameMismatchError("old", "bad\nname").Error(); strings.Contains(msg, "bad\nname") {
+		t.Errorf("want が未エスケープ: %q", msg)
+	}
+}
+
+func TestRmRefusesBeforePromptWithoutReadingStdin(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	proj := projectName(main, wt)
+	// compose ファイルが無い (setupWorktreeRepo は作らない) .env だけの状態。
+	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := strings.NewReader("y\n")
+	old := stdin
+	stdin = in
+	t.Cleanup(func() { stdin = old })
+	calls := captureRunner(t)
+	err := cmdRm(nil)
+	if err == nil || !strings.Contains(err.Error(), "compose ファイルが見つかりません") {
+		t.Fatalf("compose 欠落を拒否していない: %v", err)
+	}
+	if in.Len() != 2 || len(*calls) != 0 {
+		t.Errorf("プロンプト前の拒否のはずが stdin を読んだ/実行した: remaining=%d calls=%d", in.Len(), len(*calls))
+	}
+}
+
+func TestOverrideErrorsGuideBySource(t *testing.T) {
+	cases := []struct {
+		src  envSource
+		want []string
+	}{
+		{envOwn, []string{".env に COMPOSE_FILE があるため", "その行を消してください"}},
+		{envFromMain, []string{"メインワークツリーの .env に COMPOSE_FILE", "他のワークツリーの元にも影響", "先に作って"}},
+		{envFromMainExample, []string{".env.example に COMPOSE_FILE", ".env.example から消す", "先に作って"}},
+	}
+	for _, c := range cases {
+		msg := upOverrideError("COMPOSE_FILE", c.src).Error()
+		for _, w := range c.want {
+			if !strings.Contains(msg, w) {
+				t.Errorf("src=%d: %q が含まれない: %s", c.src, w, msg)
+			}
+		}
+	}
+}
+
+func TestUpOverrideErrorSourceIsTracked(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	captureRunner(t)
+	// .env が無く、メインの .env に COMPOSE_FILE がある。
+	if err := os.WriteFile(filepath.Join(main, ".env"), []byte("COMPOSE_FILE=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "メインワークツリーの .env に COMPOSE_FILE") {
+		t.Errorf("メイン .env 由来の案内になっていない: %v", err)
+	}
+	// メインの .env が無く、.env.example に COMPOSE_FILE がある。
+	os.Remove(filepath.Join(main, ".env"))
+	if err := os.WriteFile(filepath.Join(main, ".env.example"), []byte("COMPOSE_FILE=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), ".env.example に COMPOSE_FILE") {
+		t.Errorf(".env.example 由来の案内になっていない: %v", err)
+	}
+	// 自身の .env に COMPOSE_FILE がある。
+	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_FILE=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), ".env に COMPOSE_FILE があるため") {
+		t.Errorf("自身の .env の案内になっていない: %v", err)
 	}
 }
 

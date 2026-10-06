@@ -109,10 +109,13 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
+	src := envOwn
 	env, err := readEnv(envPath)
 	if os.IsNotExist(err) {
+		src = envFromMain
 		env, err = readEnv(filepath.Join(c.main, ".env"))
 		if os.IsNotExist(err) {
+			src = envFromMainExample
 			env, err = readEnv(filepath.Join(c.main, ".env.example"))
 		}
 		if err != nil {
@@ -124,7 +127,7 @@ func cmdUp(args []string) error {
 	}
 
 	if k, ok := env.overrideKey(upOverrideKeys); ok {
-		return fmt.Errorf(".env に %s は書けません (別の compose ファイルを指し得るため)", k)
+		return upOverrideError(k, src)
 	}
 	ports, err := allocatePorts(c.cfg.PortVars, reg.Worktrees[c.root], reg.used(c.root), portFree)
 	if err != nil {
@@ -160,6 +163,27 @@ func cmdUp(args []string) error {
 	return runSail(c.root, c.cfg, append([]string{"up"}, args...))
 }
 
+// envSource は up が .env の元にした場所。拒否エラーの案内を変えるために覚えておく。
+type envSource int
+
+const (
+	envOwn             envSource = iota // このワークツリー自身の .env
+	envFromMain                         // メインワークツリーの .env (コピー)
+	envFromMainExample                  // メインワークツリーの .env.example (コピー)
+)
+
+func upOverrideError(key string, src envSource) error {
+	switch src {
+	case envFromMain:
+		return fmt.Errorf("メインワークツリーの .env に %s があり、それをコピーした .env にも入るため up できません (別の compose ファイルを指し得るため)。"+
+			"メインの .env から消す (他のワークツリーの元にも影響します) か、このワークツリーに .env を先に作って、その行を入れずに up してください", key)
+	case envFromMainExample:
+		return fmt.Errorf("メインワークツリーの .env.example に %s があり、それをコピーした .env にも入るため up できません (別の compose ファイルを指し得るため)。"+
+			".env.example から消すか、このワークツリーに .env を先に作って、その行を入れずに up してください", key)
+	}
+	return fmt.Errorf(".env に %s があるため up できません (別の compose ファイルを指し得るため)。.env からその行を消してください", key)
+}
+
 func cmdStop(args []string) error {
 	c, err := loadCtx()
 	if err != nil {
@@ -173,8 +197,30 @@ func cmdStop(args []string) error {
 	return runSail(c.root, c.cfg, append([]string{"stop"}, args...))
 }
 
-// stderr は警告の出力先 (テストで差し替える)。
-var stderr io.Writer = os.Stderr
+// stdin と stderr は確認プロンプトの入力と警告の出力先 (テストで差し替える)。
+var (
+	stdin  io.Reader = os.Stdin
+	stderr io.Writer = os.Stderr
+)
+
+// safeProjectName は復旧コマンドに埋め込んでよい名前。.env の値は信頼できないので、
+// シェルや docker のオプションとして解釈されない文字種だけを許す (先頭は英数字、長さ上限あり)。
+var safeProjectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// nameMismatchError は rm が拒否したときのエラー。.env の名前 (got) とこのワークツリーの名前 (want) は
+// どちらも %+q で表示し、復旧コマンドには安全な文字種だけの got を埋め込む。
+func nameMismatchError(got, want string) error {
+	msg := fmt.Sprintf(".env の COMPOSE_PROJECT_NAME (%+q) がこのワークツリーの名前 (%+q) と一致しないため、rm できません。"+
+		"\n対処: .env の COMPOSE_PROJECT_NAME を %+q に直して、もう一度 rm を実行してください。", got, want, want)
+	if safeProjectName.MatchString(got) {
+		msg += fmt.Sprintf("\n古い版が別の名前で作ったプロジェクトを消す場合だけ、`docker compose ls -a` でその名前のプロジェクトが本当にこのワークツリーのものか確認してから、"+
+			"次を実行してください (-v でボリューム=DB データも消え、取り返しがつきません。環境の COMPOSE_* があると結果が変わります):"+
+			"\n  docker compose -p %s down -v --rmi local --remove-orphans", got)
+	} else {
+		msg += "\n.env の名前が安全な文字種 (小文字英数字・_・-) でないため、手動で消すコマンドは示しません。`docker compose ls -a` で対象を確認してください。"
+	}
+	return fmt.Errorf("%s", msg)
+}
 
 // warnStopTarget は .env が別の compose ファイル・プロジェクトを指していそうなとき、stop の前に警告する。
 // ベストエフォートで、シェル式による上書き等は検出できない。.env が通常ファイルでなければ何もしない。
@@ -218,7 +264,7 @@ func cmdRm(args []string) error {
 		return fmt.Errorf(".env を読めません (up 済みのワークツリーで実行してください): %w", err)
 	}
 	if k, ok := env.overrideKey(rmOverrideKeys); ok {
-		return fmt.Errorf(".env に %s は書けません (別の compose ファイルを指し得るため)", k)
+		return fmt.Errorf(".env に %s があるため rm できません (別の compose ファイル・サービスを指し得るため)。rm の前に .env からその行を消してください", k)
 	}
 	proj, ok := env.Get("COMPOSE_PROJECT_NAME")
 	if !ok || proj == "" {
@@ -227,21 +273,22 @@ func cmdRm(args []string) error {
 	// 取り返しのつかない down -v なので、.env の値を信用せず、このワークツリーの名前を再計算して完全一致を要求する
 	// (別のプロジェクト・別のワークツリーの名前が残っている、手で書き換えた、ワークツリーを移動した、を拒否する)。
 	if want := projectName(c.main, c.root); proj != want {
-		return fmt.Errorf(".env の COMPOSE_PROJECT_NAME (%q) がこのワークツリーの名前 (%q) と一致しません。消しません", proj, want)
+		return nameMismatchError(proj, want)
+	}
+	// 拒否の検査は全て確認プロンプトの前に済ませる (y と答えた後に拒否しない)。
+	composePath := filepath.Join(c.root, c.cfg.Compose)
+	if fi, err := os.Stat(composePath); err != nil || !fi.Mode().IsRegular() {
+		return fmt.Errorf("compose ファイルが見つかりません: %s", composePath)
 	}
 	if !yes {
 		fmt.Printf("プロジェクト %q のコンテナ・ネットワーク・ボリューム(DBデータ含む)・ビルドイメージを削除します。よろしいですか? [y/N] ", proj)
-		ans, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		ans, _ := bufio.NewReader(stdin).ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(ans)); a != "y" && a != "yes" {
 			fmt.Println("中止しました")
 			return nil
 		}
 	}
 	// プロジェクト名・ディレクトリ・compose ファイルを明示し、環境の COMPOSE_* を外して実行する。
-	composePath := filepath.Join(c.root, c.cfg.Compose)
-	if fi, err := os.Stat(composePath); err != nil || !fi.Mode().IsRegular() {
-		return fmt.Errorf("compose ファイルが見つかりません: %s", composePath)
-	}
 	if err := runner(c.root, cleanEnv(nil), "docker", rmArgs(proj, c.root, composePath)...); err != nil {
 		return err
 	}
