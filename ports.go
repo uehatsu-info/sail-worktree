@@ -1,16 +1,46 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"os"
+	"runtime"
+	"syscall"
 )
 
+// portFree は p が全インターフェースと 127.0.0.1 の両方で空いているか確かめる
+// (macOS は SO_REUSEADDR により、127.0.0.1 だけに束縛した他プロセスがいても ":p" の束縛に成功し得るため)。
+// 全インターフェースの束縛が失敗した (権限エラーを含む) ときは常に「塞がり」とする。
+// 127.0.0.1 の束縛の失敗の扱いは loopbackBindBlocked を見ること。
 func portFree(p int) bool {
 	l, err := net.Listen("tcp", fmt.Sprintf(":%d", p))
 	if err != nil {
 		return false
 	}
 	l.Close()
+	l, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+	if err != nil {
+		return !loopbackBindBlocked(err, runtime.GOOS)
+	}
+	l.Close()
+	return true
+}
+
+// loopbackBindBlocked は 127.0.0.1 への束縛が err で失敗したとき、ポートが塞がっているとみなすか。
+//   - 権限エラー: macOS は特権ポート (1024 未満) の 127.0.0.1 への束縛を一般ユーザーに許さないが、
+//     Docker は束縛できるので「塞がり」とみなさない。他の OS では塞がりとみなす (Windows の権限エラーは
+//     他のプロセスが排他的に使っていることがあるため)。
+//   - EADDRNOTAVAIL: 127.0.0.1 が無い環境。ここでは使用中かどうか分からないので、塞がりとみなさない。
+//     Windows のエラーコード (WSA*) は syscall.EADDRNOTAVAIL と一致しないので、Windows では塞がり扱いになる (安全側)。
+//   - それ以外 (EADDRINUSE 等): 塞がり。
+func loopbackBindBlocked(err error, goos string) bool {
+	switch {
+	case errors.Is(err, os.ErrPermission):
+		return goos != "darwin"
+	case errors.Is(err, syscall.EADDRNOTAVAIL):
+		return false
+	}
 	return true
 }
 

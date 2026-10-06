@@ -18,8 +18,21 @@ func gitOut(dir string, args ...string) (string, error) {
 }
 
 // worktreeRoot は dir を含むワークツリーのルートを返す。
+// シンボリックリンクは解決した実パスで返す(プロジェクト名のハッシュが呼び出し経路で変わらないように)。
 func worktreeRoot(dir string) (string, error) {
-	return gitOut(dir, "rev-parse", "--show-toplevel")
+	out, err := gitOut(dir, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", err
+	}
+	return realPath(out)
+}
+
+func realPath(p string) (string, error) {
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(r), nil
 }
 
 // mainWorktree は最初に列挙されるワークツリー(メイン)のパスを返す。
@@ -30,6 +43,10 @@ func mainWorktree(dir string) (string, error) {
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if p, ok := strings.CutPrefix(line, "worktree "); ok {
+			// メインのディレクトリが消えている (prunable) 等で実パスにできないときは Clean で続ける。
+			if r, err := realPath(p); err == nil {
+				return r, nil
+			}
 			return filepath.Clean(p), nil
 		}
 	}
