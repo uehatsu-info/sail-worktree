@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -204,6 +205,31 @@ func TestFilterEnv(t *testing.T) {
 	}
 	if got := filterEnv(nil, nil); got == nil {
 		t.Error("入力が空のとき nil")
+	}
+}
+
+func TestLoopbackBindBlocked(t *testing.T) {
+	perm := fmt.Errorf("listen: %w", os.ErrPermission)
+	inUse := fmt.Errorf("listen: %w", syscall.EADDRINUSE)
+	noAddr := fmt.Errorf("listen: %w", syscall.EADDRNOTAVAIL)
+	cases := []struct {
+		name string
+		err  error
+		goos string
+		want bool
+	}{
+		{"darwin の権限エラー(特権ポート)は塞がりでない", perm, "darwin", false},
+		{"linux の権限エラーは塞がり", perm, "linux", true},
+		{"windows の権限エラーは塞がり", perm, "windows", true},
+		{"loopback が無い環境は塞がりでない", noAddr, "linux", false},
+		{"使用中は塞がり (darwin)", inUse, "darwin", true},
+		{"使用中は塞がり (linux)", inUse, "linux", true},
+		{"その他のエラーは塞がり", fmt.Errorf("boom"), "linux", true},
+	}
+	for _, c := range cases {
+		if got := loopbackBindBlocked(c.err, c.goos); got != c.want {
+			t.Errorf("%s: got %v", c.name, got)
+		}
 	}
 }
 
