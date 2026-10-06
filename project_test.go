@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -552,7 +553,7 @@ func TestInitRefusesLinkedConfig(t *testing.T) {
 	writeFile(t, target, "keep\n")
 	symlinkOrSkip(t, target, filepath.Join(top, configName))
 	err := cmdInit()
-	if err == nil || !strings.Contains(err.Error(), "replace a link there with a real file") {
+	if err == nil || !strings.Contains(err.Error(), "replace it with a real file") {
 		t.Errorf("a linked %s is not refused: %v", configName, err)
 	}
 	if b, _ := os.ReadFile(target); string(b) != "keep\n" {
@@ -567,5 +568,34 @@ func TestUpRootProjectWithoutSourceEnv(t *testing.T) {
 	err := cmdUp(nil)
 	if err == nil || !strings.Contains(err.Error(), "cannot read the source .env from the main worktree:") || strings.Contains(err.Error(), "same relative path") {
 		t.Errorf("error = %v", err)
+	}
+}
+
+func TestInitWithoutAnyComposeFile(t *testing.T) {
+	initRepo(t, map[string]string{"README.md": "x\n"}, ".")
+	err := cmdInit()
+	if err == nil || !strings.Contains(err.Error(), "no compose file") || strings.Contains(err.Error(), "found in:") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestInitWithoutPortVariables(t *testing.T) {
+	top := initRepo(t, map[string]string{"laravel/compose.yaml": "services: {}\n"}, "laravel")
+	err := cmdInit()
+	if want := fmt.Sprintf("no port variable (${XXX_PORT:-1234}) found in %q", filepath.Join(top, "laravel", "compose.yaml")); err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %s", err, want)
+	}
+}
+
+func TestWriteFileNoFollowMarksRefusals(t *testing.T) {
+	dir := realTempDir(t)
+	if err := os.Mkdir(filepath.Join(dir, "d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileNoFollow(filepath.Join(dir, "d"), []byte("x"), 0o600); !errors.Is(err, errNotOwnFile) {
+		t.Errorf("a directory is not marked as a refusal: %v", err)
+	}
+	if err := writeFileNoFollow(filepath.Join(dir, "missing", "f"), []byte("x"), 0o600); err == nil || errors.Is(err, errNotOwnFile) {
+		t.Errorf("an I/O error is marked as a refusal: %v", err)
 	}
 }

@@ -17,9 +17,9 @@ import (
 var composeNames = []string{"compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"}
 
 // candidate is a directory the project may be in. rel is its path below the worktree root, "/"-separated and without
-// a trailing "/" ("" for the root).
+// a trailing "/" ("" for the root). marker is the marker name findProject found there.
 type candidate struct {
-	dir, rel string
+	dir, rel, marker string
 }
 
 // within reports whether p is base or below it. Rel is lexical, and "..foo" is a legitimate name, so compare with ".."
@@ -63,7 +63,7 @@ func projectCandidates(wtTop, prefix string) ([]candidate, error) {
 			skip = skip || skippedDir(e)
 		}
 		if !skip {
-			out = append(out, candidate{dir, rel})
+			out = append(out, candidate{dir: dir, rel: rel})
 		}
 	}
 	return out, nil
@@ -97,13 +97,14 @@ func findProject(wtTop, prefix string, names []string) (string, *candidate, erro
 		return "", nil, err
 	}
 	for i := range cands {
-		_, ok, err := findMarker(cands[i].dir, names)
+		name, ok, err := findMarker(cands[i].dir, names)
 		if err != nil {
 			return "", nil, err
 		}
 		if !ok {
 			continue
 		}
+		cands[i].marker = name
 		// The candidate is built from real paths already; resolving it again normalizes what git may leave as typed
 		// (case and short names on Windows), so the hash in the project name is stable.
 		root, err := realPath(cands[i].dir)
@@ -176,9 +177,9 @@ func configNotFoundError(wtTop, prefix string) error {
 // composeNotFoundError is init's not-found error.
 func composeNotFoundError(wtTop, prefix string) error {
 	msg := fmt.Sprintf("no compose file (%s) found in this directory or its parents up to the worktree root %q; "+
-		"run init in your Laravel project's directory (the one with compose.yaml)", strings.Join(composeNames, ", "), wtTop)
+		"run init in your Laravel project's directory (the one with the compose file)", strings.Join(composeNames, ", "), wtTop)
 	if dirs := subdirsWith(wtTop, prefix, composeNames); len(dirs) > 0 {
-		msg += fmt.Sprintf("\na compose file found in: %s", quoteList(dirs))
+		msg += fmt.Sprintf("\na compose file found in: %s (run init there)", quoteList(dirs))
 	}
 	return errors.New(msg)
 }

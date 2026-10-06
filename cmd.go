@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -35,10 +36,7 @@ func cmdInit() error {
 	if cand == nil {
 		return composeNotFoundError(wtTop, prefix)
 	}
-	compose, _, err := findMarker(root, composeNames)
-	if err != nil {
-		return err
-	}
+	compose := cand.marker
 	b, err := os.ReadFile(filepath.Join(root, compose))
 	if err != nil {
 		return err
@@ -51,7 +49,10 @@ func cmdInit() error {
 	path := filepath.Join(root, configName)
 	// The project directory may be any subdirectory now, so never write through a link placed there.
 	if err := writeFileNoFollow(path, append(data, '\n'), 0o644); err != nil {
-		return fmt.Errorf("cannot write %s (replace a link there with a real file): %w", configName, err)
+		if errors.Is(err, errNotOwnFile) {
+			return fmt.Errorf("%w; replace it with a real file", err)
+		}
+		return err
 	}
 	fmt.Printf("created %q (commit it to share it with all worktrees)\n", path)
 	for _, v := range vars {
