@@ -127,7 +127,8 @@ func TestCheckOwnEnv(t *testing.T) {
 	}
 }
 
-// Kept apart from TestCheckOwnEnv so that the checks above are reported as run where links cannot be created.
+// Kept apart from TestCheckOwnEnv so that its missing-file and regular-file checks are reported as run on Windows
+// without the right to create links.
 func TestCheckOwnEnvRefusesSymlink(t *testing.T) {
 	dir := t.TempDir()
 	real := filepath.Join(dir, "real")
@@ -993,10 +994,13 @@ func trySymlink(t *testing.T, oldname, newname string) bool {
 	if runtime.GOOS != "windows" {
 		t.Fatalf("cannot create symbolic links (required off Windows, see AGENTS.md): %v", err)
 	}
+	// Shown with -v or on failure: tell why the symlink-refusal check was not verified.
+	t.Logf("symbolic link check not verified: cannot create symbolic links here: %v", err)
 	return false
 }
 
-// symlinkOrSkip is trySymlink for a test that cannot run without the link.
+// symlinkOrSkip is trySymlink for a test that cannot run without the link: it skips on Windows only and fails
+// everywhere else.
 func symlinkOrSkip(t *testing.T, oldname, newname string) {
 	t.Helper()
 	if !trySymlink(t, oldname, newname) {
