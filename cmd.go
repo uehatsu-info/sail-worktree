@@ -66,11 +66,22 @@ func loadCtx() (*ctx, error) {
 	if err != nil {
 		return nil, err
 	}
-	root, err := worktreeRoot(dir)
+	wtTop, prefix, err := worktreeRootAndPrefix(dir)
 	if err != nil {
 		return nil, fmt.Errorf("run this inside a git repository: %w", err)
 	}
-	main, err := mainWorktree(root)
+	mainTop, err := mainWorktree(wtTop)
+	if err != nil {
+		return nil, err
+	}
+	root, cand, found, err := findProject(wtTop, prefix, []string{configName})
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, configNotFoundError(wtTop, prefix)
+	}
+	main, err := counterpart(mainTop, cand.rel)
 	if err != nil {
 		return nil, err
 	}
@@ -78,12 +89,14 @@ func loadCtx() (*ctx, error) {
 	if err != nil {
 		return nil, err
 	}
-	root = filepath.Clean(root)
-	return &ctx{root: root, main: main, wtTop: root, mainTop: main, cfg: cfg}, nil
+	if cand.rel != strings.TrimSuffix(prefix, "/") {
+		fmt.Fprintf(stderr, "project directory: %q\n", root)
+	}
+	return &ctx{root: root, main: main, wtTop: wtTop, mainTop: mainTop, cfg: cfg}, nil
 }
 
-// isMain reports whether the command runs in the main worktree. The tops decide; comparing the project directories
-// as well is defense in depth, because up and rm must never touch the main worktree.
+// isMain reports whether the command runs in the main worktree. The worktree roots decide; comparing the project
+// directories as well is defense in depth, because up and rm must never touch the main worktree.
 func (c *ctx) isMain() bool { return c.wtTop == c.mainTop || c.root == c.main }
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9_-]+`)
@@ -132,7 +145,7 @@ func cmdUp(args []string) error {
 			env, err = readEnv(filepath.Join(c.main, ".env.example"))
 		}
 		if err != nil {
-			return fmt.Errorf("cannot read the source .env from the main worktree: %w", err)
+			return fmt.Errorf("cannot read the source .env from the main worktree's project directory %q (the main worktree needs the project at the same relative path): %w", c.main, err)
 		}
 		fmt.Println("creating .env (copied from the main worktree)")
 	} else if err != nil {
@@ -299,7 +312,7 @@ func cmdRm(args []string) error {
 	}
 	// Do every refusing check before the confirmation prompt (never refuse after the user answered y).
 	// -f gets the checked real path, not the configured one, so docker does not resolve the links again.
-	composePath, err := composeInsideWorktree(c.root, c.cfg.Compose)
+	composePath, err := composeInsideProject(c.root, c.cfg.Compose)
 	if err != nil {
 		return err
 	}

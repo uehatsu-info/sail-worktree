@@ -1086,7 +1086,7 @@ func TestRmRefusesComposeLinkedOutsideWorktree(t *testing.T) {
 	outside := filepath.Join(realTempDir(t), "compose.yaml")
 	writeFile(t, outside, "services: {}\n")
 	symlinkOrSkip(t, outside, filepath.Join(wt, "compose.yaml"))
-	expectRmRefusedBeforePrompt(t, "resolves outside the worktree")
+	expectRmRefusedBeforePrompt(t, "resolves outside the project directory")
 }
 
 func TestRmRefusesComposeBehindLinkedDirectory(t *testing.T) {
@@ -1094,7 +1094,7 @@ func TestRmRefusesComposeBehindLinkedDirectory(t *testing.T) {
 	outsideDir := realTempDir(t)
 	writeFile(t, filepath.Join(outsideDir, "compose.yaml"), "services: {}\n")
 	symlinkOrSkip(t, outsideDir, filepath.Join(wt, "sub"))
-	expectRmRefusedBeforePrompt(t, "resolves outside the worktree")
+	expectRmRefusedBeforePrompt(t, "resolves outside the project directory")
 }
 
 func TestRmRefusesComposeChainThatLeavesWorktree(t *testing.T) {
@@ -1103,7 +1103,7 @@ func TestRmRefusesComposeChainThatLeavesWorktree(t *testing.T) {
 	writeFile(t, outside, "services: {}\n")
 	symlinkOrSkip(t, outside, filepath.Join(wt, "b.yaml"))
 	symlinkOrSkip(t, filepath.Join(wt, "b.yaml"), filepath.Join(wt, "a.yaml"))
-	expectRmRefusedBeforePrompt(t, "resolves outside the worktree")
+	expectRmRefusedBeforePrompt(t, "resolves outside the project directory")
 }
 
 func TestRmAcceptsComposeChainInsideWorktreeAndPassesRealPath(t *testing.T) {
@@ -1143,7 +1143,7 @@ func TestRmThroughWorktreeAliasIsNotRefused(t *testing.T) {
 	expectRmUsesComposeFile(t, filepath.Join(wt, "compose.yaml"))
 }
 
-func TestComposeInsideWorktree(t *testing.T) {
+func TestComposeInsideProject(t *testing.T) {
 	root := realTempDir(t)
 	writeFile(t, filepath.Join(root, "compose.yaml"), "services: {}\n")
 	writeFile(t, filepath.Join(root, "..foo.yaml"), "services: {}\n")
@@ -1153,7 +1153,7 @@ func TestComposeInsideWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	const notRegular = "is not a regular file"
-	const notRegularHint = "point compose at a regular file inside the worktree"
+	const notRegularHint = "point compose at a regular file inside the project directory"
 	cases := []struct {
 		name, rel, want string // want is an error substring; empty means accepted
 	}{
@@ -1163,12 +1163,12 @@ func TestComposeInsideWorktree(t *testing.T) {
 		{"missing file", "missing.yaml", "compose file not found"},
 		{"directory", "dir", notRegular},
 		{"the worktree itself", ".", notRegular},
-		{"parent directory", "..", "resolves outside the worktree"},
-		{"file in the parent directory", filepath.Join("..", "outside.yaml"), "resolves outside the worktree"},
+		{"parent directory", "..", "resolves outside the project directory"},
+		{"file in the parent directory", filepath.Join("..", "outside.yaml"), "resolves outside the project directory"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := composeInsideWorktree(root, c.rel)
+			got, err := composeInsideProject(root, c.rel)
 			if c.want == "" {
 				if err != nil || got != filepath.Join(root, c.rel) {
 					t.Errorf("got %q, %v; want the file itself", got, err)
@@ -1197,6 +1197,8 @@ func TestEscapeControl(t *testing.T) {
 		"isolate\u2066x":         `isolate\u2066x`,
 		"csi\x9bb":               `csi\x9bb`,
 		"line1\nline2":           "line1\nline2",
+		"cr\rover":               `cr\rover`,
+		"cut\xe6\x97":            `cut\xe6\x97`,
 		"caf\u00e9 \u65e5\u672c": "caf\u00e9 \u65e5\u672c",
 	} {
 		if got := escapeControl(in); got != want {
