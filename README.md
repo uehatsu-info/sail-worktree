@@ -1,31 +1,33 @@
+English | [日本語](README_JA.md)
+
 # sail-worktree
 
-Laravel Sail プロジェクトを `git worktree` で複数同時に動かすためのツールです。
-ワークツリーごとに `.env` を生成し、ポート番号が衝突しないよう自動で割り当てます。
+A tool for running multiple Laravel Sail projects side by side using `git worktree`.
+It generates a `.env` for each worktree and automatically assigns ports so they never collide.
 
-## インストール
+## Installation
 
 ```sh
 go install github.com/uehatsu-info/sail-worktree@latest
 ```
 
-または、リポジトリを clone してビルドします。
+Or clone the repository and build it:
 
 ```sh
 go build -o sail-worktree .
 ```
 
-## 使い方
+## Usage
 
 ### 1. `sail-worktree init`
 
-対象 Laravel プロジェクトのメインワークツリーで実行します。
-`compose.yml` の `ports:` から `${APP_PORT:-80}` のようなポート変数を検出し、`.sail-worktree.json` を生成します。
-このファイルはコミットして、全ワークツリーで共有してください。
+Run it in the main worktree of your Laravel project.
+It detects port variables such as `${APP_PORT:-80}` from the `ports:` section of `compose.yml` and generates `.sail-worktree.json`.
+Commit this file so that it is shared by all worktrees.
 
 ### 2. `sail-worktree up [args...]`
 
-作成済みのワークツリーで実行します。
+Run it in an existing worktree.
 
 ```sh
 git worktree add ../myapp-feature-x feature-x
@@ -34,30 +36,30 @@ composer install
 sail-worktree up -d
 ```
 
-- `.env` がなければメインワークツリーの `.env` をコピーします（なければ `.env.example`）。
-- 各ポート変数に空きポートを割り当てます。デフォルト値の +1 から探索し、メインワークツリー用にデフォルト値は空けておきます。
-- 他のワークツリーの割り当て済みポートと、ホストで使用中のポートは避けます。
-- `COMPOSE_PROJECT_NAME` を設定し、`APP_URL` のポートも更新します。
-- 割り当て済みのポートは、次回以降も同じ値を再利用します。
-- 最後に `vendor/bin/sail up <args>` を実行します。
+- If `.env` does not exist, it is copied from the main worktree's `.env` (or `.env.example` if that is missing).
+- Each port variable gets a free port. The search starts at the default value + 1, leaving the default value to the main worktree.
+- Ports already assigned to other worktrees and ports in use on the host are skipped.
+- `COMPOSE_PROJECT_NAME` is set, and the port in `APP_URL` is updated.
+- Assigned ports are reused on subsequent runs.
+- Finally, it runs `vendor/bin/sail up <args>`.
 
 ### 3. `sail-worktree stop`
 
-`sail stop` を実行します。
+Runs `sail stop`.
 
 ### 4. `sail-worktree rm [-y]`
 
-コンテナ・ネットワーク・ボリューム（DB データ含む）・ビルドイメージを削除し、割り当てたポートを解放します。
-`docker compose down -v --rmi local --remove-orphans` 相当です。確認プロンプトは `-y` で省略できます。
-`.env` は削除しません。
+Removes the containers, networks, volumes (including DB data) and built images, and releases the assigned ports.
+Equivalent to `docker compose down -v --rmi local --remove-orphans`. Use `-y` to skip the confirmation prompt.
+`.env` is not deleted.
 
-## 補足
+## Notes
 
-- `up` と `rm` はメインワークツリーでは実行できません。
-- ポートの割り当て記録は `os.UserConfigDir()/sail-worktree/registry.json` に保存されます（macOS: `~/Library/Application Support/sail-worktree/registry.json`）。
-- ワークツリーには `vendor/bin/sail` が必要です（`composer install` 済みであること）。
+- `up` and `rm` cannot be run in the main worktree.
+- Port assignments are stored in `os.UserConfigDir()/sail-worktree/registry.json` (macOS: `~/Library/Application Support/sail-worktree/registry.json`).
+- `vendor/bin/sail` must exist in the worktree (run `composer install` first).
 
-## 開発
+## Development
 
 ```sh
 go vet ./...
