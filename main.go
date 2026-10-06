@@ -2,8 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"runtime/debug"
+	"strconv"
+	"strings"
+	"unicode/utf8"
 )
 
 const usage = `sail-worktree - assign non-conflicting ports to Laravel Sail projects running in git worktrees
@@ -50,7 +54,34 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		printErr(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// printErr prints the final error. Messages carry paths and names from the repository (directory names may hold any
+// byte), so control and format characters and invalid bytes are escaped before they reach the terminal.
+func printErr(w io.Writer, err error) {
+	fmt.Fprintln(w, "error:", escapeControl(err.Error()))
+}
+
+// escapeControl escapes what strconv.IsPrint rejects (C0/C1 controls, DEL, format characters such as U+202E) and
+// invalid UTF-8 bytes, as Go escapes. \n is kept because messages use it for layout, so a newline inside a quoted
+// path can still start a line of its own; printable non-ASCII text is kept so that such paths stay readable.
+func escapeControl(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && n == 1:
+			fmt.Fprintf(&b, `\x%02x`, s[i])
+		case r == '\n' || strconv.IsPrint(r):
+			b.WriteString(s[i : i+n])
+		default:
+			q := strconv.QuoteRune(r)
+			b.WriteString(q[1 : len(q)-1])
+		}
+		i += n
+	}
+	return b.String()
 }

@@ -1184,3 +1184,31 @@ func TestComposeInsideWorktree(t *testing.T) {
 		})
 	}
 }
+
+func TestEscapeControl(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain text":             "plain text",
+		"a\x1b[31mb":             `a\x1b[31mb`,
+		"bell\a":                 `bell\a`,
+		"tab\there":              `tab\there`,
+		"del\x7f":                `del\x7f`,
+		"c1\u0085":               `c1\u0085`,
+		"bidi\u202egnp.exe":      `bidi\u202egnp.exe`,
+		"isolate\u2066x":         `isolate\u2066x`,
+		"csi\x9bb":               `csi\x9bb`,
+		"line1\nline2":           "line1\nline2",
+		"caf\u00e9 \u65e5\u672c": "caf\u00e9 \u65e5\u672c",
+	} {
+		if got := escapeControl(in); got != want {
+			t.Errorf("escapeControl(%+q) = %+q, want %+q", in, got, want)
+		}
+	}
+}
+
+func TestPrintErrEscapes(t *testing.T) {
+	var b strings.Builder
+	printErr(&b, fmt.Errorf("open %s: denied", "/x/\x1b]0;title\a/.env"))
+	if got, want := b.String(), "error: open /x/\\x1b]0;title\\a/.env: denied\n"; got != want {
+		t.Errorf("printErr wrote %+q, want %+q", got, want)
+	}
+}
