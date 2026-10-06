@@ -102,14 +102,20 @@ func keyOf(line string) (string, bool) {
 	return strings.TrimSpace(k), true
 }
 
-func (e *envFile) Get(key string) (string, bool) {
+// Raw returns the text after "=" on the first line of key, as written.
+func (e *envFile) Raw(key string) (string, bool) {
 	for _, l := range e.lines {
 		if k, ok := keyOf(l); ok && k == key {
 			_, v, _ := strings.Cut(l, "=")
-			return strings.Trim(strings.TrimSpace(v), `"'`), true
+			return v, true
 		}
 	}
 	return "", false
+}
+
+func (e *envFile) Get(key string) (string, bool) {
+	v, ok := e.Raw(key)
+	return strings.Trim(strings.TrimSpace(v), `"'`), ok
 }
 
 // Set replaces the first line of the key and removes later duplicates (Sail uses the last value and Laravel's
