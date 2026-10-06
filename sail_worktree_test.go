@@ -989,6 +989,8 @@ func symlinkOrSkip(t *testing.T, oldname, newname string) {
 	}
 }
 
+// writeFile is for 0644 fixtures. Tests that check a file mode (.env 0600, the sail script 0755) call os.WriteFile
+// themselves, so do not fold them into this helper.
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
