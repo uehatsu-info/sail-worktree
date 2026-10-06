@@ -495,7 +495,12 @@ func TestKeyOfHandlesExportWithTab(t *testing.T) {
 }
 
 func TestLoadConfigRejectsUnsafeCompose(t *testing.T) {
-	for _, c := range []string{"", "/etc/compose.yaml", "../compose.yaml", "a/../../compose.yaml", "."} {
+	bad := []string{"", "/etc/compose.yaml", `\etc\compose.yaml`, "../compose.yaml", "a/../../compose.yaml", "."}
+	if runtime.GOOS == "windows" {
+		// ドライブ・UNC パスは Windows でだけ特別な意味を持つ (unix では "C:x" は普通のファイル名)。
+		bad = append(bad, `C:\compose.yaml`, `C:compose.yaml`, `\\srv\share\compose.yaml`, `..\compose.yaml`)
+	}
+	for _, c := range bad {
 		dir := t.TempDir()
 		b := `{"compose":` + strconvQuote(c) + `,"port_vars":[]}`
 		if err := os.WriteFile(filepath.Join(dir, configName), []byte(b), 0o644); err != nil {

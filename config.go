@@ -29,11 +29,21 @@ func loadConfig(root string) (*Config, error) {
 	if err := json.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("%s の解析に失敗: %w", configName, err)
 	}
-	// compose は rm の -f に渡るので、ワークツリー内の相対パスだけを許す (空・絶対パス・.. を含むものを拒否)。
-	if cl := filepath.Clean(c.Compose); c.Compose == "" || filepath.IsAbs(c.Compose) || cl == ".." || strings.HasPrefix(cl, ".."+string(filepath.Separator)) || cl == "." {
+	if unsafeComposePath(c.Compose) {
 		return nil, fmt.Errorf("%s の compose (%q) はワークツリー内の相対パスにしてください", configName, c.Compose)
 	}
 	return &c, nil
+}
+
+// unsafeComposePath は compose の値がワークツリー内の相対パスでないとき true を返す。rm の -f に渡るので、
+// 空・絶対パス・.. を含むものに加えて、Windows でドライブやサーバーを指す形 ("C:x"、"\\srv\x") と、
+// ドライブ文字の無いルート指定 ("/x"、"\x": filepath.IsAbs は false になる) も拒否する。
+func unsafeComposePath(p string) bool {
+	if p == "" || filepath.IsAbs(p) || filepath.VolumeName(p) != "" || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
+		return true
+	}
+	cl := filepath.Clean(p)
+	return cl == "." || cl == ".." || strings.HasPrefix(cl, ".."+string(filepath.Separator))
 }
 
 func findCompose(root string) (string, error) {
