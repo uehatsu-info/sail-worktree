@@ -222,9 +222,9 @@ func nameMismatchError(got, want string) error {
 	if safeProjectName.MatchString(got) {
 		msg += fmt.Sprintf("\n古い版が別の名前で作ったプロジェクトを消す場合だけ、次の順に行ってください。"+
 			"\n  1. `docker compose ls -a` で、%s が他のワークツリーやプロジェクトのものでなく、このワークツリーのものであることを確認する。"+
-			"\n  2. シェルに COMPOSE_* の環境変数があると対象が変わるので、`env | grep ^COMPOSE_` で確認し、あれば unset する。"+
+			"\n  2. シェルに COMPOSE_* の環境変数があると対象が変わるので、`env | grep '^COMPOSE_'` で確認し、表示された変数を全て unset する。"+
 			"\n  3. 次を実行する (-v でボリューム=DB データも消え、取り返しがつきません):"+
-			"\n  docker compose -p %s down -v --rmi local --remove-orphans", got, got)
+			"\n      docker compose -p %s down -v --rmi local --remove-orphans", got, got)
 	} else {
 		msg += "\n.env の名前は小文字英数字・_・- だけでない (大文字などは compose が使う名前と異なり得る) ため、手動で消すコマンドは示しません。`docker compose ls -a` で対象を確認してください。"
 	}
@@ -289,7 +289,8 @@ func cmdRm(args []string) error {
 	if fi, err := os.Stat(composePath); err != nil || !fi.Mode().IsRegular() {
 		return fmt.Errorf("compose ファイルが見つかりません: %s", composePath)
 	}
-	if _, err := loadRegistry(); err != nil { // 読めない (壊れている) ときも、消す前に失敗させる。
+	// ここで読むのは壊れたレジストリを消す前に検出するため (値は使わない)。解放用には docker の後に読み直す。消さないこと。
+	if _, err := loadRegistry(); err != nil {
 		return err
 	}
 	if !yes {
@@ -307,7 +308,7 @@ func cmdRm(args []string) error {
 	// docker の実行中に別の up がレジストリを更新していても失わないよう、消した後に読み直して解放する。
 	reg, err := loadRegistry()
 	if err != nil {
-		return err
+		return fmt.Errorf("docker の削除は完了しましたが、ポート割り当ての記録を読めません: %w", err)
 	}
 	reg.migrate(c.root)
 	delete(reg.Worktrees, c.root)

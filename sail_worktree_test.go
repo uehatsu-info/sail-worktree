@@ -264,6 +264,11 @@ func TestNameMismatchErrorGuidance(t *testing.T) {
 			t.Errorf("%q が含まれない: %s", want, msg)
 		}
 	}
+	// 番号付きの手順で、取り返しがつかない注意が実行コマンドより前にある。
+	idx := func(s string) int { return strings.Index(msg, s) }
+	if !(idx("1. ") < idx("2. ") && idx("2. ") < idx("3. ") && idx("取り返しがつきません") < idx("docker compose -p old-name")) {
+		t.Errorf("手順の順序が崩れている: %s", msg)
+	}
 }
 
 func TestNameMismatchErrorEscapesUntrustedNames(t *testing.T) {
@@ -865,5 +870,61 @@ func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 	reg, _ = loadRegistry()
 	if len(reg.Worktrees) != 1 || reg.Worktrees["/other/wt"]["APP_PORT"] != 8200 {
 		t.Errorf("別名のキーが解放されていない、または他のワークツリーを消した: %v", reg.Worktrees)
+	}
+}
+
+func writeRmFixtures(t *testing.T, main, wt string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+projectName(main, wt)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "compose.yaml"), []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRmKeepsRegistryUpdatesMadeWhileDockerRuns(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeRmFixtures(t, main, wt)
+	reg := &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 8123}}}
+	if err := reg.save(); err != nil {
+		t.Fatal(err)
+	}
+	// docker の実行中に、別のワークツリーの up がレジストリを更新した状況。
+	old := runner
+	runner = func(string, []string, string, ...string) error {
+		r, err := loadRegistry()
+		if err != nil {
+			return err
+		}
+		r.Worktrees["/during/rm"] = map[string]int{"APP_PORT": 8300}
+		return r.save()
+	}
+	t.Cleanup(func() { runner = old })
+	if err := cmdRm([]string{"-y"}); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ = loadRegistry()
+	if _, ok := reg.Worktrees[wt]; ok || reg.Worktrees["/during/rm"]["APP_PORT"] != 8300 {
+		t.Errorf("docker 実行中の更新を失った、または解放していない: %v", reg.Worktrees)
+	}
+}
+
+func TestRmDoesNotSaveRegistryWhenDockerFails(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeRmFixtures(t, main, wt)
+	reg := &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 8123}}}
+	if err := reg.save(); err != nil {
+		t.Fatal(err)
+	}
+	old := runner
+	runner = func(string, []string, string, ...string) error { return fmt.Errorf("docker failed") }
+	t.Cleanup(func() { runner = old })
+	if err := cmdRm([]string{"-y"}); err == nil {
+		t.Fatal("docker の失敗を返していない")
+	}
+	reg, _ = loadRegistry()
+	if reg.Worktrees[wt]["APP_PORT"] != 8123 {
+		t.Errorf("docker 失敗時にレジストリを変えた: %v", reg.Worktrees)
 	}
 }
