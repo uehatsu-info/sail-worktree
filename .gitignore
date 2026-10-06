@@ -1,0 +1,5 @@
+/sail-worktree
+/dist/
+.DS_Store
+*.test
+*.out
