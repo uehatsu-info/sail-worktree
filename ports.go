@@ -1,20 +1,27 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"os"
 )
 
 // portFree は p が全インターフェースと 127.0.0.1 の両方で空いているか確かめる
 // (macOS は SO_REUSEADDR により、127.0.0.1 だけに束縛した他プロセスがいても ":p" の束縛に成功し得るため)。
+// 127.0.0.1 の確認は「使用中」(EADDRINUSE) だけを塞がりとみなす: macOS は特権ポート (1024 未満) の
+// 127.0.0.1 への束縛を一般ユーザーに許さないが、Docker は束縛できるので、権限エラーは無視する。
 func portFree(p int) bool {
-	for _, addr := range []string{fmt.Sprintf(":%d", p), fmt.Sprintf("127.0.0.1:%d", p)} {
-		l, err := net.Listen("tcp", addr)
-		if err != nil {
-			return false
-		}
-		l.Close()
+	l, err := net.Listen("tcp", fmt.Sprintf(":%d", p))
+	if err != nil {
+		return false
 	}
+	l.Close()
+	l, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+	if err != nil {
+		return errors.Is(err, os.ErrPermission)
+	}
+	l.Close()
 	return true
 }
 

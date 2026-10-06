@@ -43,7 +43,11 @@ func mainWorktree(dir string) (string, error) {
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if p, ok := strings.CutPrefix(line, "worktree "); ok {
-			return realPath(p)
+			// メインのディレクトリが消えている (prunable) 等で実パスにできないときは Clean で続ける。
+			if r, err := realPath(p); err == nil {
+				return r, nil
+			}
+			return filepath.Clean(p), nil
 		}
 	}
 	return "", fmt.Errorf("メインワークツリーを特定できません")

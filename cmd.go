@@ -89,6 +89,9 @@ func projectName(main, root string) string {
 // プロジェクト名から作って他のワークツリー・プロジェクトとログインが混ざらないようにする。
 func sessionCookieName(proj string) string { return proj + "-session" }
 
+// runner は外部コマンドの実行。テストで差し替える。
+var runner = runCmdEnv
+
 func cmdUp(args []string) error {
 	c, err := loadCtx()
 	if err != nil {
@@ -97,12 +100,12 @@ func cmdUp(args []string) error {
 	if c.root == c.main {
 		return fmt.Errorf("メインワークツリーでは実行できません。作成済みのワークツリー上で実行してください")
 	}
-	reg, err := loadRegistry()
-	if err != nil {
-		return err
-	}
 	envPath := filepath.Join(c.root, ".env")
 	if err := checkOwnEnv(envPath); err != nil {
+		return err
+	}
+	reg, err := loadRegistry()
+	if err != nil {
 		return err
 	}
 	env, err := readEnv(envPath)
@@ -161,6 +164,18 @@ func cmdStop(args []string) error {
 	if err != nil {
 		return err
 	}
+	// .env が別の compose ファイル・プロジェクトを指していないか、up・rm と同じ検査を通す (.env が無ければ検査なし)。
+	envPath := filepath.Join(c.root, ".env")
+	if err := checkOwnEnv(envPath); err != nil {
+		return err
+	}
+	if env, err := readEnv(envPath); err == nil {
+		if err := env.checkNoComposeOverrides(); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	return runSail(c.root, c.cfg, append([]string{"stop"}, args...))
 }
 
@@ -209,9 +224,11 @@ func cmdRm(args []string) error {
 		}
 	}
 	// プロジェクト名・ディレクトリ・compose ファイルを明示し、環境の COMPOSE_* を外して実行する。
-	err = runCmdEnv(c.root, cleanEnv(nil), "docker", "compose", "--project-name", proj, "--project-directory", c.root,
-		"-f", filepath.Join(c.root, c.cfg.Compose), "down", "-v", "--rmi", "local", "--remove-orphans")
-	if err != nil {
+	composePath := filepath.Join(c.root, c.cfg.Compose)
+	if fi, err := os.Stat(composePath); err != nil || !fi.Mode().IsRegular() {
+		return fmt.Errorf("compose ファイルが見つかりません: %s", composePath)
+	}
+	if err := runner(c.root, cleanEnv(nil), "docker", rmArgs(proj, c.root, composePath)...); err != nil {
 		return err
 	}
 	reg, err := loadRegistry()
@@ -226,6 +243,12 @@ func cmdRm(args []string) error {
 	return nil
 }
 
+// rmArgs は rm が docker に渡す引数。プロジェクト名・ディレクトリ・compose ファイルを全て明示する。
+func rmArgs(proj, root, composePath string) []string {
+	return []string{"compose", "--project-name", proj, "--project-directory", root,
+		"-f", composePath, "down", "-v", "--rmi", "local", "--remove-orphans"}
+}
+
 func runSail(root string, cfg *Config, args []string) error {
 	sail := filepath.Join(root, "vendor", "bin", "sail")
 	if _, err := os.Stat(sail); err != nil {
@@ -236,22 +259,20 @@ func runSail(root string, cfg *Config, args []string) error {
 	for _, v := range cfg.PortVars {
 		drop = append(drop, v.Name)
 	}
-	return runCmdEnv(root, cleanEnv(drop), sail, args...)
+	return runner(root, cleanEnv(drop), sail, args...)
 }
 
-// cleanEnv は現在の環境から、別の compose ファイル・プロジェクトを指し得る変数と drop の変数を外した環境を返す。
+// cleanEnv は現在の環境から、COMPOSE_ で始まる全ての変数・SAIL_FILES・drop の変数を外した環境を返す
+// (別の compose ファイル・プロジェクトを指し得るため)。DOCKER_HOST 等は意図して使う利用者がいるので外さない。
 func cleanEnv(drop []string) []string {
-	skip := map[string]bool{"COMPOSE_PROJECT_NAME": true}
-	for _, k := range composeOverrideKeys {
-		skip[k] = true
-	}
+	skip := map[string]bool{"SAIL_FILES": true}
 	for _, k := range drop {
 		skip[k] = true
 	}
 	var out []string
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
-		if !skip[k] {
+		if !skip[k] && !strings.HasPrefix(k, "COMPOSE_") {
 			out = append(out, kv)
 		}
 	}

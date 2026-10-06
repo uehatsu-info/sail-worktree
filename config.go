@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const configName = ".sail-worktree.json"
@@ -26,6 +27,10 @@ func loadConfig(root string) (*Config, error) {
 	var c Config
 	if err := json.Unmarshal(b, &c); err != nil {
 		return nil, fmt.Errorf("%s の解析に失敗: %w", configName, err)
+	}
+	// compose は rm の -f に渡るので、ワークツリー内の相対パスだけを許す (空・絶対パス・.. を含むものを拒否)。
+	if cl := filepath.Clean(c.Compose); c.Compose == "" || filepath.IsAbs(c.Compose) || cl == ".." || strings.HasPrefix(cl, ".."+string(filepath.Separator)) || cl == "." {
+		return nil, fmt.Errorf("%s の compose (%q) はワークツリー内の相対パスにしてください", configName, c.Compose)
 	}
 	return &c, nil
 }
