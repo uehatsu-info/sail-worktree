@@ -5,12 +5,16 @@ import (
 	"net"
 )
 
+// portFree は p が全インターフェースと 127.0.0.1 の両方で空いているか確かめる
+// (macOS は SO_REUSEADDR により、127.0.0.1 だけに束縛した他プロセスがいても ":p" の束縛に成功し得るため)。
 func portFree(p int) bool {
-	l, err := net.Listen("tcp", fmt.Sprintf(":%d", p))
-	if err != nil {
-		return false
+	for _, addr := range []string{fmt.Sprintf(":%d", p), fmt.Sprintf("127.0.0.1:%d", p)} {
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			return false
+		}
+		l.Close()
 	}
-	l.Close()
 	return true
 }
 
