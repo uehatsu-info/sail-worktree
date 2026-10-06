@@ -44,9 +44,9 @@ sail-worktree up -d
 - 他のワークツリーの割り当て済みポートと、ホストで使用中のポートは避けます。
 - `COMPOSE_PROJECT_NAME` を設定し、`APP_URL` のポートも更新します。
 - `SESSION_COOKIE` を `<COMPOSE_PROJECT_NAME>-session` に設定します（既存の値は上書きします）。`localhost` はポートが違っても Cookie を共有するので、名前を分けないとワークツリー同士のログインが混ざります。
-- `.env` に `SANCTUM_STATEFUL_DOMAINS` があるときは、新しい `APP_URL` の `host:port`（スキームの既定ポートならホストだけ）を末尾に追加し、`SANCTUM_STATEFUL_DOMAINS: added <エントリ>` と表示します。Laravel Sanctum が `APP_URL` を自動で加えるのはこの変数が未設定のときだけなので、追加しないとワークツリーで Cookie 認証が失敗します。
+- `up` が `APP_URL` を更新し（上記）、`.env` に `SANCTUM_STATEFUL_DOMAINS` があるときは、新しい `APP_URL` の `host:port`（スキームの既定ポートならホストだけ）を末尾に追加し、`SANCTUM_STATEFUL_DOMAINS: added <エントリ>` と表示します。Laravel Sanctum が `APP_URL` を自動で加えるのはこの変数が未設定のときだけなので、追加しないとワークツリーで Cookie 認証が失敗します。
   - Sanctum の照合規則で一致するエントリが既にあるとき（ワイルドカードや `__SANCTUM_CURRENT_REQUEST_HOST__` も含む）、変数がないとき、値がステートフルドメインを無効にするとき（空、`null`・`false`・`true`・`empty`、`(null)` のように括弧で囲んだ同じ語、カンマだけ）は追加しません。
-  - 単純なリストでない値（`${APP_URL}` のような変数、コメント、内側の引用符、引用符の外の空白など）や、単純なホスト名・IP アドレスでない `APP_URL` のホスト（ほかの文字、IPv6 のゾーン、IPv4 射影 IPv6 アドレス）は変更せず、追加すべき値を示す警告を出します。値を直すまで、警告は `up` のたびに出ます。
+  - 単純なリストでない値（`${APP_URL}` のような変数、コメント、内側の引用符、引用符の外の空白など）や、単純なホスト名・IP アドレスでない `APP_URL` のホスト（ほかの文字、IPv6 のゾーン、IPv4 射影 IPv6 アドレス）は変更せず、追加すべき値を示す警告を出します。警告は、値にそのエントリが入るまで（手で追加すれば止まります）、ホストが原因の警告なら `APP_URL` を変えるまで、`up` のたびに出ます。
   - 既存のエントリは削除しません。古いポートのエントリは残り、ほかのポートのエントリ（Vite のポートなど）は更新しません。
 - ポート変数と同名のシェル変数・`COMPOSE_*` の全て・`SAIL_FILES` は、`.env` より優先されてしまうので、`sail` に渡す環境（`stop` も同じ）と、`rm` の `docker compose` に渡す環境から外します。`DOCKER_HOST`・`DOCKER_CONTEXT` は意図して使う人がいるので外しません。
 - 割り当て済みのポートは、次回以降も同じ値を再利用します。

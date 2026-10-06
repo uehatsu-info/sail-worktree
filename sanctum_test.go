@@ -97,6 +97,7 @@ func TestAddStatefulDomain(t *testing.T) {
 		{"duplicate line, already there", "S=store.test:8082\nS=${X}", "", false},
 		{"lone quote", `S="`, "", true},
 		{"variable", "S=a,${APP_URL}", "", true},
+		{"variable with the entry added by hand", "S=${APP_URL}, store.test:8082", "", false},
 		{"dollar", "S=a$b", "", true},
 		{"comment", "S=a,b # c", "", true},
 		{"quoted comment", `S="a,b" # c`, "", true},

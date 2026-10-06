@@ -69,9 +69,9 @@ func sanctumUnquote(raw string) (value, quote string) {
 	return v, ""
 }
 
-// statefulDisabled reports whether the value turns Sanctum's stateful domains off: Laravel's env() maps these words
-// (compared without trimming, so " null " is a plain string) to null, false or "", true becomes "1", and Sanctum drops
-// empty entries.
+// statefulDisabled reports whether the value (as sanctumUnquote returns it) turns Sanctum's stateful domains off:
+// Laravel's env() maps these words to null, false or "" without trimming them (so a quoted " null " is a plain
+// string), true becomes "1", and Sanctum drops empty entries.
 func statefulDisabled(v string) bool {
 	switch strings.ToLower(v) {
 	case "", "null", "(null)", "false", "(false)", "true", "(true)", "empty", "(empty)":
@@ -97,6 +97,12 @@ func addStatefulDomain(env *envFile, u *url.URL) (added, warning string) {
 		return "", fmt.Sprintf("the host of APP_URL %+q has characters that up does not write to %s (or is an IPv6 zone or IPv4-mapped address); add it yourself if you need it", u.String(), sanctumKey)
 	}
 	if !statefulValueRe.MatchString(value) || quote == "" && strings.Contains(value, " ") {
+		// The entry the warning asks for, added by hand, ends the warning.
+		for _, e := range strings.Split(value, ",") {
+			if strings.TrimSpace(e) == entry {
+				return "", ""
+			}
+		}
 		return "", fmt.Sprintf("%s %+q is not a plain list, so it is left unchanged; add %s to it yourself", sanctumKey, raw, entry)
 	}
 	for _, e := range strings.Split(value, ",") {
