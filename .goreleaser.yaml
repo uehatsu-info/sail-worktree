@@ -25,11 +25,47 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# リリースノートは、コミットの題名の接頭辞 (feat: fix: ...) で見出しごとにまとめる。
 changelog:
   sort: asc
-  use: github
+  use: git
+  abbrev: -1 # コミットのハッシュは載せない
+  format: "{{ .Message }}"
+  groups:
+    - title: "新機能"
+      regexp: '^feat(\([^)]*\))?!?:'
+      order: 0
+    - title: "修正"
+      regexp: '^fix(\([^)]*\))?!?:'
+      order: 1
+    - title: "リファクタリング・性能"
+      regexp: '^(refactor|perf)(\([^)]*\))?!?:'
+      order: 2
+    - title: "ドキュメント"
+      regexp: '^docs?(\([^)]*\))?!?:'
+      order: 3
+    - title: "CI・ビルド"
+      regexp: '^(ci|build|chore)(\([^)]*\))?!?:'
+      order: 4
+    - title: "その他"
+      order: 99
   filters:
     exclude:
-      - "^docs?:"
-      - "^test:"
-      - "^ci:"
+      - "^Merge "
+      - "^test(\\([^)]*\\))?:"
+
+release:
+  footer: |
+
+    ## インストール
+
+    ```sh
+    go install github.com/uehatsu-info/sail-worktree@{{ .Tag }}
+    ```
+
+    または、お使いの OS・CPU に合う添付のアーカイブを展開して、`sail-worktree` を PATH の通った場所に置いてください
+    (macOS は `darwin`、Windows は `windows`・zip)。`checksums.txt` で検証できます。
+
+    ```sh
+    sha256sum --check --ignore-missing checksums.txt   # macOS は shasum -a 256 -c checksums.txt --ignore-missing
+    ```
