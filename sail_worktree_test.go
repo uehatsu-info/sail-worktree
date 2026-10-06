@@ -125,6 +125,15 @@ func TestCheckOwnEnv(t *testing.T) {
 	if err := checkOwnEnv(real); err != nil {
 		t.Errorf("a regular file is allowed: %v", err)
 	}
+}
+
+// Kept apart from TestCheckOwnEnv so that the checks above are reported as run where links cannot be created.
+func TestCheckOwnEnvRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.WriteFile(real, []byte("A=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	link := filepath.Join(dir, "sym")
 	symlinkOrSkip(t, real, link)
 	if err := checkOwnEnv(link); err == nil {
