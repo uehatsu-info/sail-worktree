@@ -36,7 +36,8 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `version`. See `README.md` 
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject`, `within`), not-found errors and their hints, the main worktree's counterpart |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
-| `sail_worktree_test.go`, `project_test.go`, `links_unix_test.go` | Tests |
+| `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `addStatefulDomain` |
+| `sail_worktree_test.go`, `project_test.go`, `sanctum_test.go`, `links_unix_test.go` | Tests |
 | `.github/workflows/ci.yml`, `release.yml`, `.github/dependabot.yml`, `.goreleaser.yaml` | CI and release |
 
 State outside the repository: the port registry is `os.UserConfigDir()/sail-worktree/registry.json`. The project
@@ -141,6 +142,17 @@ These come from deliberate decisions; change them only on purpose and update the
   `loopbackBindBlocked` decides how a failure on `127.0.0.1` is treated per OS.
 - **Sail sources `.env`.** `vendor/bin/sail` runs `source ./.env` (or `.env.$APP_ENV`), so `.env` is executed as shell
   code. `stop` does not refuse a symlinked `.env` for this reason: calling `sail` directly has the same exposure.
+- **`SANCTUM_STATEFUL_DOMAINS`.** Only when `up` rewrites `APP_URL` and `.env` sets the key, `addStatefulDomain`
+  appends the new `APP_URL`'s entry (lower-case host, `:port` unless it is the scheme's default; IPv6 canonical with
+  brackets). It follows Sanctum's `fromFrontend`: an element equal (before trimming) to
+  `__SANCTUM_CURRENT_REQUEST_HOST__` is `getHttpHost()`, i.e. the entry itself; otherwise `strIs(trim(e)+"/*",
+  entry+"/")`. It only ever appends. An absent key, Laravel's disabling words (compared lower-cased, not trimmed) and a
+  value of only commas are left alone. Because Sail sources `.env`, the entry and the value must pass allow-lists, and
+  anything else is left alone with a warning naming the entry to add; do not loosen them to "escape" values instead.
+  `Get` keeps stripping any quotes at both ends; `sanctumUnquote` strips one matching pair and keeps the inner spaces
+  (phpdotenv does). `Set` collapses duplicate lines of the key. The added line and the warning are printed after
+  `.env` and the registry are saved. Known limit (existing): `up` writes `APP_URL` back unquoted, so `&`, `;`, `#`,
+  `$` or `(` in it that quotes protected are no longer protected.
 - `compose` in `.sail-worktree.json` must be a relative path inside the project directory (`unsafeComposePath`),
   including on Windows forms such as `C:x`, `\\srv\x` and `/x`. That check only reads the string; `rm` also checks the
   real path with `composeInsideProject` (see "`rm` is guarded").
