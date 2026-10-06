@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # アクションはコミット SHA で固定しているので、更新は Dependabot の PR で行う。
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
