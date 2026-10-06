@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
@@ -52,8 +53,32 @@ func readEnv(path string) (*envFile, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return parseEnv(f)
+}
+
+// readEnvIfRegular は path が通常ファイルのときだけ読む (stop の警告用)。
+// リンクや FIFO・デバイスは読まず ok=false を返す。Lstat と open の間に FIFO へ差し替えられても
+// open がブロックしないよう O_NONBLOCK (通常ファイルの読み取りには影響しない) で開き、開いた fd を
+// 改めて Stat して確かめる。サイズは 1MiB まで。
+func readEnvIfRegular(path string) (*envFile, bool) {
+	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
+		return nil, false
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|openNonBlock|openNoFollow, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return nil, false
+	}
+	e, err := parseEnv(io.LimitReader(f, 1<<20))
+	return e, err == nil
+}
+
+func parseEnv(r io.Reader) (*envFile, error) {
 	e := &envFile{}
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		e.lines = append(e.lines, sc.Text())
@@ -162,15 +187,22 @@ func checkOwnEnv(path string) error {
 	return nil
 }
 
-// composeOverrideKeys は .env に書くと別の compose ファイル・プロジェクトを指し得るキー。
-var composeOverrideKeys = []string{"COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_ENV_FILES", "SAIL_FILES"}
+// .env に書くと別の compose ファイル・プロジェクトを指し得るキー。コマンドごとに拒否する範囲が違う
+// (環境変数側の COMPOSE_* は cleanEnv が全て外すので、これとは別)。
+var (
+	// up が拒否するキー: up が .env に書くポート・プロジェクト名を compose が読まなくなる、または別の compose を指す。
+	// COMPOSE_PROFILES は起動するサービスが増えるだけで別プロジェクトを指さないので許す。
+	upOverrideKeys = []string{"COMPOSE_FILE", "COMPOSE_ENV_FILES", "SAIL_FILES"}
+	// rm が拒否するキー: rm は取り返しがつかないので、対象のサービス集合を変え得る COMPOSE_PROFILES も拒否する。
+	rmOverrideKeys = append(append([]string{}, upOverrideKeys...), "COMPOSE_PROFILES")
+)
 
-// checkNoComposeOverrides は .env に composeOverrideKeys のいずれかがあれば拒否する。
-func (e *envFile) checkNoComposeOverrides() error {
-	for _, k := range composeOverrideKeys {
+// overrideKey は .env に keys のいずれかがあれば最初のキーを返す。
+func (e *envFile) overrideKey(keys []string) (string, bool) {
+	for _, k := range keys {
 		if _, ok := e.Get(k); ok {
-			return fmt.Errorf(".env に %s は書けません (別の compose ファイルを指し得るため)", k)
+			return k, true
 		}
 	}
-	return nil
+	return "", false
 }

@@ -148,13 +148,26 @@ func mustStat(t *testing.T, p string) os.FileInfo {
 	return fi
 }
 
-func TestCheckNoComposeOverrides(t *testing.T) {
-	if err := (&envFile{lines: []string{"A=1", "# COMPOSE_FILE=x"}}).checkNoComposeOverrides(); err != nil {
-		t.Errorf("コメントは許す: %v", err)
+func TestOverrideKey(t *testing.T) {
+	if k, ok := (&envFile{lines: []string{"A=1", "# COMPOSE_FILE=x"}}).overrideKey(rmOverrideKeys); ok {
+		t.Errorf("コメントは許す: %s", k)
 	}
-	for _, k := range composeOverrideKeys {
-		if err := (&envFile{lines: []string{k + "=x"}}).checkNoComposeOverrides(); err == nil {
-			t.Errorf("%s を拒否していない", k)
+	for _, k := range rmOverrideKeys {
+		if got, ok := (&envFile{lines: []string{k + "=x"}}).overrideKey(rmOverrideKeys); !ok || got != k {
+			t.Errorf("rm が %s を拒否していない", k)
+		}
+	}
+	// COMPOSE_PROFILES は up では許し、rm では拒否する。
+	prof := &envFile{lines: []string{"COMPOSE_PROFILES=x"}}
+	if _, ok := prof.overrideKey(upOverrideKeys); ok {
+		t.Error("up が COMPOSE_PROFILES を拒否している")
+	}
+	if _, ok := prof.overrideKey(rmOverrideKeys); !ok {
+		t.Error("rm が COMPOSE_PROFILES を拒否していない")
+	}
+	for _, k := range []string{"COMPOSE_FILE", "COMPOSE_ENV_FILES", "SAIL_FILES"} {
+		if _, ok := (&envFile{lines: []string{k + "=x"}}).overrideKey(upOverrideKeys); !ok {
+			t.Errorf("up が %s を拒否していない", k)
 		}
 	}
 }
@@ -433,16 +446,148 @@ func TestUpWritesEnvAndCleansSailEnvironment(t *testing.T) {
 	}
 }
 
-func TestStopRefusesComposeOverrides(t *testing.T) {
-	_, wt := setupWorktreeRepo(t)
-	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_FILE=/evil.yaml\n"), 0o600); err != nil {
+func writeFakeSail(t *testing.T, wt string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(wt, "vendor", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "vendor", "bin", "sail"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func captureStderr(t *testing.T) *strings.Builder {
+	t.Helper()
+	var b strings.Builder
+	old := stderr
+	stderr = &b
+	t.Cleanup(func() { stderr = old })
+	return &b
+}
+
+func TestStopDoesNotRefuseAndWarns(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	// 上書きキー・別プロジェクト名があっても止める (拒否せず警告する)。
+	env := "COMPOSE_FILE=/other.yaml\nCOMPOSE_PROJECT_NAME=other-project\nCOMPOSE_PROFILES=x\n"
+	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	warn := captureStderr(t)
+	calls := captureRunner(t)
+	if err := cmdStop(nil); err != nil {
+		t.Fatalf("stop が拒否した: %v", err)
+	}
+	if len(*calls) != 1 || (*calls)[0].args[0] != "stop" {
+		t.Fatalf("sail の呼び出し=%v", *calls)
+	}
+	for _, want := range []string{"COMPOSE_FILE", `"other-project"`, strconvQuote(projectName(main, wt))} {
+		if !strings.Contains(warn.String(), want) {
+			t.Errorf("警告に %s が含まれない: %s", want, warn)
+		}
+	}
+	if strings.Contains(warn.String(), "COMPOSE_PROFILES") {
+		t.Errorf("COMPOSE_PROFILES を警告している: %s", warn)
+	}
+}
+
+func TestStopAllowsSymlinkEnvAndMissingName(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	target := filepath.Join(main, ".env")
+	if err := os.WriteFile(target, []byte("COMPOSE_PROJECT_NAME=other-project\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(wt, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	warn := captureStderr(t)
+	calls := captureRunner(t)
+	if err := cmdStop(nil); err != nil || len(*calls) != 1 {
+		t.Fatalf("stop: err=%v calls=%v", err, *calls)
+	}
+	if warn.Len() != 0 {
+		t.Errorf("リンクの .env は読まない: %s", warn)
+	}
+	// COMPOSE_PROJECT_NAME が無い .env では警告しない。
+	os.Remove(filepath.Join(wt, ".env"))
+	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("APP_URL=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdStop(nil); err != nil || warn.Len() != 0 {
+		t.Errorf("err=%v warn=%s", err, warn)
+	}
+}
+
+func TestStopDoesNotWarnInMainWorktree(t *testing.T) {
+	main, _ := setupWorktreeRepo(t)
+	writeFakeSail(t, main)
+	if err := os.WriteFile(filepath.Join(main, ".env"), []byte("COMPOSE_PROJECT_NAME=whatever\nCOMPOSE_FILE=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(main)
+	warn := captureStderr(t)
+	calls := captureRunner(t)
+	if err := cmdStop(nil); err != nil || len(*calls) != 1 || warn.Len() != 0 {
+		t.Errorf("err=%v calls=%v warn=%s", err, *calls, warn)
+	}
+}
+
+func TestUpAllowsProfilesRefusesEnvFiles(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	proj := projectName(main, wt)
+	write := func(extra string) {
+		if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"+extra), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := captureRunner(t)
+	write("COMPOSE_PROFILES=debug\n")
+	if err := cmdUp(nil); err != nil || len(*calls) != 1 {
+		t.Fatalf("up が COMPOSE_PROFILES を拒否した: err=%v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(wt, ".env")); !strings.Contains(string(b), "COMPOSE_PROFILES=debug") {
+		t.Errorf("COMPOSE_PROFILES が消えた: %s", b)
+	}
+	write("COMPOSE_ENV_FILES=other.env\n")
+	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "COMPOSE_ENV_FILES") {
+		t.Errorf("up が COMPOSE_ENV_FILES を拒否していない: %v", err)
+	}
+}
+
+func TestRmRefusesProfiles(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	proj := projectName(main, wt)
+	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\nCOMPOSE_PROFILES=x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	calls := captureRunner(t)
-	if err := cmdStop(nil); err == nil || !strings.Contains(err.Error(), "COMPOSE_FILE") {
-		t.Errorf("stop が COMPOSE_FILE を拒否していない: %v", err)
+	if err := cmdRm([]string{"-y"}); err == nil || !strings.Contains(err.Error(), "COMPOSE_PROFILES") || len(*calls) != 0 {
+		t.Errorf("rm が COMPOSE_PROFILES を拒否していない: %v", err)
 	}
-	if len(*calls) != 0 {
-		t.Error("拒否したのに実行した")
+}
+
+func TestReadEnvIfRegularSkipsNonRegular(t *testing.T) {
+	dir := t.TempDir()
+	if _, ok := readEnvIfRegular(filepath.Join(dir, "missing")); ok {
+		t.Error("無いファイルを読んだ")
+	}
+	real := filepath.Join(dir, "real")
+	if err := os.WriteFile(real, []byte("A=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if e, ok := readEnvIfRegular(real); !ok {
+		t.Error("通常ファイルを読めない")
+	} else if v, _ := e.Get("A"); v != "1" {
+		t.Errorf("A=%q", v)
+	}
+	if err := os.Symlink(real, filepath.Join(dir, "link")); err == nil {
+		if _, ok := readEnvIfRegular(filepath.Join(dir, "link")); ok {
+			t.Error("リンクを読んだ")
+		}
+	}
+	if _, ok := readEnvIfRegular(dir); ok {
+		t.Error("ディレクトリを読んだ")
 	}
 }

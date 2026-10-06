@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -122,8 +123,8 @@ func cmdUp(args []string) error {
 		return err
 	}
 
-	if err := env.checkNoComposeOverrides(); err != nil {
-		return err
+	if k, ok := env.overrideKey(upOverrideKeys); ok {
+		return fmt.Errorf(".env に %s は書けません (別の compose ファイルを指し得るため)", k)
 	}
 	ports, err := allocatePorts(c.cfg.PortVars, reg.Worktrees[c.root], reg.used(c.root), portFree)
 	if err != nil {
@@ -164,19 +165,32 @@ func cmdStop(args []string) error {
 	if err != nil {
 		return err
 	}
-	// .env が別の compose ファイル・プロジェクトを指していないか、up・rm と同じ検査を通す (.env が無ければ検査なし)。
-	envPath := filepath.Join(c.root, ".env")
-	if err := checkOwnEnv(envPath); err != nil {
-		return err
-	}
-	if env, err := readEnv(envPath); err == nil {
-		if err := env.checkNoComposeOverrides(); err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
-		return err
+	// stop は .env を書き換えず、止めても取り返しがつくので、up・rm のような拒否はしない。
+	// 別のプロジェクトを止め得る場合だけ警告する。
+	if c.root != c.main {
+		warnStopTarget(c)
 	}
 	return runSail(c.root, c.cfg, append([]string{"stop"}, args...))
+}
+
+// stderr は警告の出力先 (テストで差し替える)。
+var stderr io.Writer = os.Stderr
+
+// warnStopTarget は .env が別の compose ファイル・プロジェクトを指していそうなとき、stop の前に警告する。
+// ベストエフォートで、シェル式による上書き等は検出できない。.env が通常ファイルでなければ何もしない。
+func warnStopTarget(c *ctx) {
+	env, ok := readEnvIfRegular(filepath.Join(c.root, ".env"))
+	if !ok {
+		return
+	}
+	if k, ok := env.overrideKey(upOverrideKeys); ok {
+		fmt.Fprintf(stderr, "警告: .env に %s があり、このワークツリー以外の compose プロジェクトを止める可能性があります\n", k)
+	}
+	if name, ok := env.Get("COMPOSE_PROJECT_NAME"); ok {
+		if want := projectName(c.main, c.root); name != want {
+			fmt.Fprintf(stderr, "警告: .env の COMPOSE_PROJECT_NAME (%+q) がこのワークツリーの名前 (%+q) と異なり、別のプロジェクトを止める可能性があります\n", name, want)
+		}
+	}
 }
 
 func cmdRm(args []string) error {
@@ -203,8 +217,8 @@ func cmdRm(args []string) error {
 	if err != nil {
 		return fmt.Errorf(".env を読めません (up 済みのワークツリーで実行してください): %w", err)
 	}
-	if err := env.checkNoComposeOverrides(); err != nil {
-		return err
+	if k, ok := env.overrideKey(rmOverrideKeys); ok {
+		return fmt.Errorf(".env に %s は書けません (別の compose ファイルを指し得るため)", k)
 	}
 	proj, ok := env.Get("COMPOSE_PROJECT_NAME")
 	if !ok || proj == "" {
@@ -262,7 +276,7 @@ func runSail(root string, cfg *Config, args []string) error {
 	return runner(root, cleanEnv(drop), sail, args...)
 }
 
-// cleanEnv は現在の環境から、COMPOSE_ で始まる全ての変数・SAIL_FILES・drop の変数を外した環境を返す
+// cleanEnv は現在の環境から (.env のキーを拒否する upOverrideKeys / rmOverrideKeys とは別の仕組み)、COMPOSE_ で始まる全ての変数・SAIL_FILES・drop の変数を外した環境を返す
 // (別の compose ファイル・プロジェクトを指し得るため)。DOCKER_HOST 等は意図して使う利用者がいるので外さない。
 func cleanEnv(drop []string) []string {
 	skip := map[string]bool{"SAIL_FILES": true}

@@ -5,7 +5,9 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestCheckOwnEnvRejectsHardLink(t *testing.T) {
@@ -44,5 +46,22 @@ func TestOpenNoFollowRefusesSymlink(t *testing.T) {
 	if f, err := os.OpenFile(link, os.O_WRONLY|openNoFollow, 0o600); err == nil {
 		f.Close()
 		t.Error("O_NOFOLLOW がシンボリックリンクを辿った")
+	}
+}
+
+func TestReadEnvIfRegularDoesNotBlockOnFIFO(t *testing.T) {
+	p := filepath.Join(t.TempDir(), ".env")
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Skip(err)
+	}
+	done := make(chan bool, 1)
+	go func() { _, ok := readEnvIfRegular(p); done <- ok }()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Error("FIFO を読んだ")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("FIFO でブロックした")
 	}
 }
