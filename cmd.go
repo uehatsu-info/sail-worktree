@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -24,28 +25,36 @@ func cmdInit() error {
 	if err != nil {
 		return err
 	}
-	root, err := worktreeRoot(dir)
+	wtTop, prefix, err := worktreeRootAndPrefix(dir)
 	if err != nil {
 		return fmt.Errorf("run this inside a git repository: %w", err)
 	}
-	compose, err := findCompose(root)
+	root, cand, err := findProject(wtTop, prefix, composeNames)
 	if err != nil {
 		return err
 	}
+	if cand == nil {
+		return composeNotFoundError(wtTop, prefix)
+	}
+	compose := cand.marker
 	b, err := os.ReadFile(filepath.Join(root, compose))
 	if err != nil {
 		return err
 	}
 	vars := detectPortVars(string(b))
 	if len(vars) == 0 {
-		return fmt.Errorf("no port variable (${XXX_PORT:-1234}) found in %s", compose)
+		return fmt.Errorf("no port variable (${XXX_PORT:-1234}) found in %q", filepath.Join(root, compose))
 	}
 	data, _ := json.MarshalIndent(Config{Compose: compose, PortVars: vars}, "", "  ")
 	path := filepath.Join(root, configName)
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+	// The project directory may be any subdirectory now, so never write through a link placed there.
+	if err := writeFileNoFollow(path, append(data, '\n'), 0o644); err != nil {
+		if errors.Is(err, errNotOwnFile) {
+			return fmt.Errorf("%w; replace it with a real file", err)
+		}
 		return err
 	}
-	fmt.Printf("created %s (commit it to share it with all worktrees)\n", path)
+	fmt.Printf("created %q (commit it to share it with all worktrees)\n", path)
 	for _, v := range vars {
 		fmt.Printf("  %s (default %d)\n", v.Name, v.Default)
 	}
@@ -53,9 +62,12 @@ func cmdInit() error {
 }
 
 // ctx is the information shared by the commands that run inside a worktree.
+// root and main are the project directories (the one with .sail-worktree.json) of this worktree and of the main
+// worktree; wtTop and mainTop are the roots of the two worktrees. All of them are real paths.
 type ctx struct {
-	root, main string
-	cfg        *Config
+	root, main     string
+	wtTop, mainTop string
+	cfg            *Config
 }
 
 func loadCtx() (*ctx, error) {
@@ -63,11 +75,22 @@ func loadCtx() (*ctx, error) {
 	if err != nil {
 		return nil, err
 	}
-	root, err := worktreeRoot(dir)
+	wtTop, prefix, err := worktreeRootAndPrefix(dir)
 	if err != nil {
 		return nil, fmt.Errorf("run this inside a git repository: %w", err)
 	}
-	main, err := mainWorktree(root)
+	mainTop, err := mainWorktree(wtTop)
+	if err != nil {
+		return nil, err
+	}
+	root, cand, err := findProject(wtTop, prefix, []string{configName})
+	if err != nil {
+		return nil, err
+	}
+	if cand == nil {
+		return nil, configNotFoundError(wtTop, prefix)
+	}
+	main, err := counterpart(mainTop, cand.rel)
 	if err != nil {
 		return nil, err
 	}
@@ -75,16 +98,27 @@ func loadCtx() (*ctx, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ctx{root: filepath.Clean(root), main: main, cfg: cfg}, nil
+	if cand.rel != strings.TrimSuffix(prefix, "/") {
+		fmt.Fprintf(stderr, "project directory: %q\n", root)
+	}
+	return &ctx{root: root, main: main, wtTop: wtTop, mainTop: mainTop, cfg: cfg}, nil
 }
+
+// isMain reports whether the command runs in the main worktree. The worktree roots decide; comparing the project
+// directories as well is defense in depth, because up and rm must never touch the main worktree.
+func (c *ctx) isMain() bool { return c.wtTop == c.mainTop || c.root == c.main }
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9_-]+`)
 
-func projectName(main, root string) string {
+// projectName is the compose project name: a slug of the two worktree names and a hash of the project directory.
+// For a project at the worktree root (root == wtTop) it equals the name older versions computed, so rm keeps working.
+func projectName(mainTop, wtTop, root string) string {
 	sum := sha1.Sum([]byte(root))
-	slug := nonSlug.ReplaceAllString(strings.ToLower(filepath.Base(main)+"-"+filepath.Base(root)), "-")
+	slug := nonSlug.ReplaceAllString(strings.ToLower(filepath.Base(mainTop)+"-"+filepath.Base(wtTop)), "-")
 	return strings.Trim(slug, "-_") + "-" + hex.EncodeToString(sum[:])[:6]
 }
+
+func (c *ctx) projectName() string { return projectName(c.mainTop, c.wtTop, c.root) }
 
 // sessionCookieName is the per-worktree session cookie name. localhost shares cookies across ports, so the name is
 // derived from the project name to keep logins of other worktrees and projects from mixing.
@@ -98,7 +132,7 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
-	if c.root == c.main {
+	if c.isMain() {
 		return fmt.Errorf("cannot run in the main worktree; run it in a worktree you have created")
 	}
 	envPath := filepath.Join(c.root, ".env")
@@ -120,6 +154,9 @@ func cmdUp(args []string) error {
 			env, err = readEnv(filepath.Join(c.main, ".env.example"))
 		}
 		if err != nil {
+			if c.main != c.mainTop {
+				return fmt.Errorf("cannot read the source .env from the main worktree's project directory %q (the main worktree needs the project at the same relative path): %w", c.main, err)
+			}
 			return fmt.Errorf("cannot read the source .env from the main worktree: %w", err)
 		}
 		fmt.Println("creating .env (copied from the main worktree)")
@@ -137,7 +174,7 @@ func cmdUp(args []string) error {
 	for _, v := range c.cfg.PortVars {
 		env.Set(v.Name, strconv.Itoa(ports[v.Name]))
 	}
-	proj := projectName(c.main, c.root)
+	proj := c.projectName()
 	env.Set("COMPOSE_PROJECT_NAME", proj)
 	env.Set("SESSION_COOKIE", sessionCookieName(proj))
 	if appURL, ok := env.Get("APP_URL"); ok {
@@ -194,7 +231,7 @@ func cmdStop(args []string) error {
 	}
 	// stop never writes .env and stopping can be undone, so it does not refuse like up and rm do.
 	// It only warns when it may stop another project.
-	if c.root != c.main {
+	if !c.isMain() {
 		warnStopTarget(c)
 	}
 	return runSail(c.root, c.cfg, append([]string{"stop"}, args...))
@@ -243,7 +280,7 @@ func warnStopTarget(c *ctx) {
 		fmt.Fprintf(stderr, "warning: .env has %s, so stop may stop a compose project other than this worktree's\n", k)
 	}
 	if name, ok := env.Get("COMPOSE_PROJECT_NAME"); ok {
-		if want := projectName(c.main, c.root); name != want {
+		if want := c.projectName(); name != want {
 			fmt.Fprintf(stderr, "warning: COMPOSE_PROJECT_NAME in .env (%+q) differs from this worktree's name (%+q); stop may stop another project\n", name, want)
 		}
 	}
@@ -262,7 +299,7 @@ func cmdRm(args []string) error {
 	if err != nil {
 		return err
 	}
-	if c.root == c.main {
+	if c.isMain() {
 		return fmt.Errorf("cannot run in the main worktree")
 	}
 	envPath := filepath.Join(c.root, ".env")
@@ -282,12 +319,12 @@ func cmdRm(args []string) error {
 	}
 	// down -v cannot be undone, so do not trust the value in .env: recompute this worktree's name and require an exact
 	// match (this refuses a leftover name of another project or worktree, a hand-edited name, or a moved worktree).
-	if want := projectName(c.main, c.root); proj != want {
+	if want := c.projectName(); proj != want {
 		return nameMismatchError(proj, want)
 	}
 	// Do every refusing check before the confirmation prompt (never refuse after the user answered y).
 	// -f gets the checked real path, not the configured one, so docker does not resolve the links again.
-	composePath, err := composeInsideWorktree(c.root, c.cfg.Compose)
+	composePath, err := composeInsideProject(c.root, c.cfg.Compose)
 	if err != nil {
 		return err
 	}

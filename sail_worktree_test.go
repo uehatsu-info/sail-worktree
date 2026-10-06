@@ -1,12 +1,15 @@
 package main
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
@@ -346,7 +349,7 @@ func TestNameMismatchErrorEscapesUntrustedNames(t *testing.T) {
 
 func TestRmRefusalsDoNotReadStdin(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	cases := map[string]struct{ env, want string }{
 		"name mismatch":   {"COMPOSE_PROJECT_NAME=other\n", "does not match"},
 		"refused key":     {"COMPOSE_PROJECT_NAME=" + proj + "\nCOMPOSE_PROFILES=x\n", "remove that line from .env before rm"},
@@ -373,7 +376,7 @@ func TestRmRefusalsDoNotReadStdin(t *testing.T) {
 
 func TestRmRefusesBeforePromptWithoutReadingStdin(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	// Only .env exists; there is no compose file (setupWorktreeRepo does not create one).
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -441,7 +444,7 @@ func TestUpOverrideErrorSourceIsTracked(t *testing.T) {
 
 func TestRmAndUpRefuseComposeOverrides(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	env := "COMPOSE_PROJECT_NAME=" + proj + "\nCOMPOSE_FILE=/evil.yaml\n"
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte(env), 0o600); err != nil {
 		t.Fatal(err)
@@ -473,15 +476,43 @@ func TestProjectNameIsStableAcrossSymlinkedPaths(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	link := filepath.Join(filepath.Dir(wt), "via-link")
 	symlinkOrSkip(t, wt, link)
-	root, err := worktreeRoot(link)
+	root, _, err := worktreeRootAndPrefix(link)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if root != wt {
 		t.Errorf("not resolved to the real path: %q != %q", root, wt)
 	}
-	if projectName(main, root) != projectName(main, wt) {
+	if projectName(main, root, root) != projectName(main, wt, wt) {
 		t.Error("the project name depends on the path used")
+	}
+}
+
+// A project at the worktree root must keep the name older versions wrote to .env, or rm refuses existing worktrees.
+func TestProjectNameOfRootProjectIsUnchanged(t *testing.T) {
+	old := func(main, root string) string {
+		sum := sha1.Sum([]byte(root))
+		slug := regexp.MustCompile(`[^a-z0-9_-]+`).ReplaceAllString(strings.ToLower(filepath.Base(main)+"-"+filepath.Base(root)), "-")
+		return strings.Trim(slug, "-_") + "-" + hex.EncodeToString(sum[:])[:6]
+	}
+	main := filepath.Join(t.TempDir(), "My App")
+	wt := filepath.Join(t.TempDir(), "my-app_feat.x")
+	if got, want := projectName(main, wt, wt), old(main, wt); got != want {
+		t.Errorf("projectName = %q, the old name was %q", got, want)
+	}
+}
+
+func TestProjectNameArguments(t *testing.T) {
+	mainTop := filepath.Join(t.TempDir(), "app")
+	wtTop := filepath.Join(t.TempDir(), "app-feat")
+	root := filepath.Join(wtTop, "laravel")
+	got := projectName(mainTop, wtTop, root)
+	sum := sha1.Sum([]byte(root))
+	if want := "app-app-feat-" + hex.EncodeToString(sum[:])[:6]; got != want {
+		t.Errorf("projectName = %q, want %q (slug from the tops, hash of the project directory)", got, want)
+	}
+	if projectName(mainTop, root, wtTop) == got {
+		t.Error("swapping wtTop and root does not change the name")
 	}
 }
 
@@ -544,7 +575,7 @@ func captureRunner(t *testing.T) *[]call {
 
 func TestRmPassesPinnedArguments(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +622,7 @@ func TestUpWritesEnvAndCleansSailEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	if v, _ := e.Get("COMPOSE_PROJECT_NAME"); v != proj {
 		t.Errorf("COMPOSE_PROJECT_NAME=%q", v)
 	}
@@ -660,7 +691,7 @@ func TestStopDoesNotRefuseAndWarns(t *testing.T) {
 	if len(*calls) != 1 || (*calls)[0].args[0] != "stop" {
 		t.Fatalf("calls to sail = %v", *calls)
 	}
-	for _, want := range []string{"COMPOSE_FILE", `"other-project"`, strconvQuote(projectName(main, wt))} {
+	for _, want := range []string{"COMPOSE_FILE", `"other-project"`, strconvQuote(projectName(main, wt, wt))} {
 		if !strings.Contains(warn.String(), want) {
 			t.Errorf("the warning lacks %s: %s", want, warn)
 		}
@@ -718,7 +749,7 @@ func TestStopDoesNotWarnInMainWorktree(t *testing.T) {
 func TestUpAllowsProfilesRefusesEnvFiles(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	writeFakeSail(t, wt)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	write := func(extra string) {
 		if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"+extra), 0o600); err != nil {
 			t.Fatal(err)
@@ -740,7 +771,7 @@ func TestUpAllowsProfilesRefusesEnvFiles(t *testing.T) {
 
 func TestRmRefusesProfiles(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\nCOMPOSE_PROFILES=x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -864,7 +895,7 @@ func TestUpReusesPortsRecordedUnderSymlinkedPath(t *testing.T) {
 
 func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -902,7 +933,7 @@ func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 
 func writeRmFixtures(t *testing.T, main, wt string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+projectName(main, wt)+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+projectName(main, wt, wt)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(wt, "compose.yaml"), "services: {}\n")
@@ -1005,7 +1036,7 @@ func writeFile(t *testing.T, path, content string) {
 func rmWorktree(t *testing.T, rel string) (wt string) {
 	t.Helper()
 	main, wt := setupWorktreeRepo(t)
-	writeFile(t, filepath.Join(wt, ".env"), "COMPOSE_PROJECT_NAME="+projectName(main, wt)+"\n")
+	writeFile(t, filepath.Join(wt, ".env"), "COMPOSE_PROJECT_NAME="+projectName(main, wt, wt)+"\n")
 	cfg := fmt.Sprintf(`{"compose":%q,"port_vars":[{"name":"APP_PORT","default":80}]}`, rel)
 	writeFile(t, filepath.Join(wt, configName), cfg)
 	return wt
@@ -1055,7 +1086,7 @@ func TestRmRefusesComposeLinkedOutsideWorktree(t *testing.T) {
 	outside := filepath.Join(realTempDir(t), "compose.yaml")
 	writeFile(t, outside, "services: {}\n")
 	symlinkOrSkip(t, outside, filepath.Join(wt, "compose.yaml"))
-	expectRmRefusedBeforePrompt(t, "resolves outside the worktree")
+	expectRmRefusedBeforePrompt(t, "resolves outside the project directory")
 }
 
 func TestRmRefusesComposeBehindLinkedDirectory(t *testing.T) {
@@ -1063,7 +1094,7 @@ func TestRmRefusesComposeBehindLinkedDirectory(t *testing.T) {
 	outsideDir := realTempDir(t)
 	writeFile(t, filepath.Join(outsideDir, "compose.yaml"), "services: {}\n")
 	symlinkOrSkip(t, outsideDir, filepath.Join(wt, "sub"))
-	expectRmRefusedBeforePrompt(t, "resolves outside the worktree")
+	expectRmRefusedBeforePrompt(t, "resolves outside the project directory")
 }
 
 func TestRmRefusesComposeChainThatLeavesWorktree(t *testing.T) {
@@ -1072,7 +1103,7 @@ func TestRmRefusesComposeChainThatLeavesWorktree(t *testing.T) {
 	writeFile(t, outside, "services: {}\n")
 	symlinkOrSkip(t, outside, filepath.Join(wt, "b.yaml"))
 	symlinkOrSkip(t, filepath.Join(wt, "b.yaml"), filepath.Join(wt, "a.yaml"))
-	expectRmRefusedBeforePrompt(t, "resolves outside the worktree")
+	expectRmRefusedBeforePrompt(t, "resolves outside the project directory")
 }
 
 func TestRmAcceptsComposeChainInsideWorktreeAndPassesRealPath(t *testing.T) {
@@ -1112,7 +1143,7 @@ func TestRmThroughWorktreeAliasIsNotRefused(t *testing.T) {
 	expectRmUsesComposeFile(t, filepath.Join(wt, "compose.yaml"))
 }
 
-func TestComposeInsideWorktree(t *testing.T) {
+func TestComposeInsideProject(t *testing.T) {
 	root := realTempDir(t)
 	writeFile(t, filepath.Join(root, "compose.yaml"), "services: {}\n")
 	writeFile(t, filepath.Join(root, "..foo.yaml"), "services: {}\n")
@@ -1122,7 +1153,7 @@ func TestComposeInsideWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	const notRegular = "is not a regular file"
-	const notRegularHint = "point compose at a regular file inside the worktree"
+	const notRegularHint = "point compose at a regular file inside the project directory"
 	cases := []struct {
 		name, rel, want string // want is an error substring; empty means accepted
 	}{
@@ -1132,12 +1163,12 @@ func TestComposeInsideWorktree(t *testing.T) {
 		{"missing file", "missing.yaml", "compose file not found"},
 		{"directory", "dir", notRegular},
 		{"the worktree itself", ".", notRegular},
-		{"parent directory", "..", "resolves outside the worktree"},
-		{"file in the parent directory", filepath.Join("..", "outside.yaml"), "resolves outside the worktree"},
+		{"parent directory", "..", "resolves outside the project directory"},
+		{"file in the parent directory", filepath.Join("..", "outside.yaml"), "resolves outside the project directory"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := composeInsideWorktree(root, c.rel)
+			got, err := composeInsideProject(root, c.rel)
 			if c.want == "" {
 				if err != nil || got != filepath.Join(root, c.rel) {
 					t.Errorf("got %q, %v; want the file itself", got, err)
@@ -1151,5 +1182,68 @@ func TestComposeInsideWorktree(t *testing.T) {
 				t.Errorf("error = %v, want it to say how to recover: %q", err, notRegularHint)
 			}
 		})
+	}
+}
+
+func TestEscapeControl(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain text":             "plain text",
+		"a\x1b[31mb":             `a\x1b[31mb`,
+		"bell\a":                 `bell\a`,
+		"tab\there":              `tab\there`,
+		"del\x7f":                `del\x7f`,
+		"c1\u0085":               `c1\u0085`,
+		"bidi\u202egnp.exe":      `bidi\u202egnp.exe`,
+		"isolate\u2066x":         `isolate\u2066x`,
+		"csi\x9bb":               `csi\x9bb`,
+		"line1\nline2":           "line1\nline2",
+		"cr\rover":               `cr\rover`,
+		"cut\xe6\x97":            `cut\xe6\x97`,
+		"caf\u00e9 \u65e5\u672c": "caf\u00e9 \u65e5\u672c",
+	} {
+		if got := escapeControl(in); got != want {
+			t.Errorf("escapeControl(%+q) = %+q, want %+q", in, got, want)
+		}
+	}
+}
+
+func TestPrintErrEscapes(t *testing.T) {
+	var b strings.Builder
+	printErr(&b, fmt.Errorf("open %s: denied", "/x/\x1b]0;title\a/.env"))
+	if got, want := b.String(), "error: open /x/\\x1b]0;title\\a/.env: denied\n"; got != want {
+		t.Errorf("printErr wrote %+q, want %+q", got, want)
+	}
+}
+
+func TestWriteFileNoFollowRefusesLinksAndDirectories(t *testing.T) {
+	dir := realTempDir(t)
+	if err := os.Mkdir(filepath.Join(dir, "d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileNoFollow(filepath.Join(dir, "d"), []byte("x"), 0o600); err == nil {
+		t.Error("wrote to a directory")
+	}
+	target := filepath.Join(dir, "target")
+	writeFile(t, target, "keep\n")
+	link := filepath.Join(dir, "link")
+	symlinkOrSkip(t, target, link)
+	if err := writeFileNoFollow(link, []byte("x"), 0o600); err == nil {
+		t.Error("wrote through a symbolic link")
+	}
+	if b, _ := os.ReadFile(target); string(b) != "keep\n" {
+		t.Errorf("link target was rewritten: %q", b)
+	}
+}
+
+func TestWriteFileNoFollowCreatesAndReplaces(t *testing.T) {
+	p := filepath.Join(realTempDir(t), "f")
+	if err := writeFileNoFollow(p, []byte("long content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileNoFollow(p, []byte("short\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(p); string(b) != "short\n" {
+		t.Errorf("content = %q (not truncated)", b)
 	}
 }

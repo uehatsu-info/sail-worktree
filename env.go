@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -142,21 +143,40 @@ func (e *envFile) Write(path string) error {
 	if !strings.HasSuffix(s, "\n") {
 		s += "\n"
 	}
+	return writeFileNoFollow(path, []byte(s), 0o600)
+}
+
+// errNotOwnFile is wrapped by the refusals writeFileNoFollow's checks make, so that callers can tell them from I/O
+// errors (on Unix a link swapped in after the Lstat still fails, with the plain error of O_NOFOLLOW).
+var errNotOwnFile = errors.New("refusing to write to it")
+
+// writeFileNoFollow writes data to path without following a link to another file: a symbolic link, a non-regular
+// file and (on Unix) a file with other hard links are refused. A new file gets perm; an existing one keeps its mode.
+// The Lstat is the only link check on Windows, where openNoFollow is 0.
+func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
+	if fi, err := os.Lstat(path); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+			return fmt.Errorf("%q is a symbolic link or not a regular file: %w", path, errNotOwnFile)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	// O_TRUNC would truncate before the check, so check after opening and then Truncate.
-	// O_NOFOLLOW (unix) refuses a symlink even if the path is swapped for one between Lstat and open.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|openNoFollow, 0o600)
+	// O_NOFOLLOW (unix) refuses a symlink even if the path is swapped for one after the Lstat, and O_NONBLOCK keeps a
+	// FIFO swapped in from blocking the open.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|openNoFollow|openNonBlock, perm)
 	if err != nil {
 		return err
 	}
 	fi, err := f.Stat()
 	if err == nil && (!fi.Mode().IsRegular() || hasMultipleLinks(fi)) {
-		err = fmt.Errorf("%s is not a regular file or is hard-linked to another file", path)
+		err = fmt.Errorf("%q is not a regular file or is hard-linked to another file: %w", path, errNotOwnFile)
 	}
 	if err == nil {
 		err = f.Truncate(0)
 	}
 	if err == nil {
-		_, err = f.WriteString(s)
+		_, err = f.Write(data)
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr

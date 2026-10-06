@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -63,6 +64,64 @@ func TestReadEnvIfRegularDoesNotBlockOnFIFO(t *testing.T) {
 	case ok := <-done:
 		if ok {
 			t.Error("read a FIFO")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked on a FIFO")
+	}
+}
+
+func TestWriteFileNoFollowRefusesHardLink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.WriteFile(real, []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(real, filepath.Join(dir, "hard")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileNoFollow(filepath.Join(dir, "hard"), []byte("x"), 0o600); !errors.Is(err, errNotOwnFile) {
+		t.Errorf("a hard link is not refused as such: %v", err)
+	}
+	if b, _ := os.ReadFile(real); string(b) != "keep\n" {
+		t.Errorf("link target was rewritten: %q", b)
+	}
+}
+
+func TestWriteFileNoFollowModes(t *testing.T) {
+	dir := t.TempDir()
+	created := filepath.Join(dir, "new")
+	if err := writeFileNoFollow(created, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(created); fi.Mode().Perm() != 0o600 {
+		t.Errorf("new file mode = %v", fi.Mode().Perm())
+	}
+	existing := filepath.Join(dir, "existing")
+	if err := os.WriteFile(existing, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(existing, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileNoFollow(existing, []byte("y"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(existing); fi.Mode().Perm() != 0o640 {
+		t.Errorf("existing file mode changed to %v", fi.Mode().Perm())
+	}
+}
+
+func TestWriteFileNoFollowRefusesFIFO(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "fifo")
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Fatalf("cannot create a FIFO (set TMPDIR to a filesystem that supports them): %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- writeFileNoFollow(p, []byte("x"), 0o600) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("wrote to a FIFO")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("blocked on a FIFO")
