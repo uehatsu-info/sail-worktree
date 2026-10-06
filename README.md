@@ -58,7 +58,7 @@ Because this is irreversible, `rm` refuses unless `COMPOSE_PROJECT_NAME` in `.en
 
 ### 5. `sail-worktree version`
 
-Prints the version (the tag for `go install ...@vX.Y.Z`, `(devel)` for a local build). Pin a tag in your project instead of `@latest`.
+Prints the version (the tag for `go install ...@vX.Y.Z`; a local `go build` prints `(devel)` or a pseudo-version such as `v0.0.0-<date>-<commit>`). Pin a tag in your project instead of `@latest`.
 
 ## Notes
 
