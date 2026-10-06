@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -83,20 +84,74 @@ func (e *envFile) Get(key string) (string, bool) {
 	return "", false
 }
 
+// Set は同じキーの行を全て置き換える (Sail は最後の値・Laravel の Dotenv は最初の値を使うので、
+// 重複行が残ると両者の値が割れる)。無ければ追記する。
 func (e *envFile) Set(key, value string) {
+	found := false
 	for i, l := range e.lines {
 		if k, ok := keyOf(l); ok && k == key {
 			e.lines[i] = key + "=" + value
-			return
+			found = true
 		}
 	}
-	e.lines = append(e.lines, key+"="+value)
+	if !found {
+		e.lines = append(e.lines, key+"="+value)
+	}
 }
 
+// Write は .env を書き出す。書き込み前に checkOwnEnv を通す。
+// 新規作成は 0600 (APP_KEY・DB_PASSWORD を含むため)。既存ファイルのモードは変えない。
 func (e *envFile) Write(path string) error {
+	if err := checkOwnEnv(path); err != nil {
+		return err
+	}
 	s := strings.Join(e.lines, "\n")
 	if !strings.HasSuffix(s, "\n") {
 		s += "\n"
 	}
-	return os.WriteFile(path, []byte(s), 0o644)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(s); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// checkOwnEnv はワークツリー自身の .env を読み書きしてよいか確かめる。
+// シンボリックリンク (リンク先のメイン等の .env を書き換えてしまう) とハードリンクを拒否する。
+// ファイルが無いのは問題ない (新規作成)。
+func checkOwnEnv(path string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s がシンボリックリンクです。リンク先を書き換えないよう、実ファイルにしてください", path)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s が通常のファイルではありません", path)
+	}
+	if hasMultipleLinks(fi) {
+		return fmt.Errorf("%s がほかのファイルとハードリンクされています (メインの .env 等を書き換えないよう、実ファイルにしてください)", path)
+	}
+	return nil
+}
+
+// composeOverrideKeys は .env に書くと別の compose ファイル・プロジェクトを指し得るキー。
+var composeOverrideKeys = []string{"COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_ENV_FILES", "SAIL_FILES"}
+
+// checkNoComposeOverrides は .env に composeOverrideKeys のいずれかがあれば拒否する。
+func (e *envFile) checkNoComposeOverrides() error {
+	for _, k := range composeOverrideKeys {
+		if _, ok := e.Get(k); ok {
+			return fmt.Errorf(".env に %s は書けません (別の compose ファイルを指し得るため)", k)
+		}
+	}
+	return nil
 }

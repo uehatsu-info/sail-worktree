@@ -85,6 +85,10 @@ func projectName(main, root string) string {
 	return strings.Trim(slug, "-_") + "-" + hex.EncodeToString(sum[:])[:6]
 }
 
+// sessionCookieName はワークツリーごとのセッション Cookie 名。localhost はポートが違っても Cookie を共有するので、
+// プロジェクト名から作って他のワークツリー・プロジェクトとログインが混ざらないようにする。
+func sessionCookieName(proj string) string { return proj + "-session" }
+
 func cmdUp(args []string) error {
 	c, err := loadCtx()
 	if err != nil {
@@ -98,6 +102,9 @@ func cmdUp(args []string) error {
 		return err
 	}
 	envPath := filepath.Join(c.root, ".env")
+	if err := checkOwnEnv(envPath); err != nil {
+		return err
+	}
 	env, err := readEnv(envPath)
 	if os.IsNotExist(err) {
 		env, err = readEnv(filepath.Join(c.main, ".env"))
@@ -112,6 +119,9 @@ func cmdUp(args []string) error {
 		return err
 	}
 
+	if err := env.checkNoComposeOverrides(); err != nil {
+		return err
+	}
 	ports, err := allocatePorts(c.cfg.PortVars, reg.Worktrees[c.root], reg.used(c.root), portFree)
 	if err != nil {
 		return err
@@ -119,7 +129,9 @@ func cmdUp(args []string) error {
 	for _, v := range c.cfg.PortVars {
 		env.Set(v.Name, strconv.Itoa(ports[v.Name]))
 	}
-	env.Set("COMPOSE_PROJECT_NAME", projectName(c.main, c.root))
+	proj := projectName(c.main, c.root)
+	env.Set("COMPOSE_PROJECT_NAME", proj)
+	env.Set("SESSION_COOKIE", sessionCookieName(proj))
 	if appURL, ok := env.Get("APP_URL"); ok {
 		if u, err := url.Parse(appURL); err == nil && u.Hostname() != "" && ports["APP_PORT"] != 0 {
 			u.Host = u.Hostname() + ":" + strconv.Itoa(ports["APP_PORT"])
@@ -141,7 +153,7 @@ func cmdUp(args []string) error {
 	for _, n := range names {
 		fmt.Printf("  %s=%d\n", n, ports[n])
 	}
-	return runSail(c.root, append([]string{"up"}, args...))
+	return runSail(c.root, c.cfg, append([]string{"up"}, args...))
 }
 
 func cmdStop(args []string) error {
@@ -149,7 +161,7 @@ func cmdStop(args []string) error {
 	if err != nil {
 		return err
 	}
-	return runSail(c.root, append([]string{"stop"}, args...))
+	return runSail(c.root, c.cfg, append([]string{"stop"}, args...))
 }
 
 func cmdRm(args []string) error {
@@ -168,13 +180,25 @@ func cmdRm(args []string) error {
 	if c.root == c.main {
 		return fmt.Errorf("メインワークツリーでは実行できません")
 	}
-	env, err := readEnv(filepath.Join(c.root, ".env"))
+	envPath := filepath.Join(c.root, ".env")
+	if err := checkOwnEnv(envPath); err != nil {
+		return err
+	}
+	env, err := readEnv(envPath)
 	if err != nil {
 		return fmt.Errorf(".env を読めません (up 済みのワークツリーで実行してください): %w", err)
+	}
+	if err := env.checkNoComposeOverrides(); err != nil {
+		return err
 	}
 	proj, ok := env.Get("COMPOSE_PROJECT_NAME")
 	if !ok || proj == "" {
 		return fmt.Errorf(".env に COMPOSE_PROJECT_NAME がありません")
+	}
+	// 取り返しのつかない down -v なので、.env の値を信用せず、このワークツリーの名前を再計算して完全一致を要求する
+	// (別のプロジェクト・別のワークツリーの名前が残っている、手で書き換えた、ワークツリーを移動した、を拒否する)。
+	if want := projectName(c.main, c.root); proj != want {
+		return fmt.Errorf(".env の COMPOSE_PROJECT_NAME (%q) がこのワークツリーの名前 (%q) と一致しません。消しません", proj, want)
 	}
 	if !yes {
 		fmt.Printf("プロジェクト %q のコンテナ・ネットワーク・ボリューム(DBデータ含む)・ビルドイメージを削除します。よろしいですか? [y/N] ", proj)
@@ -184,7 +208,10 @@ func cmdRm(args []string) error {
 			return nil
 		}
 	}
-	if err := runCmd(c.root, "docker", "compose", "--project-name", proj, "down", "-v", "--rmi", "local", "--remove-orphans"); err != nil {
+	// プロジェクト名・ディレクトリ・compose ファイルを明示し、環境の COMPOSE_* を外して実行する。
+	err = runCmdEnv(c.root, cleanEnv(nil), "docker", "compose", "--project-name", proj, "--project-directory", c.root,
+		"-f", filepath.Join(c.root, c.cfg.Compose), "down", "-v", "--rmi", "local", "--remove-orphans")
+	if err != nil {
 		return err
 	}
 	reg, err := loadRegistry()
@@ -199,17 +226,46 @@ func cmdRm(args []string) error {
 	return nil
 }
 
-func runSail(root string, args []string) error {
+func runSail(root string, cfg *Config, args []string) error {
 	sail := filepath.Join(root, "vendor", "bin", "sail")
 	if _, err := os.Stat(sail); err != nil {
 		return fmt.Errorf("%s がありません。`composer install` を実行してください", sail)
 	}
-	return runCmd(root, sail, args...)
+	// シェルのポート変数は .env より優先されるので、割り当てたポートとずれないよう外す。
+	drop := make([]string, 0, len(cfg.PortVars))
+	for _, v := range cfg.PortVars {
+		drop = append(drop, v.Name)
+	}
+	return runCmdEnv(root, cleanEnv(drop), sail, args...)
+}
+
+// cleanEnv は現在の環境から、別の compose ファイル・プロジェクトを指し得る変数と drop の変数を外した環境を返す。
+func cleanEnv(drop []string) []string {
+	skip := map[string]bool{"COMPOSE_PROJECT_NAME": true}
+	for _, k := range composeOverrideKeys {
+		skip[k] = true
+	}
+	for _, k := range drop {
+		skip[k] = true
+	}
+	var out []string
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if !skip[k] {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func runCmd(dir, name string, args ...string) error {
+	return runCmdEnv(dir, nil, name, args...)
+}
+
+func runCmdEnv(dir string, env []string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
 }
