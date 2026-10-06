@@ -83,14 +83,15 @@ cd myapp/laravel                            # the main worktree's project direct
 sail-worktree init                          # once
 git add .sail-worktree.json && git commit -m "Add sail-worktree config"
 cd ..                                       # back to the worktree root
-git worktree add ../myapp-feature-x feature-x
+git worktree add -b feature-x ../myapp-feature-x
 cd ../myapp-feature-x/laravel
 composer install
 sail-worktree up -d
 ```
 
+- The branch you check out must contain the committed `.sail-worktree.json` (a branch created before that commit does not have it; merge or rebase it first).
 - The main worktree needs the project at the same relative path: `up` copies `.env` from `<main worktree>/laravel/.env` (or `.env.example`). That directory must not resolve outside the main worktree (followed through symbolic links; Windows junctions are not followed). Only the directory is checked: a `.env` there that is itself a link is followed, as for a project at the root.
-- A project directory that resolves outside the worktree is an error. As for the compose check, a link swapped in after these checks is not caught.
+- A project directory that resolves outside the worktree is an error. As with the compose check, a link swapped in after these checks is not caught.
 - When you run `up`, `stop` or `rm` below the project directory (for example in `laravel/app`), it prints `project directory: "<path>"` to stderr.
 - When no project directory is found, the error names the subdirectories that hold `.sail-worktree.json` (or a compose file, before `init`), so running a command at the worktree root tells you where to go.
 - The project name is `<main worktree name>-<worktree name>-<hash of the project directory>`. For a project at the worktree root this is the same name as before.
@@ -107,7 +108,7 @@ sail-worktree up -d
 - Ports in the main worktree's own `.env` are not in the registry. The search starts at the default value + 1, so give the main worktree a port that is not default + 1 (for example `APP_PORT=8080`), or start it first. Ports are assigned without a lock, so do not run several `up` commands at the same time.
 - Port assignments are stored in `os.UserConfigDir()/sail-worktree/registry.json` (macOS: `~/Library/Application Support/sail-worktree/registry.json`).
 - `vendor/bin/sail` must exist in the project directory (run `composer install` first).
-- Error messages show control characters (except newlines, which they use for layout), format characters (such as bidirectional overrides) and invalid bytes escaped, so a crafted directory name cannot send escape sequences to your terminal.
+- Error messages show control characters (except newlines, which they use for layout), format characters (such as bidirectional overrides) and invalid bytes escaped, so a crafted directory name cannot send escape sequences to your terminal (a newline in a path can still start a line of its own).
 
 ### Replacing a linked `compose` file
 
@@ -131,7 +132,7 @@ Your checks and the copy are not one step, so a process writing in the worktree 
 
 - Laravel projects in a subdirectory of the repository are supported (see [Project directory](#project-directory)). Projects at the worktree root are unaffected: same project directory, project name and port assignments.
 - `init` writes `.sail-worktree.json` next to the nearest compose file from the current directory upwards; it used to write at the worktree root always. Running it in a subdirectory that has its own compose file (such as `.devcontainer/`) therefore writes there.
-- `up`, `stop` and `rm` use the nearest `.sail-worktree.json`. A directory with its own committed `.sail-worktree.json` (outside `vendor` and `node_modules`) becomes the project, with its own `.env` and `vendor/bin/sail`, and gets a different project name: the containers of a project at the root are left alone, and `rm` run in that directory refuses because the `.env` name there does not match.
+- `up`, `stop` and `rm` use the nearest `.sail-worktree.json`. A directory with its own committed `.sail-worktree.json` (outside `vendor` and `node_modules`) becomes the project, with its own `.env` and `vendor/bin/sail`, and gets a different project name: the containers of a project at the root are left alone, and `rm` run in that directory removes only that directory's own project (it refuses when that directory has no `.env` from `up`, or one whose name does not match).
 - When `init` looks for the compose file, a name that exists but is not a regular file (such as a directory named `compose.yaml`) is now an error instead of being accepted, and `init` refuses a `.sail-worktree.json` that is a link or not a regular file.
 - `rm` checks the compose file against the project directory, so for a project in a subdirectory a link to a compose file elsewhere in the worktree is refused.
 - `init` prints the created path quoted (`created "<path>"`), and error messages show control characters escaped.
