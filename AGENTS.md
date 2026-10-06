@@ -52,9 +52,11 @@ gofmt -l .                      # must print nothing
 
 CI runs `gofmt`, `go vet`, `go mod tidy` (no diff), a build of every release target, and `go test ./...` on
 ubuntu, macOS and Windows. Windows really runs the tests, so write tests that also work there (avoid unix-only paths
-outside `links_unix_test.go`). Only Windows may be unable to create symbolic links: create them with `symlinkOrSkip`,
-which skips there and fails everywhere else, and do not call `t.Skip` on an `os.Symlink` error yourself. A Windows
-runner without that right therefore does not verify the symlink-refusal paths.
+outside `links_unix_test.go`). We assume that only Windows may lack the right to create symbolic links: create them with
+`symlinkOrSkip` (or `trySymlink` when the link check is an optional extra), which skip or return false there and fail
+everywhere else, and do not call `t.Skip` on an `os.Symlink` error yourself. A Unix environment that forbids symbolic
+links therefore fails these tests by design, and a Windows runner without that right does not verify the
+symlink-refusal paths.
 
 ## Conventions
 

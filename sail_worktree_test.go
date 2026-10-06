@@ -764,8 +764,8 @@ func TestReadEnvIfRegularSkipsNonRegular(t *testing.T) {
 	} else if v, _ := e.Get("A"); v != "1" {
 		t.Errorf("A=%q", v)
 	}
-	// An extra check only when a link can be made; the rest of the test needs no link, so do not skip the whole test.
-	if err := os.Symlink(real, filepath.Join(dir, "link")); err == nil {
+	// An extra check: the rest of the test needs no link, so do not skip the whole test on Windows.
+	if trySymlink(t, real, filepath.Join(dir, "link")) {
 		if _, ok := readEnvIfRegular(filepath.Join(dir, "link")); ok {
 			t.Error("read a link")
 		}
@@ -973,18 +973,26 @@ func realTempDir(t *testing.T) string {
 	return d
 }
 
-// symlinkOrSkip creates a symbolic link. Only Windows may lack the right to create one; elsewhere a failure is a real
-// error, because skipping would let the symlink-refusal tests pass without running.
-func symlinkOrSkip(t *testing.T, oldname, newname string) {
+// trySymlink creates a symbolic link and reports whether it exists. Only Windows may lack the right to create one;
+// elsewhere a failure is a real error, because skipping would let the symlink-refusal tests pass without running.
+func trySymlink(t *testing.T, oldname, newname string) bool {
 	t.Helper()
 	err := os.Symlink(oldname, newname)
 	if err == nil {
-		return
+		return true
 	}
-	if runtime.GOOS == "windows" {
-		t.Skipf("cannot create symbolic links here: %v", err)
+	if runtime.GOOS != "windows" {
+		t.Fatalf("cannot create symbolic links (required off Windows, see AGENTS.md): %v", err)
 	}
-	t.Fatalf("cannot create symbolic links: %v", err)
+	return false
+}
+
+// symlinkOrSkip is trySymlink for a test that cannot run without the link.
+func symlinkOrSkip(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if !trySymlink(t, oldname, newname) {
+		t.Skip("cannot create symbolic links here")
+	}
 }
 
 func writeFile(t *testing.T, path, content string) {
