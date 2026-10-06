@@ -363,10 +363,6 @@ func filterEnv(environ, drop []string) []string {
 	return out
 }
 
-func runCmd(dir, name string, args ...string) error {
-	return runCmdEnv(dir, nil, name, args...)
-}
-
 func runCmdEnv(dir string, env []string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
