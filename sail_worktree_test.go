@@ -1,12 +1,15 @@
 package main
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
@@ -346,7 +349,7 @@ func TestNameMismatchErrorEscapesUntrustedNames(t *testing.T) {
 
 func TestRmRefusalsDoNotReadStdin(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	cases := map[string]struct{ env, want string }{
 		"name mismatch":   {"COMPOSE_PROJECT_NAME=other\n", "does not match"},
 		"refused key":     {"COMPOSE_PROJECT_NAME=" + proj + "\nCOMPOSE_PROFILES=x\n", "remove that line from .env before rm"},
@@ -373,7 +376,7 @@ func TestRmRefusalsDoNotReadStdin(t *testing.T) {
 
 func TestRmRefusesBeforePromptWithoutReadingStdin(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	// Only .env exists; there is no compose file (setupWorktreeRepo does not create one).
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -441,7 +444,7 @@ func TestUpOverrideErrorSourceIsTracked(t *testing.T) {
 
 func TestRmAndUpRefuseComposeOverrides(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	env := "COMPOSE_PROJECT_NAME=" + proj + "\nCOMPOSE_FILE=/evil.yaml\n"
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte(env), 0o600); err != nil {
 		t.Fatal(err)
@@ -480,8 +483,36 @@ func TestProjectNameIsStableAcrossSymlinkedPaths(t *testing.T) {
 	if root != wt {
 		t.Errorf("not resolved to the real path: %q != %q", root, wt)
 	}
-	if projectName(main, root) != projectName(main, wt) {
+	if projectName(main, root, root) != projectName(main, wt, wt) {
 		t.Error("the project name depends on the path used")
+	}
+}
+
+// A project at the worktree root must keep the name older versions wrote to .env, or rm refuses existing worktrees.
+func TestProjectNameOfRootProjectIsUnchanged(t *testing.T) {
+	old := func(main, root string) string {
+		sum := sha1.Sum([]byte(root))
+		slug := regexp.MustCompile(`[^a-z0-9_-]+`).ReplaceAllString(strings.ToLower(filepath.Base(main)+"-"+filepath.Base(root)), "-")
+		return strings.Trim(slug, "-_") + "-" + hex.EncodeToString(sum[:])[:6]
+	}
+	main := filepath.Join(t.TempDir(), "My App")
+	wt := filepath.Join(t.TempDir(), "my-app_feat.x")
+	if got, want := projectName(main, wt, wt), old(main, wt); got != want {
+		t.Errorf("projectName = %q, the old name was %q", got, want)
+	}
+}
+
+func TestProjectNameArguments(t *testing.T) {
+	mainTop := filepath.Join(t.TempDir(), "app")
+	wtTop := filepath.Join(t.TempDir(), "app-feat")
+	root := filepath.Join(wtTop, "laravel")
+	got := projectName(mainTop, wtTop, root)
+	sum := sha1.Sum([]byte(root))
+	if want := "app-app-feat-" + hex.EncodeToString(sum[:])[:6]; got != want {
+		t.Errorf("projectName = %q, want %q (slug from the tops, hash of the project directory)", got, want)
+	}
+	if projectName(mainTop, root, wtTop) == got {
+		t.Error("swapping wtTop and root does not change the name")
 	}
 }
 
@@ -544,7 +575,7 @@ func captureRunner(t *testing.T) *[]call {
 
 func TestRmPassesPinnedArguments(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +622,7 @@ func TestUpWritesEnvAndCleansSailEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	if v, _ := e.Get("COMPOSE_PROJECT_NAME"); v != proj {
 		t.Errorf("COMPOSE_PROJECT_NAME=%q", v)
 	}
@@ -660,7 +691,7 @@ func TestStopDoesNotRefuseAndWarns(t *testing.T) {
 	if len(*calls) != 1 || (*calls)[0].args[0] != "stop" {
 		t.Fatalf("calls to sail = %v", *calls)
 	}
-	for _, want := range []string{"COMPOSE_FILE", `"other-project"`, strconvQuote(projectName(main, wt))} {
+	for _, want := range []string{"COMPOSE_FILE", `"other-project"`, strconvQuote(projectName(main, wt, wt))} {
 		if !strings.Contains(warn.String(), want) {
 			t.Errorf("the warning lacks %s: %s", want, warn)
 		}
@@ -718,7 +749,7 @@ func TestStopDoesNotWarnInMainWorktree(t *testing.T) {
 func TestUpAllowsProfilesRefusesEnvFiles(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	writeFakeSail(t, wt)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	write := func(extra string) {
 		if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"+extra), 0o600); err != nil {
 			t.Fatal(err)
@@ -740,7 +771,7 @@ func TestUpAllowsProfilesRefusesEnvFiles(t *testing.T) {
 
 func TestRmRefusesProfiles(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\nCOMPOSE_PROFILES=x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -864,7 +895,7 @@ func TestUpReusesPortsRecordedUnderSymlinkedPath(t *testing.T) {
 
 func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
-	proj := projectName(main, wt)
+	proj := projectName(main, wt, wt)
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+proj+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -902,7 +933,7 @@ func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 
 func writeRmFixtures(t *testing.T, main, wt string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+projectName(main, wt)+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+projectName(main, wt, wt)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(wt, "compose.yaml"), "services: {}\n")
@@ -1005,7 +1036,7 @@ func writeFile(t *testing.T, path, content string) {
 func rmWorktree(t *testing.T, rel string) (wt string) {
 	t.Helper()
 	main, wt := setupWorktreeRepo(t)
-	writeFile(t, filepath.Join(wt, ".env"), "COMPOSE_PROJECT_NAME="+projectName(main, wt)+"\n")
+	writeFile(t, filepath.Join(wt, ".env"), "COMPOSE_PROJECT_NAME="+projectName(main, wt, wt)+"\n")
 	cfg := fmt.Sprintf(`{"compose":%q,"port_vars":[{"name":"APP_PORT","default":80}]}`, rel)
 	writeFile(t, filepath.Join(wt, configName), cfg)
 	return wt

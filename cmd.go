@@ -53,9 +53,12 @@ func cmdInit() error {
 }
 
 // ctx is the information shared by the commands that run inside a worktree.
+// root and main are the project directories (the one with .sail-worktree.json) of this worktree and of the main
+// worktree; wtTop and mainTop are the roots of the two worktrees. All of them are real paths.
 type ctx struct {
-	root, main string
-	cfg        *Config
+	root, main     string
+	wtTop, mainTop string
+	cfg            *Config
 }
 
 func loadCtx() (*ctx, error) {
@@ -75,16 +78,25 @@ func loadCtx() (*ctx, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ctx{root: filepath.Clean(root), main: main, cfg: cfg}, nil
+	root = filepath.Clean(root)
+	return &ctx{root: root, main: main, wtTop: root, mainTop: main, cfg: cfg}, nil
 }
+
+// isMain reports whether the command runs in the main worktree. The tops decide; comparing the project directories
+// as well is defense in depth, because up and rm must never touch the main worktree.
+func (c *ctx) isMain() bool { return c.wtTop == c.mainTop || c.root == c.main }
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9_-]+`)
 
-func projectName(main, root string) string {
+// projectName is the compose project name: a slug of the two worktree names and a hash of the project directory.
+// For a project at the worktree root (root == wtTop) it equals the name older versions computed, so rm keeps working.
+func projectName(mainTop, wtTop, root string) string {
 	sum := sha1.Sum([]byte(root))
-	slug := nonSlug.ReplaceAllString(strings.ToLower(filepath.Base(main)+"-"+filepath.Base(root)), "-")
+	slug := nonSlug.ReplaceAllString(strings.ToLower(filepath.Base(mainTop)+"-"+filepath.Base(wtTop)), "-")
 	return strings.Trim(slug, "-_") + "-" + hex.EncodeToString(sum[:])[:6]
 }
+
+func (c *ctx) projectName() string { return projectName(c.mainTop, c.wtTop, c.root) }
 
 // sessionCookieName is the per-worktree session cookie name. localhost shares cookies across ports, so the name is
 // derived from the project name to keep logins of other worktrees and projects from mixing.
@@ -98,7 +110,7 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
-	if c.root == c.main {
+	if c.isMain() {
 		return fmt.Errorf("cannot run in the main worktree; run it in a worktree you have created")
 	}
 	envPath := filepath.Join(c.root, ".env")
@@ -137,7 +149,7 @@ func cmdUp(args []string) error {
 	for _, v := range c.cfg.PortVars {
 		env.Set(v.Name, strconv.Itoa(ports[v.Name]))
 	}
-	proj := projectName(c.main, c.root)
+	proj := c.projectName()
 	env.Set("COMPOSE_PROJECT_NAME", proj)
 	env.Set("SESSION_COOKIE", sessionCookieName(proj))
 	if appURL, ok := env.Get("APP_URL"); ok {
@@ -194,7 +206,7 @@ func cmdStop(args []string) error {
 	}
 	// stop never writes .env and stopping can be undone, so it does not refuse like up and rm do.
 	// It only warns when it may stop another project.
-	if c.root != c.main {
+	if !c.isMain() {
 		warnStopTarget(c)
 	}
 	return runSail(c.root, c.cfg, append([]string{"stop"}, args...))
@@ -243,7 +255,7 @@ func warnStopTarget(c *ctx) {
 		fmt.Fprintf(stderr, "warning: .env has %s, so stop may stop a compose project other than this worktree's\n", k)
 	}
 	if name, ok := env.Get("COMPOSE_PROJECT_NAME"); ok {
-		if want := projectName(c.main, c.root); name != want {
+		if want := c.projectName(); name != want {
 			fmt.Fprintf(stderr, "warning: COMPOSE_PROJECT_NAME in .env (%+q) differs from this worktree's name (%+q); stop may stop another project\n", name, want)
 		}
 	}
@@ -262,7 +274,7 @@ func cmdRm(args []string) error {
 	if err != nil {
 		return err
 	}
-	if c.root == c.main {
+	if c.isMain() {
 		return fmt.Errorf("cannot run in the main worktree")
 	}
 	envPath := filepath.Join(c.root, ".env")
@@ -282,7 +294,7 @@ func cmdRm(args []string) error {
 	}
 	// down -v cannot be undone, so do not trust the value in .env: recompute this worktree's name and require an exact
 	// match (this refuses a leftover name of another project or worktree, a hand-edited name, or a moved worktree).
-	if want := projectName(c.main, c.root); proj != want {
+	if want := c.projectName(); proj != want {
 		return nameMismatchError(proj, want)
 	}
 	// Do every refusing check before the confirmation prompt (never refuse after the user answered y).
