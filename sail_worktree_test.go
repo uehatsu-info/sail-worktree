@@ -194,7 +194,7 @@ func TestCleanEnv(t *testing.T) {
 
 func TestFilterEnv(t *testing.T) {
 	environ := []string{"compose_file=x", "Compose_Project_Name=y", "sail_files=z", "app_port=1", "KEEP=1", "=C:=C:\\", "PATH=/bin"}
-	got := filterEnv(environ, []string{"APP_PORT"})
+	got := filterEnv(environ, []string{"app_port"})
 	want := []string{"KEEP=1", "=C:=C:\\", "PATH=/bin"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("got %v want %v", got, want)
