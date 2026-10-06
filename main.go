@@ -13,7 +13,7 @@ const usage = `sail-worktree - Laravel Sail 用 git worktree ポート割り当�
   sail-worktree up [args...]    .env を生成/修正して sail up を実行 (例: up -d)
   sail-worktree stop            sail stop を実行
   sail-worktree rm [-y]         コンテナ/ネットワーク/ボリューム/ビルドイメージを削除し、ポート割り当てを解放
-  sail-worktree version         版を表示 (go install ...@vX.Y.Z ならタグ、手元ビルドは (devel))
+  sail-worktree version         版を表示 (go install ...@vX.Y.Z ならタグ、手元ビルドは (devel) か疑似バージョン)
 `
 
 func version() string {

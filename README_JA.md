@@ -58,7 +58,7 @@ sail-worktree up -d
 
 ### 5. `sail-worktree version`
 
-版を表示します（`go install ...@vX.Y.Z` ならタグ、手元ビルドは `(devel)`）。プロジェクトでは `@latest` でなくタグを固定してください。
+版を表示します（`go install ...@vX.Y.Z` ならタグ、手元の `go build` は `(devel)` か `v0.0.0-<日時>-<コミット>` の疑似バージョン）。プロジェクトでは `@latest` でなくタグを固定してください。
 
 ## 補足
 
