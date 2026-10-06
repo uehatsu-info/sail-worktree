@@ -58,16 +58,6 @@ func parseTopAndPrefix(out string, windows bool) (top, prefix string, err error)
 	return lines[0], lines[1], nil
 }
 
-// worktreeRoot returns the root of the worktree that contains dir.
-// Symlinks are resolved so that the hash in the project name does not depend on the path used to get here.
-func worktreeRoot(dir string) (string, error) {
-	out, err := gitOut(dir, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return "", err
-	}
-	return realPath(out)
-}
-
 func realPath(p string) (string, error) {
 	r, err := filepath.EvalSymlinks(p)
 	if err != nil {

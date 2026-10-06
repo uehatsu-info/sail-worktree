@@ -51,7 +51,7 @@ func unsafeComposePath(p string) bool {
 // composeInsideProject resolves the compose file under root (the project directory, a real path) through every link
 // and returns the real path that rm passes to -f: down -v cannot be undone, so a link that leaves the project directory
 // must not choose the file.
-// Only rm calls it; up, stop and init do not run docker with -f and keep findCompose's os.Stat.
+// Only rm calls it; up, stop and init do not run docker with -f and keep findMarker's os.Stat.
 // Limits: EvalSymlinks does not follow Windows junctions (Go 1.23+), so they are not detected, and a link swapped
 // after the check is not caught (best effort).
 func composeInsideProject(root, rel string) (string, error) {
@@ -67,15 +67,6 @@ func composeInsideProject(root, rel string) (string, error) {
 		return "", fmt.Errorf("compose file %+q is not a regular file (%+q); point compose at a regular file inside the project directory", rel, resolved)
 	}
 	return resolved, nil
-}
-
-func findCompose(root string) (string, error) {
-	for _, n := range []string{"compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"} {
-		if _, err := os.Stat(filepath.Join(root, n)); err == nil {
-			return n, nil
-		}
-	}
-	return "", fmt.Errorf("compose.yml not found in %s", root)
 }
 
 // Registry records the ports assigned to each worktree (shared by all projects of the user). The keys are project

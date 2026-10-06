@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -459,5 +460,112 @@ func TestWithin(t *testing.T) {
 		if got := within(base, filepath.Join(base, rel)); got != want {
 			t.Errorf("within(base, base/%s) = %v", rel, got)
 		}
+	}
+}
+
+// initRepo is a main worktree only (init runs there), changed into dir below it.
+func initRepo(t *testing.T, files map[string]string, dir string) (top string) {
+	t.Helper()
+	top = filepath.Join(realTempDir(t), "app")
+	for name, content := range files {
+		writeFile(t, filepath.Join(top, filepath.FromSlash(name)), content)
+	}
+	runGit(t, top, "init", "-q", "-b", "main")
+	mkdirChdir(t, filepath.Join(top, filepath.FromSlash(dir)))
+	return top
+}
+
+func readConfigAt(t *testing.T, dir string) Config {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, configName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c Config
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestInitInSubdirectory(t *testing.T) {
+	top := initRepo(t, map[string]string{"laravel/compose.yaml": sampleCompose}, "laravel/app/Http")
+	if err := cmdInit(); err != nil {
+		t.Fatal(err)
+	}
+	c := readConfigAt(t, filepath.Join(top, "laravel"))
+	if c.Compose != "compose.yaml" || len(c.PortVars) != 3 {
+		t.Errorf("config = %+v", c)
+	}
+	if _, err := os.Stat(filepath.Join(top, configName)); !os.IsNotExist(err) {
+		t.Errorf("config written at the worktree root: %v", err)
+	}
+}
+
+func TestInitAtRootNamesSubdirectory(t *testing.T) {
+	top := initRepo(t, map[string]string{"laravel/compose.yaml": sampleCompose}, ".")
+	err := cmdInit()
+	if err == nil {
+		t.Fatal("init succeeded without a compose file at the root")
+	}
+	for _, want := range []string{"compose.yaml, compose.yml, docker-compose.yml, docker-compose.yaml", "run init in your Laravel project's directory", `a compose file found in: "laravel"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%q is missing: %v", want, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(top, configName)); !os.IsNotExist(err) {
+		t.Errorf("config written: %v", err)
+	}
+}
+
+func TestInitRootProjectFromSubdirectory(t *testing.T) {
+	top := initRepo(t, map[string]string{"compose.yaml": sampleCompose, "docs/x.md": "x\n"}, "docs")
+	if err := cmdInit(); err != nil {
+		t.Fatal(err)
+	}
+	if c := readConfigAt(t, top); c.Compose != "compose.yaml" {
+		t.Errorf("config = %+v", c)
+	}
+}
+
+func TestInitSkipsComposeUnderVendor(t *testing.T) {
+	top := initRepo(t, map[string]string{"compose.yaml": sampleCompose, "vendor/acme/pkg/docker-compose.yml": sampleCompose}, "vendor/acme/pkg")
+	if err := cmdInit(); err != nil {
+		t.Fatal(err)
+	}
+	readConfigAt(t, top)
+	if _, err := os.Stat(filepath.Join(top, "vendor", "acme", "pkg", configName)); !os.IsNotExist(err) {
+		t.Errorf("config written under vendor/: %v", err)
+	}
+}
+
+func TestInitFirstExistingComposeNameDecides(t *testing.T) {
+	initRepo(t, map[string]string{"compose.yml": sampleCompose, "compose.yaml/x": "x\n"}, ".")
+	if err := cmdInit(); err == nil || !strings.Contains(err.Error(), "is not a regular file") {
+		t.Errorf("a directory named compose.yaml is not refused: %v", err)
+	}
+}
+
+func TestInitRefusesLinkedConfig(t *testing.T) {
+	top := initRepo(t, map[string]string{"compose.yaml": sampleCompose}, ".")
+	target := filepath.Join(realTempDir(t), "target")
+	writeFile(t, target, "keep\n")
+	symlinkOrSkip(t, target, filepath.Join(top, configName))
+	err := cmdInit()
+	if err == nil || !strings.Contains(err.Error(), "replace a link there with a real file") {
+		t.Errorf("a linked %s is not refused: %v", configName, err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "keep\n" {
+		t.Errorf("link target was rewritten: %q", b)
+	}
+}
+
+func TestUpRootProjectWithoutSourceEnv(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	captureRunner(t)
+	err := cmdUp(nil)
+	if err == nil || !strings.Contains(err.Error(), "cannot read the source .env from the main worktree:") || strings.Contains(err.Error(), "same relative path") {
+		t.Errorf("error = %v", err)
 	}
 }

@@ -24,11 +24,18 @@ func cmdInit() error {
 	if err != nil {
 		return err
 	}
-	root, err := worktreeRoot(dir)
+	wtTop, prefix, err := worktreeRootAndPrefix(dir)
 	if err != nil {
 		return fmt.Errorf("run this inside a git repository: %w", err)
 	}
-	compose, err := findCompose(root)
+	root, cand, err := findProject(wtTop, prefix, composeNames)
+	if err != nil {
+		return err
+	}
+	if cand == nil {
+		return composeNotFoundError(wtTop, prefix)
+	}
+	compose, _, err := findMarker(root, composeNames)
 	if err != nil {
 		return err
 	}
@@ -38,14 +45,15 @@ func cmdInit() error {
 	}
 	vars := detectPortVars(string(b))
 	if len(vars) == 0 {
-		return fmt.Errorf("no port variable (${XXX_PORT:-1234}) found in %s", compose)
+		return fmt.Errorf("no port variable (${XXX_PORT:-1234}) found in %q", filepath.Join(root, compose))
 	}
 	data, _ := json.MarshalIndent(Config{Compose: compose, PortVars: vars}, "", "  ")
 	path := filepath.Join(root, configName)
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
-		return err
+	// The project directory may be any subdirectory now, so never write through a link placed there.
+	if err := writeFileNoFollow(path, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("cannot write %s (replace a link there with a real file): %w", configName, err)
 	}
-	fmt.Printf("created %s (commit it to share it with all worktrees)\n", path)
+	fmt.Printf("created %q (commit it to share it with all worktrees)\n", path)
 	for _, v := range vars {
 		fmt.Printf("  %s (default %d)\n", v.Name, v.Default)
 	}

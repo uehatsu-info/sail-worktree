@@ -476,7 +476,7 @@ func TestProjectNameIsStableAcrossSymlinkedPaths(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	link := filepath.Join(filepath.Dir(wt), "via-link")
 	symlinkOrSkip(t, wt, link)
-	root, err := worktreeRoot(link)
+	root, _, err := worktreeRootAndPrefix(link)
 	if err != nil {
 		t.Fatal(err)
 	}

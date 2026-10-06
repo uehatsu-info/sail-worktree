@@ -151,7 +151,7 @@ func (e *envFile) Write(path string) error {
 func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
 	if fi, err := os.Lstat(path); err == nil {
 		if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
-			return fmt.Errorf("%s is a symbolic link or not a regular file", path)
+			return fmt.Errorf("%q is a symbolic link, not a regular file, or hard-linked to another file", path)
 		}
 	} else if !os.IsNotExist(err) {
 		return err
@@ -165,7 +165,7 @@ func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
 	}
 	fi, err := f.Stat()
 	if err == nil && (!fi.Mode().IsRegular() || hasMultipleLinks(fi)) {
-		err = fmt.Errorf("%s is not a regular file or is hard-linked to another file", path)
+		err = fmt.Errorf("%q is a symbolic link, not a regular file, or hard-linked to another file", path)
 	}
 	if err == nil {
 		err = f.Truncate(0)

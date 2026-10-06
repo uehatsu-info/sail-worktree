@@ -173,6 +173,16 @@ func configNotFoundError(wtTop, prefix string) error {
 	return errors.New(msg)
 }
 
+// composeNotFoundError is init's not-found error.
+func composeNotFoundError(wtTop, prefix string) error {
+	msg := fmt.Sprintf("no compose file (%s) found in this directory or its parents up to the worktree root %q; "+
+		"run init in your Laravel project's directory (the one with compose.yaml)", strings.Join(composeNames, ", "), wtTop)
+	if dirs := subdirsWith(wtTop, prefix, composeNames); len(dirs) > 0 {
+		msg += fmt.Sprintf("\na compose file found in: %s", quoteList(dirs))
+	}
+	return errors.New(msg)
+}
+
 // counterpart returns the main worktree's directory at the same relative path as the project directory. It may not
 // exist (the main worktree can be on a branch without it), but it must not resolve outside the main worktree: up
 // copies .env from there and Sail sources it.
