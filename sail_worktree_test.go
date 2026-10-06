@@ -491,7 +491,7 @@ func TestStopDoesNotRefuseAndWarns(t *testing.T) {
 	}
 }
 
-func TestStopAllowsSymlinkEnvAndMissingName(t *testing.T) {
+func TestStopAllowsSymlinkEnv(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	writeFakeSail(t, wt)
 	target := filepath.Join(main, ".env")
@@ -499,7 +499,7 @@ func TestStopAllowsSymlinkEnvAndMissingName(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(target, filepath.Join(wt, ".env")); err != nil {
-		t.Fatal(err)
+		t.Skip("シンボリックリンクを作れない環境:", err)
 	}
 	warn := captureStderr(t)
 	calls := captureRunner(t)
@@ -509,12 +509,17 @@ func TestStopAllowsSymlinkEnvAndMissingName(t *testing.T) {
 	if warn.Len() != 0 {
 		t.Errorf("リンクの .env は読まない: %s", warn)
 	}
-	// COMPOSE_PROJECT_NAME が無い .env では警告しない。
-	os.Remove(filepath.Join(wt, ".env"))
+}
+
+func TestStopDoesNotWarnWithoutProjectName(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	warn := captureStderr(t)
+	calls := captureRunner(t)
 	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("APP_URL=x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmdStop(nil); err != nil || warn.Len() != 0 {
+	if err := cmdStop(nil); err != nil || len(*calls) != 1 || warn.Len() != 0 {
 		t.Errorf("err=%v warn=%s", err, warn)
 	}
 }

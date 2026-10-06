@@ -49,6 +49,8 @@ func TestOpenNoFollowRefusesSymlink(t *testing.T) {
 	}
 }
 
+// Lstat の段階で FIFO を弾くことだけを確かめる。Lstat の後に FIFO へ差し替わる競合は決定的に作れないので、
+// O_NONBLOCK と開いた fd の Stat の再確認 (readEnvIfRegular の二重の備え) はこのテストでは検証できない。
 func TestReadEnvIfRegularDoesNotBlockOnFIFO(t *testing.T) {
 	p := filepath.Join(t.TempDir(), ".env")
 	if err := syscall.Mkfifo(p, 0o600); err != nil {

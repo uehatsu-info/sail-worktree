@@ -276,8 +276,9 @@ func runSail(root string, cfg *Config, args []string) error {
 	return runner(root, cleanEnv(drop), sail, args...)
 }
 
-// cleanEnv は現在の環境から (.env のキーを拒否する upOverrideKeys / rmOverrideKeys とは別の仕組み)、COMPOSE_ で始まる全ての変数・SAIL_FILES・drop の変数を外した環境を返す
+// cleanEnv は現在の環境から、COMPOSE_ で始まる全ての変数・SAIL_FILES・drop の変数を外した環境を返す
 // (別の compose ファイル・プロジェクトを指し得るため)。DOCKER_HOST 等は意図して使う利用者がいるので外さない。
+// これは環境変数の除去で、.env のキーを拒否する upOverrideKeys / rmOverrideKeys とは別の仕組み。
 func cleanEnv(drop []string) []string {
 	skip := map[string]bool{"SAIL_FILES": true}
 	for _, k := range drop {
