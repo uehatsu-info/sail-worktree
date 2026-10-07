@@ -31,16 +31,17 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `v
 | `main.go` | Command dispatch, usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
-| `config.go` | `.sail-worktree.json` (project config), `detectConfig`, `readSmallFile`, the port registry, `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
+| `config.go` | `.sail-worktree.json` (project config), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`, `foldRegistry` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
+| `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `lockTiming` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
 | `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `sanctumUnquote`, `statefulDisabled`, `addStatefulDomain` |
-| `sail_worktree_test.go`, `project_test.go`, `detect_test.go`, `sanctum_test.go`, `ps_test.go`, `status_test.go`, `portsview_test.go`, `links_unix_test.go` | Tests |
+| `sail_worktree_test.go`, `project_test.go`, `detect_test.go`, `sanctum_test.go`, `ps_test.go`, `registry_test.go`, `lock_test.go`, `status_test.go`, `portsview_test.go`, `links_unix_test.go` | Tests |
 | `.github/workflows/ci.yml`, `release.yml`, `.github/dependabot.yml`, `.goreleaser.yaml` | CI and release |
 
 State outside the repository: the port registry is `os.UserConfigDir()/sail-worktree/registry.json`. The project
@@ -178,9 +179,33 @@ These come from deliberate decisions; change them only on purpose and update the
   invalid UTF-8 bytes; `\n` is kept for the layout (a newline inside a path can still start a line of its own).
   New messages with paths use `%q`, so printable non-ASCII stays readable; values from `.env` and the existing compose
   errors (`composeInsideProject`) keep `%+q`, so do not "unify" them.
+- **The registry is written atomically.** `Registry.save` goes through `writeFileAtomic`: a temporary file next to the
+  target (same filesystem), `Sync`, then `rename` over it, so a reader (`ps`, `ports`, `status` take no lock) never
+  sees a partial file. A symbolic link at the path is resolved first, a dangling one too (the link stays, what it
+  points at is replaced or created), a hard link is broken, the mode of an existing file is kept and a new file is
+  0644 whatever the umask. On Windows a replace fails while a reader has the file open, so the rename is retried
+  (`renameRetries`). A process killed between the temporary file and the rename leaves a harmless `.registry-*.tmp`,
+  and the directory is not synced (atomicity, not durability). Do not go back to `os.WriteFile`: its
+  truncate-then-write window is what a race smoke test covers. This is the registry only; `.env` and
+  `.sail-worktree.json` keep `writeFileNoFollow`.
 - **Registry handling in `rm`.** Read the registry once before the prompt (to fail early on a broken file) and again
   after `docker` (so an update made meanwhile by another `up` is not lost); release the worktree only after docker
-  succeeds.
+  succeeds. The lock is taken after docker and before the second read (never while docker runs); if it cannot be taken
+  the error says that docker finished and that rm can be run again (`down` is idempotent).
+- **The registry lock.** `up` and `rm` update the registry under `lockRegistry` (`registry.json.lock` next to it,
+  `O_EXCL`, mode 0600, pid inside; the file is closed at once because Windows cannot remove an open file). `up` takes
+  it after the `.env` checks and before `loadRegistry`, so reading, `allocatePorts`, writing `.env` and `save` are one
+  step, and releases it right after `save` and before `runSail`; `rm` takes it after docker. Never hold it while sail
+  or docker runs, and read the registry after locking. `ps`, `ports` and `status` never lock (the atomic save keeps
+  them consistent). A lock whose mtime is older than `lockTiming.stale` or more than 5 seconds in the future is
+  abandoned: `claimStale` renames it to a unique name, checks that it is the file that was judged (same file and same
+  mtime, since an inode can be reused) and removes it, or gives a fresh one back with `os.Link`, which fails instead
+  of replacing a lock a third run took. `wait` is longer than `stale`. `unlock` is idempotent and removes only the
+  file it created. Only on Windows are errors other than "exists" retried (a pending removal looks like access
+  denied); elsewhere they fail at once. The pid in the error comes through `readSmallFile` and is shown only if it is
+  a number. An `O_EXCL` file was chosen over flock/LockFileEx (no per-OS code, no dependency); its cost is the stale
+  rule and the hand recovery in the error message, and a run suspended for longer than `stale` can lose its lock to
+  the next one. Do not "improve" this into a lock held during `sail up`.
 - **Ports.** A new port is searched from default+1 upwards (the default is left to the main worktree), skipping ports
   of other worktrees and ports in use. A port counts as free only if it binds on all interfaces and on `127.0.0.1`;
   `loopbackBindBlocked` decides how a failure on `127.0.0.1` is treated per OS.

@@ -186,6 +186,13 @@ func cmdUp(args []string) error {
 	if err := checkOwnEnv(envPath); err != nil {
 		return err
 	}
+	// Reading the registry, choosing ports, writing .env and saving are one step: another up that read the registry
+	// meanwhile would choose the same ports. The lock is released before sail runs, which can take minutes.
+	unlock, err := lockRegistry()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	reg, err := loadRegistry()
 	if err != nil {
 		return err
@@ -245,6 +252,7 @@ func cmdUp(args []string) error {
 	if err := reg.save(); err != nil {
 		return err
 	}
+	unlock()
 	names := make([]string, 0, len(ports))
 	for n := range ports {
 		names = append(names, n)
@@ -415,7 +423,14 @@ func cmdRm(args []string) error {
 	if err := runner(c.root, cleanEnv(nil), "docker", rmArgs(proj, c.root, composePath)...); err != nil {
 		return err
 	}
-	// Read the registry again after docker so that an update by another up during the removal is not lost.
+	// Read the registry again after docker so that an update by another up during the removal is not lost. The lock is
+	// taken only now, never while docker runs.
+	unlock, err := lockRegistry()
+	if err != nil {
+		return fmt.Errorf("docker finished removing, but the registry could not be locked, so the port assignments "+
+			"are not released (run rm again): %w", err)
+	}
+	defer unlock()
 	reg, err := loadRegistry()
 	if err != nil {
 		return fmt.Errorf("docker finished removing, but the port assignments cannot be read: %w", err)
@@ -425,6 +440,7 @@ func cmdRm(args []string) error {
 	if err := reg.save(); err != nil {
 		return err
 	}
+	unlock()
 	fmt.Println("released the port assignments")
 	return nil
 }
