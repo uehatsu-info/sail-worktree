@@ -87,6 +87,63 @@ sail-worktree up -d
 
 版を表示します（`go install ...@vX.Y.Z` ならタグ、手元の `go build` は `(devel)` か `v0.0.0-<日時>-<コミット>` の疑似バージョン）。プロジェクトでは `@latest` でなくタグを固定してください。
 
+## ワークツリーの確認
+
+`ps`・`ports`・`status` は読み取り専用です。`.env`・`.sail-worktree.json`・レジストリを書き換えず、`.env` を `source` もしません。
+
+### `sail-worktree ps [--all] [--json] [--no-docker]`
+
+ポートのレジストリに記録されたワークツリーを一覧します。`registry.json` の表示であり、`docker ps` ではありません。メインワークツリーは、`up` が拒否して何も記録しないので、一覧に出ません。
+
+```
+WORKTREE  SUBDIR  BRANCH  PORTS                             STATE    DIR
+myapp-x   .       feat-x  APP_PORT=81 FORWARD_DB_PORT=3307  running  /work/myapp-x
+```
+
+- `--all` なしでは、今いるリポジトリのプロジェクトを表示します（同じリポジトリの複数プロジェクトは `SUBDIR` 列で区別します。他のリポジトリのエントリは表示しません）。リポジトリ内ならどこで実行してもよく、`.sail-worktree.json` や Laravel プロジェクトは不要です。`--all` はレジストリの全エントリを表示し、リポジトリの外でも使えます。他のエントリのディレクトリでは `git worktree list` を実行します。
+- `STATE` は、ワークツリーやディレクトリが無い（または git が prunable と報告する）エントリ、キーが有効なパスでないエントリでは `stale`、ディレクトリはあるが git がワークツリーに位置づけられないもの（リポジトリでない、git が失敗した）では `unattributed`（`--all` のときのみ）、それ以外ではエントリの compose プロジェクトについての docker の見え方です（`docker compose ls -a` を 1 回だけ実行し、環境から `COMPOSE_*` を除きます）。`running`（コンテナが動いている）・`stopped`（コンテナはあるが `running` のものがない。一時停止中や再起動中も stopped）・`down`（docker にそのプロジェクトが無い）・`unknown`（docker に問い合わせられなかった: 未インストール・未起動・応答が遅い。`ps` は失敗しません）。プロジェクトはワークツリー用に再計算した名前で探すので、`.env` の `COMPOSE_PROJECT_NAME` が別の名前のワークツリーは、動いていても `down` と出ることがあります。`DOCKER_HOST`・`DOCKER_CONTEXT`・`DOCKER_CONFIG` は意図的に残すので、状態はそのデーモンから見たものです（リモートならネットワーク越しで、最長 10 秒）。`--no-docker` は docker に問い合わせず `-` を表示します。stale なエントリも、`rm` が解放するかレジストリを編集するまでポートを占有したままです。無くなっている、または無効で、このリポジトリのものと判定できないエントリは、数を stderr の注記に出します。一覧には `--all` を使ってください。
+- 古い版がシンボリックリンク経由のパスで記録したキーは、メモリ上でのみ実パスに統合します。レジストリは書き換えません。
+- `--json` は、`dir`・`worktree`・`subdir`・`branch`（detached HEAD は `(detached)`、不明なら空）・`ports`（オブジェクト）・`name`（compose のプロジェクト名）・`state` をフィールドに持つオブジェクトの配列を出力します。
+
+### `sail-worktree status [--no-docker]`
+
+今いるワークツリーの状態を表示し、おかしな点を報告します。`up` と同じくプロジェクトディレクトリ（またはその下）で実行します。メインワークツリーでも動き、そこでは `up`・`stop`・`rm` が動かないことと、何も記録されていないことだけを表示します。
+
+```
+project directory: "/work/myapp-x"
+worktree:          myapp-x (branch feat-x)
+main worktree:     "/work/myapp"
+compose project:   myapp-myapp-x-1a2b3c
+configuration:     .sail-worktree.json, compose file "compose.yaml"
+docker:            running
+.env:              ok
+ports:
+  APP_PORT             env=81 registry=81 host=in use by this project
+APP_URL:           "http://localhost:81"
+```
+
+- 表示するのは決まった項目だけです（パス・compose のプロジェクト名・割り当てたポート・認証情報・クエリ・フラグメントを除いた `APP_URL`）。それ以外の `.env` の値は表示しません。
+- `problems:` は `up` が直す、または拒否する点です。1 件でもあれば、報告の最後に `error: found N problem(s)` を出して終了ステータス 1 になります。設定エラー、`.env` が無い・シンボリックリンクやハードリンク・通常ファイルでない（リンクは読みません）、`.env` に `COMPOSE_FILE`・`COMPOSE_ENV_FILES`・`SAIL_FILES` がある、`COMPOSE_PROJECT_NAME` が無い・このワークツリーの名前と違う、ポート変数が `.env` に無い・数字でない・レジストリと違う・レジストリに無い・他のエントリにも記録されている、`APP_URL` が `APP_PORT` を使っていない、`SANCTUM_STATEFUL_DOMAINS` に `APP_URL` のエントリが無い（`up` と同じ規則）です。
+- 報告は `warnings:`、`problems:` の順で終わります。`warnings:` は終了ステータスを変えません。プロジェクトが動いていないのにポートを bind できない（他のプロセスが使っている可能性。権限エラーも同じに見えます）、`up` が警告するだけの `SANCTUM_STATEFUL_DOMAINS` の値です。docker がプロジェクトを `running` と答えたとき、docker に問い合わせられなかった（`unknown`）とき、`--no-docker` のときは、ポートを調べません（`docker:` 行は `not asked`、ポートは `host=not probed` になります）。
+- docker の状態は `ps` が表示するものと同じです（上記）。ポートが空いているかは、一瞬だけ bind してすぐ閉じて調べます。ディスクには何も書きませんが、ファイアウォールが bind に気づくことがあります。
+
+### `sail-worktree ports [PORT] [--all] [--json] [--no-docker]`
+
+レジストリに記録されたポートを、ポート変数ごとに 1 行、ポート番号順に一覧します。どのエントリが記録しているか、このホストで bind できるかを表示します。`ps` と同じくリポジトリ内のどこでも実行でき、今いるリポジトリのものを表示します（`--all`: 全エントリ）。
+
+```
+PORT  VARIABLE         WORKTREE  SUBDIR  STATE    HOST                       CONFLICT
+81    APP_PORT         myapp-x   .       stopped  unavailable (php pid 123)  -
+82    APP_PORT         myapp-y   .       running  in use by this project     -
+3307  FORWARD_DB_PORT  myapp-x   .       stopped  free                       -
+```
+
+- `HOST` は `free`、`unavailable`（bind できない: 使用中、または bind する権限がない）、`in use by this project`（docker がプロジェクトは動いていると答えたので、自身のポートは調べない）のいずれかです。unavailable のポートには、Unix で `lsof` から見えれば、最初に待ち受けているプロセスの名前と pid を添えます（`lsof` はそのようなポートにだけ呼びます。無い場合や Windows では単に `unavailable` です。`status` は同じ状態を `cannot bind` と呼びます）。どのポートも一瞬だけ bind してすぐ閉じて調べます。ディスクには何も書きませんが、ファイアウォールが bind に気づくことがあります。
+- `STATE` は `ps` が表示するものと同じです（ワークツリーが無くなったエントリは `stale`。ポートは占有したままです）。`--no-docker` は docker に問い合わせないので、動いているプロジェクト自身のポートも調べます。
+- `CONFLICT` は、ポートが 2 回以上記録されている（2 つのエントリ、または 1 つのエントリの 2 つの変数）とき `yes` です。`up` は同じポートを 2 回割り当てないので、レジストリを手で編集した、またはエイリアスが統合されていないことを示します。
+- `PORT`（数字のみ、1 から 65535）を指定すると、そのポートだけを表示します。どこにも記録されていなければ（`--all` なしで他のリポジトリだけが記録している場合も）、変数の無い 1 行（`--json` では空文字列）で、ホストが bind できるかを表示します。
+- `--json` は、`port`・`variable`・`worktree`・`subdir`・`state`・`host`（上の 3 つの値）・`process`（不明なら空）・`pid`（不明なら 0）・`conflict` をフィールドに持つオブジェクトの配列を出力します。
+
 ## プロジェクトディレクトリ
 
 Laravel プロジェクトは、リポジトリのルートになくても構いません。どのコマンドも、カレントディレクトリから上にたどってプロジェクトディレクトリを探し、ワークツリーのルートで止まります。

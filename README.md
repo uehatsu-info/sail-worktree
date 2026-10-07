@@ -87,6 +87,63 @@ Because this is irreversible, `rm` refuses unless `COMPOSE_PROJECT_NAME` in `.en
 
 Prints the version (the tag for `go install ...@vX.Y.Z`; a local `go build` prints `(devel)` or a pseudo-version such as `v0.0.0-<date>-<commit>`). Pin a tag in your project instead of `@latest`.
 
+## Inspecting worktrees
+
+`ps`, `ports` and `status` only read. They never write `.env`, `.sail-worktree.json` or the registry, and never source `.env`.
+
+### `sail-worktree ps [--all] [--json] [--no-docker]`
+
+Lists the worktrees recorded in the port registry, which is a view of `registry.json` and not `docker ps`. The main worktree is not listed, because `up` refuses to run there and records nothing for it.
+
+```
+WORKTREE  SUBDIR  BRANCH  PORTS                             STATE    DIR
+myapp-x   .       feat-x  APP_PORT=81 FORWARD_DB_PORT=3307  running  /work/myapp-x
+```
+
+- Without `--all` it shows the projects of the repository you are in (the `SUBDIR` column tells projects of one repository apart); entries of other repositories are not shown. Run it anywhere inside the repository; no `.sail-worktree.json` or Laravel project is needed. `--all` shows every entry of the registry, also outside a repository, and runs `git worktree list` in the other entries' directories.
+- `STATE` is `stale` for an entry whose worktree or directory is gone (or that git lists as prunable) or whose key is not a valid path, `unattributed` (only with `--all`) for a directory that exists but that git does not place in a worktree (not a repository, or git failed), and otherwise docker's view of the entry's compose project, asked once with `docker compose ls -a` (`COMPOSE_*` variables are removed from its environment): `running` (a container runs), `stopped` (containers exist, none is `running`; paused or restarting ones count as stopped), `down` (docker knows no such project) or `unknown` (docker could not be asked: not installed, not running, too slow; this never fails `ps`). The project is looked up by the name recomputed for the worktree, so a worktree whose `.env` has another `COMPOSE_PROJECT_NAME` can show `down` while it runs. `DOCKER_HOST`, `DOCKER_CONTEXT` and `DOCKER_CONFIG` are kept on purpose, so the state is that daemon's view (a remote one is reached over the network, for at most 10 seconds). `--no-docker` does not ask docker and shows `-`. A stale entry still holds its ports until `rm` releases them or you edit the registry. Entries that are gone or invalid and cannot be attributed to this repository are counted in a note on stderr; use `--all` to list them.
+- Keys that an older version recorded under a symlinked path are folded into their real path in memory only; the registry is not rewritten.
+- `--json` prints an array of objects with the fields `dir`, `worktree`, `subdir`, `branch` (`(detached)` for a detached HEAD, empty when unknown), `ports` (an object), `name` (the compose project name) and `state`.
+
+### `sail-worktree status [--no-docker]`
+
+Shows how the current worktree is set up and reports what is wrong with it. Run it in the project directory (or below it), like `up`; it works in the main worktree too, where it only says that `up`, `stop` and `rm` do not run there and nothing is recorded for it.
+
+```
+project directory: "/work/myapp-x"
+worktree:          myapp-x (branch feat-x)
+main worktree:     "/work/myapp"
+compose project:   myapp-myapp-x-1a2b3c
+configuration:     .sail-worktree.json, compose file "compose.yaml"
+docker:            running
+.env:              ok
+ports:
+  APP_PORT             env=81 registry=81 host=in use by this project
+APP_URL:           "http://localhost:81"
+```
+
+- It shows only a fixed list of facts (paths, the compose project name, the assigned ports, `APP_URL` without credentials, query and fragment); other `.env` values are never printed.
+- `problems:` lists what `up` would fix or refuse; any problem is reported after the whole report with `error: found N problem(s)` and exit status 1: a configuration error; `.env` missing, a symbolic or hard link, or not a regular file (a link is not read); `COMPOSE_FILE`, `COMPOSE_ENV_FILES` or `SAIL_FILES` in `.env`; `COMPOSE_PROJECT_NAME` missing or different from this worktree's name; a port variable that is missing or not a number in `.env`, different from the registry, not in the registry, or also recorded for another entry; an `APP_URL` that does not use `APP_PORT`; and a `SANCTUM_STATEFUL_DOMAINS` that lacks the entry for `APP_URL` (the same rule as `up`).
+- The report ends with `warnings:` and then `problems:`. `warnings:` do not change the exit status: a port that cannot be bound while the project is not running (another process may use it; a permission error looks the same), and the `SANCTUM_STATEFUL_DOMAINS` value that `up` only warns about. A port is not probed while docker says the project is running, nor when docker could not be asked (`unknown`) or with `--no-docker` (the `docker:` line then says `not asked`, and the ports show `host=not probed`).
+- The docker state is the one `ps` shows (see above). To see whether a port is free, `status` binds it for an instant and closes it again; nothing is written to disk, but a firewall may notice the bind.
+
+### `sail-worktree ports [PORT] [--all] [--json] [--no-docker]`
+
+Lists the ports recorded in the registry, one row per port variable, sorted by port: which entry records it and whether this host can bind it. Like `ps` it works anywhere inside the repository and shows the repository you are in (`--all`: every entry).
+
+```
+PORT  VARIABLE         WORKTREE  SUBDIR  STATE    HOST                       CONFLICT
+81    APP_PORT         myapp-x   .       stopped  unavailable (php pid 123)  -
+82    APP_PORT         myapp-y   .       running  in use by this project     -
+3307  FORWARD_DB_PORT  myapp-x   .       stopped  free                       -
+```
+
+- `HOST` is `free`, `unavailable` (the port cannot be bound: in use, or not allowed to bind) or `in use by this project` (docker says the project runs, so its own port is not probed). For an unavailable port, on Unix and if `lsof` can see it, the name and pid of the first listening process are added (`lsof` is only called for such ports; without it, or on Windows, you get plain `unavailable`; `status` calls the same condition `cannot bind`). Every port is bound for an instant and closed again; nothing is written to disk, but a firewall may notice the bind.
+- `STATE` is the one `ps` shows (including `stale` for entries whose worktree is gone, which still hold their ports); `--no-docker` does not ask docker, so a running project's own ports are probed too and may show as `unavailable`.
+- `CONFLICT` is `yes` when the port is recorded more than once, by two entries or by two variables of one entry. `up` never assigns the same port twice, so this points at a hand-edited registry or an alias that was not merged.
+- With `PORT` (digits only, 1 to 65535) only that port is shown; if nothing records it (also when only another repository does, without `--all`), one row without a variable (empty strings in `--json`) still tells whether the host can bind it.
+- `--json` prints an array of objects with the fields `port`, `variable`, `worktree`, `subdir`, `state`, `host` (the three values above), `process` (empty when unknown), `pid` (0 when unknown) and `conflict`.
+
 ## Project directory
 
 The Laravel project does not have to be at the root of the repository. Every command looks for its project directory from the current directory upwards and stops at the worktree root:

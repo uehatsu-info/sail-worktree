@@ -8,7 +8,7 @@ Guidance for AI coding agents (and humans) working on this repository.
 Laravel Sail project run side by side. For each worktree it creates or updates `.env` and assigns ports that do not
 collide with other worktrees or with the host.
 
-Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `version`. See `README.md` for the user-facing behavior.
+Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `version`. See `README.md` for the user-facing behavior.
 
 - Module: `github.com/uehatsu-info/sail-worktree` (Go version is set by `go.mod`)
 - Install: `go install github.com/uehatsu-info/sail-worktree@latest`, or the binaries attached to each GitHub release
@@ -29,15 +29,18 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `version`. See `README.md` 
 | File | Role |
 |---|---|
 | `main.go` | Command dispatch, usage text, `version`, `printErr`/`escapeControl` |
-| `cmd.go` | `init`, `up`, `stop`, `rm`, error messages, `sailPath`, `cleanEnv`/`filterEnv` |
+| `cmd.go` | `init`, `up`, `stop`, `rm`, error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config), `detectConfig`, `readSmallFile`, the port registry, `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
+| `ps.go` | `ps` and its registry view: `entry`, `collectEntries`, `foldRegistry` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
+| `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
+| `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
 | `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `sanctumUnquote`, `statefulDisabled`, `addStatefulDomain` |
-| `sail_worktree_test.go`, `project_test.go`, `detect_test.go`, `sanctum_test.go`, `links_unix_test.go` | Tests |
+| `sail_worktree_test.go`, `project_test.go`, `detect_test.go`, `sanctum_test.go`, `ps_test.go`, `status_test.go`, `portsview_test.go`, `links_unix_test.go` | Tests |
 | `.github/workflows/ci.yml`, `release.yml`, `.github/dependabot.yml`, `.goreleaser.yaml` | CI and release |
 
 State outside the repository: the port registry is `os.UserConfigDir()/sail-worktree/registry.json`. The project
@@ -99,6 +102,27 @@ These come from deliberate decisions; change them only on purpose and update the
   cannot see one, only the link count could, and compose files are sometimes shared that way. A plain checkout cannot
   create one because git stores no hard links, but a script or the user can. Hard-link detection exists only for the
   files this tool writes (`.env`, `.sail-worktree.json`), and only on Unix.
+- **`ps`, `ports` and `status` only read.** They never `save` or `migrate` the registry (`foldRegistry` folds symlink aliases
+  in a copy), never write `.env` or `.sail-worktree.json`, and never source `.env`. Registry keys are untrusted: a key
+  that is not an absolute clean path is never used as a directory; git runs in registry directories only through
+  `listWorktrees` (`worktree list` with `core.fsmonitor=false`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and
+  `GIT_COMMON_DIR` removed). External queries go through `runOutput` (explicit env, timeout, no stdin, stdout capped
+  while read). docker is asked once (`dockerProjects`, through the replaceable `output`, with `cleanEnv(nil)` in the
+  system temp directory); a failure is the state `unknown`, never an error, and a test that does not fake `output`
+  must pass `--no-docker`. Every untrusted string is printed through `cell`/`escapeControl`. The JSON field names of
+  `ps` are a public contract (`--json` goes through `jsonEscape`). Output goes to the package `stdout`, never
+  `fmt.Println`. `status` reuses `checkOwnEnv`, `upOverrideKeys`, `projectName` and `addStatefulDomain` (on a copy of
+  `.env`) instead of re-implementing them, prints only an allow-list of facts (never other `.env` values, and not even
+  an invalid port value, because a port variable name may be any key; `APP_URL` without credentials, query and
+  fragment), never reads a symlinked `.env`, and exits 1 after the report when it found a problem (warnings do not).
+- **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once,
+  so nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`,
+  fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the
+  process called itself: it is printed through `cell`/`jsonEscape`. The port argument is digits only, 1 to 65535. The
+  JSON fields of `ports`, `process` and `pid` included, are a public contract too.
+- **`ps --all` attribution.** With `--all` an entry is attributed to the longest listed worktree that contains it, so
+  an independent repository nested inside a listed worktree is attributed to the outer one when that one is already
+  known.
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
   case-insensitively) from the environment passed to `sail` and `docker`. It must never return `nil`: a `nil`
   `exec.Cmd.Env` inherits the whole parent environment.
