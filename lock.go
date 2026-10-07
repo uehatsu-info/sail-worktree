@@ -94,7 +94,7 @@ func lockHolder(lock string) string {
 // A lock is abandoned when its modification time is older than lockTiming.stale or (clock skew, a restored backup)
 // well in the future.
 func breakStale(lock string) bool {
-	fi, err := os.Lstat(lock)
+	fi, err := lstatIdentity(lock)
 	if err != nil {
 		return os.IsNotExist(err) // gone already: try at once
 	}
@@ -102,6 +102,16 @@ func breakStale(lock string) bool {
 		return false
 	}
 	return claimStale(lock, fi)
+}
+
+// lstatIdentity is os.Lstat with the file identity already read: on Windows os.SameFile reads it lazily, from the path,
+// so it would find nothing once the file has been renamed away. SameFile(fi, fi) forces the read.
+func lstatIdentity(path string) (os.FileInfo, error) {
+	fi, err := os.Lstat(path)
+	if err == nil {
+		os.SameFile(fi, fi)
+	}
+	return fi, err
 }
 
 // claimStale removes the lock that was judged stale (judged is its Lstat). The file is first renamed to a unique name
@@ -114,7 +124,8 @@ func claimStale(lock string, judged os.FileInfo) bool {
 	if err := os.Rename(lock, claimed); err != nil {
 		return os.IsNotExist(err)
 	}
-	if fi, err := os.Lstat(claimed); err != nil || !os.SameFile(judged, fi) || !fi.ModTime().Equal(judged.ModTime()) {
+	fi, err := lstatIdentity(claimed)
+	if err != nil || !os.SameFile(judged, fi) || !fi.ModTime().Equal(judged.ModTime()) {
 		os.Link(claimed, lock)
 		os.Remove(claimed)
 		return false

@@ -150,7 +150,7 @@ func TestClaimStaleGivesBackAFreshLock(t *testing.T) {
 	setupWorktreeRepo(t)
 	fastLock(t, time.Second, time.Minute)
 	p := plantLock(t, 2*time.Hour)
-	judged, err := os.Lstat(p)
+	judged, err := lstatIdentity(p)
 	if err != nil {
 		t.Fatal(err)
 	}
