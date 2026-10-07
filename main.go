@@ -18,7 +18,7 @@ Usage:
   sail-worktree stop            run sail stop
   sail-worktree rm [-y]         remove containers, networks, volumes and built images, and release the ports
   sail-worktree ps [--all] [--json]
-                                list the worktrees recorded in the port registry (read-only; --all: every project)
+                                list the worktrees in the port registry (read-only; --all: every repository)
   sail-worktree version         print the version (the tag for go install ...@vX.Y.Z; (devel) or a pseudo-version for a local build)
 
 Run the commands in your Laravel project's directory (the one with artisan and the compose file) or below it.

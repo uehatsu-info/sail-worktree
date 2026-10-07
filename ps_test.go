@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -89,12 +91,88 @@ func TestParseWorktreeList(t *testing.T) {
 			t.Errorf("record %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
+	// A skipped main record would shift every index, so the listing is dropped as a whole.
+	quotedMain := "worktree \"" + slash(base) + "/caf\\303\\251\"\nHEAD 1\nbranch refs/heads/main\n\nworktree " + slash(b) + "\nHEAD 2\nbranch refs/heads/x\n"
+	if l := parseWorktreeList(quotedMain); l != nil {
+		t.Errorf("listing with a skipped main record = %+v", l)
+	}
 	// A listing without any prunable line (git before 2.31) still parses.
 	if l := parseWorktreeList("worktree " + slash(a) + "\nHEAD 1\nbranch refs/heads/main\n"); len(l) != 1 || l[0].Prunable {
 		t.Errorf("old git listing = %+v", l)
 	}
 	if l := parseWorktreeList(""); len(l) != 0 {
 		t.Errorf("empty listing = %+v", l)
+	}
+}
+
+func TestLooseRealPath(t *testing.T) {
+	base := realTempDir(t)
+	real := filepath.Join(base, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	symlinkOrSkip(t, real, link)
+	if got, want := looseRealPath(filepath.Join(link, "gone", "deeper")), filepath.Join(real, "gone", "deeper"); got != want {
+		t.Errorf("looseRealPath = %q, want %q", got, want)
+	}
+	if got := looseRealPath(real); got != real {
+		t.Errorf("existing path = %q", got)
+	}
+}
+
+func TestAttribute(t *testing.T) {
+	base := realTempDir(t)
+	main := filepath.Join(base, "a")
+	repos := [][]worktreeInfo{{
+		{Path: main},
+		{Path: filepath.Join(base, "a-wt")},
+		{Path: filepath.Join(main, ".worktrees", "nested")},
+	}}
+	cases := []struct {
+		key  string
+		wt   int
+		want bool
+	}{
+		{filepath.Join(base, "a-wt"), 1, true},
+		{filepath.Join(base, "a-wt", "laravel"), 1, true},
+		{filepath.Join(base, "a-wt2", "laravel"), 0, false},           // a sibling with the same prefix
+		{filepath.Join(main, ".worktrees", "nested", "app"), 2, true}, // the longest match wins
+		{filepath.Join(main, "app"), 0, true},                         // inside the main worktree itself
+		{filepath.Join(base, "elsewhere"), 0, false},
+		{"relative", 0, false},
+	}
+	for _, c := range cases {
+		_, wt, ok := attribute(c.key, repos)
+		if ok != c.want || ok && wt != c.wt {
+			t.Errorf("attribute(%q) = %d, %v; want %d, %v", c.key, wt, ok, c.wt, c.want)
+		}
+	}
+}
+
+func TestFoldRegistryMatchesMigrate(t *testing.T) {
+	base := realTempDir(t)
+	real := filepath.Join(base, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, c := filepath.Join(base, "b"), filepath.Join(base, "c")
+	symlinkOrSkip(t, real, b)
+	symlinkOrSkip(t, real, c)
+	for _, withReal := range []bool{false, true} {
+		m := map[string]map[string]int{b: {"APP_PORT": 81}, c: {"APP_PORT": 82}}
+		if withReal {
+			m[real] = map[string]int{"APP_PORT": 83}
+		}
+		folded := foldRegistry(&Registry{Worktrees: m})
+		migrated := &Registry{Worktrees: map[string]map[string]int{}}
+		for k, v := range m {
+			migrated.Worktrees[k] = v
+		}
+		migrated.migrate(real)
+		if len(folded) != 1 || len(migrated.Worktrees) != 1 || folded[real]["APP_PORT"] != migrated.Worktrees[real]["APP_PORT"] {
+			t.Errorf("withReal=%v: folded %v, migrated %v", withReal, folded, migrated.Worktrees)
+		}
 	}
 }
 
@@ -244,7 +322,7 @@ func TestPsShowsGoneWorktrees(t *testing.T) {
 	if len(es) != 2 || states[wt] != "-" || states[gone] != stateStale {
 		t.Errorf("entries = %+v\n%s", es, out)
 	}
-	if !strings.Contains(errOut, "1 registry entries could not be attributed") {
+	if !strings.Contains(errOut, "registry entries not listed: 1") {
 		t.Errorf("stderr = %q", errOut)
 	}
 
@@ -288,12 +366,17 @@ func TestPsInvalidKeysAreNeverUsed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out, "relative") || !strings.Contains(errOut, "2 registry entries") {
+	if strings.Contains(out, "relative") || !strings.Contains(errOut, "registry entries not listed: 2") {
 		t.Errorf("stdout = %q, stderr = %q", out, errOut)
 	}
 	es := psJSON(t, "--all")
-	if len(es) != 2 || es[0].State != stateStale || es[1].State != stateStale || es[0].Worktree != "" {
-		t.Errorf("entries = %+v", es)
+	if len(es) != 2 {
+		t.Fatalf("entries = %+v", es)
+	}
+	for _, e := range es {
+		if e.State != stateStale || e.Worktree != "" || e.Name != "" {
+			t.Errorf("entry = %+v", e)
+		}
 	}
 }
 
@@ -363,10 +446,13 @@ func TestPsWritesNothing(t *testing.T) {
 	writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}, filepath.Join(main, "nope"): {"APP_PORT": 82}})
 	snap := func() string {
 		var b strings.Builder
-		for _, root := range []string{wt, filepath.Dir(mustRegistryPath(t))} {
+		for _, root := range []string{main, wt, filepath.Dir(mustRegistryPath(t))} {
 			filepath.Walk(root, func(p string, fi os.FileInfo, err error) error {
-				if err != nil || strings.Contains(p, ".git") {
+				if err != nil {
 					return nil
+				}
+				if fi.IsDir() && fi.Name() == ".git" {
+					return filepath.SkipDir
 				}
 				b.WriteString(p + " " + fi.ModTime().String() + " " + fi.Mode().String() + "\n")
 				if fi.Mode().IsRegular() {
@@ -413,5 +499,115 @@ func TestRunOutput(t *testing.T) {
 	}
 	if n, err := w.Write([]byte("cdef")); n != 4 || err != nil || !w.over || w.buf.String() != "abcd" {
 		t.Errorf("second write: %d, %v, over=%v, %q", n, err, w.over, w.buf.String())
+	}
+}
+
+func TestPsNestedWorktreeAndUnattributedEntries(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	nested := filepath.Join(main, ".worktrees", "nested")
+	runGit(t, main, "worktree", "add", "-q", nested, "-b", "nested")
+	plain := filepath.Join(realTempDir(t), "plain") // exists, but is not in any repository
+	if err := os.Mkdir(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRegistry(t, map[string]map[string]int{
+		wt:     {"APP_PORT": 81},
+		nested: {"APP_PORT": 82},
+		plain:  {"APP_PORT": 83},
+	})
+	states := map[string]entry{}
+	for _, e := range psJSON(t) {
+		states[e.Dir] = e
+	}
+	if len(states) != 2 || states[nested].Worktree != "nested" || states[nested].Branch != "nested" || states[nested].State != stateNone {
+		t.Errorf("default entries = %+v", states)
+	}
+	states = map[string]entry{}
+	for _, e := range psJSON(t, "--all") {
+		states[e.Dir] = e
+	}
+	if len(states) != 3 || states[plain].State != stateUnattributed || states[plain].Worktree != "" {
+		t.Errorf("--all entries = %+v", states)
+	}
+}
+
+func TestPsJSONEscapesFormatCharacters(t *testing.T) {
+	setupWorktreeRepo(t)
+	key := filepath.Join(string(filepath.Separator), "x", "a\u202eb")
+	writeRegistry(t, map[string]map[string]int{key: {"APP_PORT": 81}})
+	out, _, err := runPs(t, "--all", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsRune(out, '\u202e') {
+		t.Errorf("raw format character in %q", out)
+	}
+	var es []entry
+	if err := json.Unmarshal([]byte(out), &es); err != nil || len(es) != 1 || !strings.Contains(es[0].Dir, "\u202e") {
+		t.Errorf("round trip: %v, %+v", err, es)
+	}
+}
+
+func TestPsAllAttributesOtherRepositoriesDespiteGitDir(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	_, otherWt := newRepoWithWorktree(t, realTempDir(t), "other", "x")
+	writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}, otherWt: {"APP_PORT": 82}})
+	gitDir, err := gitOut(wt, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The user's own GIT_DIR still decides which repository is the current one, but it must not leak into the
+	// queries made in the other entries' directories.
+	t.Setenv("GIT_DIR", gitDir)
+	t.Setenv("GIT_WORK_TREE", wt)
+	got := map[string]entry{}
+	for _, e := range psJSON(t, "--all") {
+		got[e.Dir] = e
+	}
+	if len(got) != 2 || got[otherWt].Worktree != "other-x" || got[wt].Worktree != "app-feat" {
+		t.Errorf("entries = %+v", got)
+	}
+}
+
+// TestHelperProcess is the child of TestRunOutput (it is not a test of its own).
+func TestHelperProcess(t *testing.T) {
+	mode := os.Getenv("SW_HELPER")
+	if mode == "" {
+		return
+	}
+	switch mode {
+	case "env":
+		for _, kv := range os.Environ() {
+			os.Stdout.WriteString(kv + "\n")
+		}
+	case "stdin":
+		n, _ := io.Copy(io.Discard, os.Stdin)
+		os.Stdout.WriteString(strconv.FormatInt(n, 10))
+	case "big":
+		os.Stdout.Write(bytes.Repeat([]byte("x"), maxOutput+1))
+	case "sleep":
+		time.Sleep(30 * time.Second)
+	}
+	os.Exit(0)
+}
+
+func TestRunOutputChildBehavior(t *testing.T) {
+	t.Setenv("SW_PARENT_MARK", "leaked")
+	run := func(mode string, timeout time.Duration) ([]byte, error) {
+		return runOutput("", []string{"SW_HELPER=" + mode}, timeout, os.Args[0], "-test.run=^TestHelperProcess$")
+	}
+	out, err := run("env", 20*time.Second)
+	if err != nil || !strings.Contains(string(out), "SW_HELPER=env") || strings.Contains(string(out), "SW_PARENT_MARK") {
+		t.Errorf("env: %q, %v", out, err)
+	}
+	if out, err := run("stdin", 20*time.Second); err != nil || !strings.HasPrefix(string(out), "0") {
+		t.Errorf("stdin: %q, %v", out, err)
+	}
+	if _, err := run("big", 20*time.Second); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Errorf("big output: err = %v", err)
+	}
+	start := time.Now()
+	if _, err := run("sleep", 300*time.Millisecond); err == nil || time.Since(start) > 10*time.Second {
+		t.Errorf("timeout: err = %v after %v", err, time.Since(start))
 	}
 }

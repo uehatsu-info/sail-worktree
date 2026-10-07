@@ -25,10 +25,15 @@ type entry struct {
 	Branch   string         `json:"branch"`
 	Ports    map[string]int `json:"ports"`
 	Name     string         `json:"name"`  // compose project name
-	State    string         `json:"state"` // "-" (not checked), "stale", and the docker states
+	State    string         `json:"state"` // one of the state constants below
 }
 
-const stateStale = "stale"
+// States of an entry. stateNone means that nothing was checked for it.
+const (
+	stateNone         = "-"
+	stateStale        = "stale"        // the worktree or directory is gone, or the key is invalid
+	stateUnattributed = "unattributed" // the directory exists but git does not place it in a listed worktree
+)
 
 // worktreeInfo is a record of `git worktree list --porcelain`.
 type worktreeInfo struct {
@@ -41,15 +46,20 @@ type worktreeInfo struct {
 
 // parseWorktreeList parses the porcelain output: records are separated by a blank line and start with "worktree
 // <path>". The main worktree is first. A record whose path git C-quoted (it starts with a double quote) is skipped,
-// because the path cannot be recovered without -z. Paths are made real when possible; a worktree whose directory is
-// gone keeps the cleaned path, as mainWorktree does.
+// because the path cannot be recovered without -z; if that is the main worktree's record the whole listing is
+// dropped (nil), since every index and the project name depend on it. Paths are made real as far as they exist.
 func parseWorktreeList(out string) []worktreeInfo {
 	var list []worktreeInfo
 	var cur *worktreeInfo
-	skip := false
+	skip, first, bad := false, true, false
 	flush := func() {
-		if cur != nil && !skip {
-			list = append(list, *cur)
+		if cur != nil {
+			if skip && first {
+				bad = true
+			} else if !skip {
+				list = append(list, *cur)
+			}
+			first = false
 		}
 		cur, skip = nil, false
 	}
@@ -70,11 +80,7 @@ func parseWorktreeList(out string) []worktreeInfo {
 				skip = true
 				continue
 			}
-			p := filepath.Clean(val)
-			if r, err := realPath(p); err == nil {
-				p = r
-			}
-			cur.Path = p
+			cur.Path = looseRealPath(filepath.Clean(val))
 		case "branch":
 			if cur != nil {
 				cur.Branch = strings.TrimPrefix(val, "refs/heads/")
@@ -94,7 +100,23 @@ func parseWorktreeList(out string) []worktreeInfo {
 		}
 	}
 	flush()
+	if bad {
+		return nil
+	}
 	return list
+}
+
+// looseRealPath resolves links in the part of p that exists and keeps the rest, so that a worktree whose directory
+// is gone still compares equal to the real-path key the registry recorded for it.
+func looseRealPath(p string) string {
+	if r, err := realPath(p); err == nil {
+		return r
+	}
+	dir, base := filepath.Split(p)
+	if dir == "" || filepath.Clean(dir) == p {
+		return p
+	}
+	return filepath.Join(looseRealPath(filepath.Clean(dir)), base)
 }
 
 // gitListEnv is the environment of the git calls that run in directories taken from the registry: GIT_DIR and the
@@ -115,11 +137,16 @@ func gitListEnv() []string {
 // listWorktrees lists the worktrees of the repository that contains dir (the first one is the main worktree). Only
 // `worktree list` is used, with fsmonitor off, so that a repository's own configuration cannot start a program.
 func listWorktrees(dir string) ([]worktreeInfo, error) {
-	out, err := runOutput(dir, gitListEnv(), 10*time.Second, "git", "-c", "core.fsmonitor=false", "worktree", "list", "--porcelain")
+	out, err := runOutput(dir, gitListEnv(), 10*time.Second, "git",
+		"-c", "core.fsmonitor=false", "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("git worktree list: %w", err)
 	}
-	return parseWorktreeList(string(out)), nil
+	list := parseWorktreeList(string(out))
+	if len(list) == 0 {
+		return nil, fmt.Errorf("git worktree list: cannot read the main worktree's path")
+	}
+	return list, nil
 }
 
 // validKey reports whether a registry key is an absolute, clean path. Anything else is never used as a directory.
@@ -185,16 +212,16 @@ func buildEntry(key string, ports map[string]int, l []worktreeInfo, wt int) entr
 	}
 	e := entry{
 		Dir: key, Worktree: filepath.Base(w.Path), Subdir: filepath.ToSlash(rel), Branch: branch,
-		Ports: ports, Name: projectName(l[0].Path, w.Path, key), State: "-",
+		Ports: ports, Name: projectName(l[0].Path, w.Path, key), State: stateNone,
 	}
 	// Nothing is recorded for the main worktree (up refuses it), so an entry there is not valid either.
-	if wt == 0 || w.Prunable || !exists(w.Path) || !exists(key) {
+	if wt == 0 || w.Prunable || !pathExists(w.Path) || !pathExists(key) {
 		e.State = stateStale
 	}
 	return e
 }
 
-func exists(p string) bool {
+func pathExists(p string) bool {
 	_, err := os.Lstat(p)
 	return err == nil
 }
@@ -209,15 +236,18 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 	}
 	view := foldRegistry(reg)
 	var repos [][]worktreeInfo
-	if dir, err := cwd(); err == nil {
-		if top, _, err := worktreeRootAndPrefix(dir); err == nil {
-			if l, err := listWorktrees(top); err == nil && len(l) > 0 {
-				repos = append(repos, l)
-			}
-		}
+	repoErr := fmt.Errorf("not in a git repository")
+	if dir, err := cwd(); err != nil {
+		repoErr = err
+	} else if top, _, err := worktreeRootAndPrefix(dir); err != nil {
+		repoErr = err
+	} else if l, err := listWorktrees(top); err != nil {
+		repoErr = err
+	} else {
+		repos = append(repos, l)
 	}
 	if len(repos) == 0 && !all {
-		return nil, 0, fmt.Errorf("run this inside a git repository, or use --all to list every project in the registry")
+		return nil, 0, fmt.Errorf("run this inside a git repository, or use --all to list every project in the registry: %w", repoErr)
 	}
 	keys := make([]string, 0, len(view))
 	for k := range view {
@@ -240,13 +270,17 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 				}
 			}
 		}
+		// Without --all only the current repository is shown. An entry of another repository is skipped on purpose;
+		// one that is gone or invalid cannot be told apart, so it is counted for the note.
 		switch {
 		case ok && (all || ri == 0):
 			entries = append(entries, buildEntry(key, ports, repos[ri], wi))
 		case ok:
+		case all && validKey(key) && pathExists(key):
+			entries = append(entries, entry{Dir: key, Ports: ports, State: stateUnattributed})
 		case all:
 			entries = append(entries, entry{Dir: key, Ports: ports, State: stateStale})
-		case !validKey(key) || !exists(key):
+		case !validKey(key) || !pathExists(key):
 			hidden++
 		}
 	}
@@ -307,14 +341,15 @@ func cmdPs(args []string) error {
 		return err
 	}
 	if hidden > 0 {
-		fmt.Fprintf(stderr, "note: %d registry entries could not be attributed to this repository (gone or invalid); they still hold their ports; use --all to list them\n", hidden)
+		fmt.Fprintf(stderr, "note: registry entries not listed: %d (gone or invalid, they still hold their ports); use --all\n", hidden)
 	}
 	if asJSON {
 		b, err := json.MarshalIndent(entries, "", "  ")
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(stdout, string(b))
+		// encoding/json leaves format characters such as U+202E raw; \uXXXX is valid JSON for them.
+		fmt.Fprintln(stdout, escapeControl(string(b)))
 		return nil
 	}
 	renderPs(stdout, entries)
