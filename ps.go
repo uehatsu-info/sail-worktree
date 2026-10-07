@@ -334,11 +334,14 @@ func portsCell(ports map[string]int) string {
 	return strings.Join(parts, " ")
 }
 
+// dockerTimeout bounds the docker query, so a hanging daemon delays ps by this long at most.
+const dockerTimeout = 10 * time.Second
+
 // dockerProjects asks docker once for all compose projects, including stopped ones. A project is running when its
 // status lists a running container ("running(1), exited(1)" counts). docker's own text is only compared, never shown.
 func dockerProjects() (map[string]string, error) {
 	// The directory is the system temp directory, so that nothing in the current project can influence docker.
-	out, err := output(os.TempDir(), cleanEnv(nil), 10*time.Second, "docker", "compose", "ls", "-a", "--format", "json")
+	out, err := output(os.TempDir(), cleanEnv(nil), dockerTimeout, "docker", "compose", "ls", "-a", "--format", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -346,11 +349,17 @@ func dockerProjects() (map[string]string, error) {
 	if err := json.Unmarshal(out, &list); err != nil {
 		return nil, err
 	}
+	if list == nil {
+		return nil, fmt.Errorf("docker compose ls: unexpected output")
+	}
 	m := make(map[string]string, len(list))
 	for _, p := range list {
+		if p.Name == "" { // a changed format must not read as "no such project"
+			return nil, fmt.Errorf("docker compose ls: unexpected output")
+		}
 		if strings.Contains(strings.ToLower(p.Status), "running") {
 			m[p.Name] = stateRunning
-		} else {
+		} else if m[p.Name] != stateRunning {
 			m[p.Name] = stateStopped
 		}
 	}
@@ -376,7 +385,11 @@ func fillDockerStates(entries []entry) {
 	asked := false
 	for i := range entries {
 		e := &entries[i]
-		if e.State != stateNone || e.Name == "" {
+		if e.State != stateNone {
+			continue
+		}
+		if e.Name == "" { // not reachable for a valid entry; never report "-" as if docker had been skipped
+			e.State = stateUnknown
 			continue
 		}
 		if !asked {

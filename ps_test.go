@@ -769,3 +769,46 @@ func TestPsDockerGetsACleanEnvironment(t *testing.T) {
 		t.Errorf("DOCKER_HOST was dropped: %v", (*calls)[0].env)
 	}
 }
+
+func TestPsDockerUnexpectedOutputIsUnknown(t *testing.T) {
+	dockerRepo(t)
+	for name, out := range map[string]string{
+		"null":         "null",
+		"empty":        "",
+		"missing name": `[{"Status":"running(1)"}]`,
+	} {
+		useDocker(t, out, nil)
+		if got := statesByBranch(t); got["feat"] != stateUnknown || got["other"] != stateUnknown {
+			t.Errorf("%s: states = %v", name, got)
+		}
+	}
+}
+
+func TestPsDockerDuplicateNamesKeepRunning(t *testing.T) {
+	names := dockerRepo(t)
+	n := names["feat"]
+	for _, order := range []string{
+		`[{"Name":"` + n + `","Status":"running(1)"},{"Name":"` + n + `","Status":"exited(1)"}]`,
+		`[{"Name":"` + n + `","Status":"exited(1)"},{"Name":"` + n + `","Status":"running(1)"}]`,
+	} {
+		useDocker(t, order, nil)
+		if got := statesByBranch(t); got["feat"] != stateRunning {
+			t.Errorf("states = %v for %s", got, order)
+		}
+	}
+}
+
+func TestPsDockerKeepsStaleStatesInAMixedList(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	gone := filepath.Join(filepath.Dir(wt), "app-gone")
+	runGit(t, main, "worktree", "add", "-q", gone, "-b", "gone")
+	writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}, gone: {"APP_PORT": 82}})
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+	calls := useDocker(t, `[{"Name":"`+projectName(main, wt, wt)+`","Status":"running(1)"}]`, nil)
+	got := statesByBranch(t)
+	if got["feat"] != stateRunning || got["gone"] != stateStale || len(*calls) != 1 {
+		t.Errorf("states = %v, docker calls = %d", got, len(*calls))
+	}
+}
