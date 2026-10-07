@@ -162,17 +162,24 @@ func (r *Registry) save() error {
 	return writeFileAtomic(p, append(b, '\n'))
 }
 
-// renameRetries is how often a replace is retried on Windows, where it fails while another process (ps, ports or
-// status reading the registry) has the target open.
+// renameRetries is how often a replace is retried (20 ms apart, so about a second) on Windows, where it fails while
+// another process (ps, ports or status reading the registry) has the target open.
 var renameRetries = 50
 
 // writeFileAtomic replaces path with data so that a reader sees the old or the new content, never a partial file: it
 // writes a temporary file next to the target and renames it over. A symbolic link at path is resolved first, so the
 // link keeps pointing at the file that is replaced; a hard link is broken. The mode of an existing file is kept
-// (0644 for a new one).
+// (0644 for a new one, whatever the umask).
 func writeFileAtomic(path string, data []byte) error {
-	if r, err := filepath.EvalSymlinks(path); err == nil {
-		path = r
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if r, err := filepath.EvalSymlinks(path); err == nil {
+			path = r
+		} else if t, err := os.Readlink(path); err == nil { // a dangling link: create what it points at
+			if !filepath.IsAbs(t) {
+				t = filepath.Join(filepath.Dir(path), t)
+			}
+			path = t
+		}
 	}
 	mode := os.FileMode(0o644)
 	if fi, err := os.Lstat(path); err == nil && fi.Mode().IsRegular() {
@@ -191,6 +198,7 @@ func writeFileAtomic(path string, data []byte) error {
 	if _, err := f.Write(data); err != nil {
 		return fail(err)
 	}
+	// Windows has no Unix modes (Chmod only toggles the read-only attribute), so its error is not a failure.
 	if err := f.Chmod(mode); err != nil && runtime.GOOS != "windows" {
 		return fail(err)
 	}

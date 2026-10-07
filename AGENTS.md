@@ -180,10 +180,13 @@ These come from deliberate decisions; change them only on purpose and update the
   errors (`composeInsideProject`) keep `%+q`, so do not "unify" them.
 - **The registry is written atomically.** `Registry.save` goes through `writeFileAtomic`: a temporary file next to the
   target (same filesystem), `Sync`, then `rename` over it, so a reader (`ps`, `ports`, `status` take no lock) never
-  sees a partial file. A symbolic link at the path is resolved first (the link stays, its target is replaced), a hard
-  link is broken, and the mode of an existing file is kept. On Windows a replace fails while a reader has the file
-  open, so the rename is retried (`renameRetries`). Do not go back to `os.WriteFile`: its truncate-then-write window
-  is what a test pins. This is the registry only; `.env` and `.sail-worktree.json` keep `writeFileNoFollow`.
+  sees a partial file. A symbolic link at the path is resolved first, a dangling one too (the link stays, what it
+  points at is replaced or created), a hard link is broken, the mode of an existing file is kept and a new file is
+  0644 whatever the umask. On Windows a replace fails while a reader has the file open, so the rename is retried
+  (`renameRetries`). A process killed between the temporary file and the rename leaves a harmless `.registry-*.tmp`,
+  and the directory is not synced (atomicity, not durability). Do not go back to `os.WriteFile`: its
+  truncate-then-write window is what a race smoke test covers. This is the registry only; `.env` and
+  `.sail-worktree.json` keep `writeFileNoFollow`.
 - **Registry handling in `rm`.** Read the registry once before the prompt (to fail early on a broken file) and again
   after `docker` (so an update made meanwhile by another `up` is not lost); release the worktree only after docker
   succeeds.

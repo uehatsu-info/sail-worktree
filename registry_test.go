@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func dirNames(t *testing.T, dir string) []string {
@@ -73,21 +74,40 @@ func TestWriteFileAtomicFailureLeavesTargetAndNoTempFile(t *testing.T) {
 
 func TestWriteFileAtomicWritesThroughASymlink(t *testing.T) {
 	dir := realTempDir(t)
-	real := filepath.Join(dir, "dotfiles", "registry.json")
-	writeFile(t, real, "old\n")
+	dest := filepath.Join(dir, "dotfiles", "registry.json")
+	writeFile(t, dest, "old\n")
 	link := filepath.Join(dir, "registry.json")
-	symlinkOrSkip(t, real, link)
+	symlinkOrSkip(t, dest, link)
 	if err := writeFileAtomic(link, []byte("new\n")); err != nil {
 		t.Fatal(err)
 	}
 	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Errorf("the link was replaced: %v, %v", fi, err)
 	}
-	if b, _ := os.ReadFile(real); string(b) != "new\n" {
+	if b, _ := os.ReadFile(dest); string(b) != "new\n" {
 		t.Errorf("the link target holds %q", b)
 	}
 	if names := dirNames(t, filepath.Join(dir, "dotfiles")); len(names) != 1 {
 		t.Errorf("target directory holds %v", names)
+	}
+}
+
+func TestWriteFileAtomicCreatesWhatADanglingLinkPointsAt(t *testing.T) {
+	dir := realTempDir(t)
+	dest := filepath.Join(dir, "dotfiles", "registry.json")
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "registry.json")
+	symlinkOrSkip(t, filepath.Join("dotfiles", "registry.json"), link) // relative, and not there yet
+	if err := writeFileAtomic(link, []byte("new\n")); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link was replaced: %v, %v", fi, err)
+	}
+	if b, _ := os.ReadFile(dest); string(b) != "new\n" {
+		t.Errorf("the link target holds %q", b)
 	}
 }
 
@@ -135,6 +155,7 @@ func TestRegistrySaveIsNeverSeenPartially(t *testing.T) {
 					return
 				default:
 				}
+				time.Sleep(time.Millisecond) // do not starve the writer, which Windows CI would turn into a failed replace
 				if _, err := loadRegistry(); err != nil && strings.Contains(err.Error(), "failed to parse") {
 					select {
 					case parseErrors <- err:
