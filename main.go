@@ -17,6 +17,8 @@ Usage:
   sail-worktree up [args...]    create or update .env, then run sail up (e.g. up -d)
   sail-worktree stop            run sail stop
   sail-worktree rm [-y]         remove containers, networks, volumes and built images, and release the ports
+  sail-worktree ps [--all] [--json]
+                                list the worktrees recorded in the port registry (read-only; --all: every project)
   sail-worktree version         print the version (the tag for go install ...@vX.Y.Z; (devel) or a pseudo-version for a local build)
 
 Run the commands in your Laravel project's directory (the one with artisan and the compose file) or below it.
@@ -46,6 +48,8 @@ func main() {
 		err = cmdStop(args)
 	case "rm":
 		err = cmdRm(args)
+	case "ps":
+		err = cmdPs(args)
 	case "version", "--version":
 		fmt.Println(version())
 		return

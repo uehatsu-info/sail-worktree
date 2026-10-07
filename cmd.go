@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func cwd() (string, error) { return os.Getwd() }
@@ -486,4 +489,52 @@ func runCmdEnv(dir string, env []string, name string, args ...string) error {
 	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
+}
+
+// output runs a read-only query and returns its stdout (tests replace it). It is used for docker and lsof; git is
+// queried through runOutput directly, so a test that fakes docker still gets real git answers.
+var output = runOutput
+
+// maxOutput caps what runOutput keeps from a child process.
+const maxOutput = 1 << 20
+
+// runOutput runs name with an explicit environment (never nil, so the parent environment is not inherited), no stdin
+// (a prompt cannot block it), stderr discarded, a timeout, and stdout capped at maxOutput while it is read: more than
+// that is an error. A missing binary, a timeout and a non-zero exit are errors the callers degrade on.
+func runOutput(dir string, env []string, timeout time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	if env == nil {
+		env = []string{}
+	}
+	cmd.Env = env
+	cmd.WaitDelay = 2 * time.Second
+	w := &cappedBuffer{max: maxOutput}
+	cmd.Stdout = w
+	if err := cmd.Run(); err != nil {
+		return nil, err
+	}
+	if w.over {
+		return nil, fmt.Errorf("%s: output is larger than %d bytes", name, maxOutput)
+	}
+	return w.buf.Bytes(), nil
+}
+
+// cappedBuffer keeps at most max bytes and drops the rest (the child keeps running to the end, so it never gets
+// SIGPIPE); over records that something was dropped.
+type cappedBuffer struct {
+	buf  bytes.Buffer
+	max  int
+	over bool
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if room := c.max - c.buf.Len(); len(p) > room {
+		c.buf.Write(p[:room])
+		c.over = true
+		return len(p), nil
+	}
+	return c.buf.Write(p)
 }
