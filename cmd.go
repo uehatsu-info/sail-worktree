@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -159,7 +160,7 @@ func cmdUp(args []string) error {
 			}
 			return fmt.Errorf("cannot read the source .env from the main worktree: %w", err)
 		}
-		fmt.Println("creating .env (copied from the main worktree)")
+		fmt.Fprintln(stdout, "creating .env (copied from the main worktree)")
 	} else if err != nil {
 		return err
 	}
@@ -177,10 +178,12 @@ func cmdUp(args []string) error {
 	proj := c.projectName()
 	env.Set("COMPOSE_PROJECT_NAME", proj)
 	env.Set("SESSION_COOKIE", sessionCookieName(proj))
+	var statefulAdded, statefulWarning string
 	if appURL, ok := env.Get("APP_URL"); ok {
 		if u, err := url.Parse(appURL); err == nil && u.Hostname() != "" && ports["APP_PORT"] != 0 {
-			u.Host = u.Hostname() + ":" + strconv.Itoa(ports["APP_PORT"])
+			u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(ports["APP_PORT"])) // keeps the brackets of an IPv6 host
 			env.Set("APP_URL", u.String())
+			statefulAdded, statefulWarning = addStatefulDomain(env, u)
 		}
 	}
 	if err := env.Write(envPath); err != nil {
@@ -196,7 +199,13 @@ func cmdUp(args []string) error {
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		fmt.Printf("  %s=%d\n", n, ports[n])
+		fmt.Fprintf(stdout, "  %s=%d\n", n, ports[n])
+	}
+	if statefulAdded != "" {
+		fmt.Fprintf(stdout, "  %s: added %s\n", sanctumKey, statefulAdded)
+	}
+	if statefulWarning != "" {
+		fmt.Fprintf(stderr, "warning: %s\n", statefulWarning)
 	}
 	return runSail(c.root, c.cfg, append([]string{"up"}, args...))
 }
@@ -237,9 +246,10 @@ func cmdStop(args []string) error {
 	return runSail(c.root, c.cfg, append([]string{"stop"}, args...))
 }
 
-// stdin and stderr are the input of the confirmation prompt and the destination of warnings (replaced by tests).
+// stdin, stdout and stderr are the input of the confirmation prompt, up's report and warnings (replaced by tests).
 var (
 	stdin  io.Reader = os.Stdin
+	stdout io.Writer = os.Stdout
 	stderr io.Writer = os.Stderr
 )
 
