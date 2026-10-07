@@ -15,7 +15,8 @@ import (
 func fastLock(t *testing.T, wait, stale time.Duration) {
 	t.Helper()
 	old := lockTiming
-	lockTiming.poll, lockTiming.wait, lockTiming.stale, lockTiming.notice = 2*time.Millisecond, wait, stale, 10*time.Millisecond
+	lockTiming.poll, lockTiming.wait = 2*time.Millisecond, wait
+	lockTiming.stale, lockTiming.notice = stale, 10*time.Millisecond
 	t.Cleanup(func() { lockTiming = old })
 }
 
@@ -73,8 +74,7 @@ func TestLockWaitsForTheHolder(t *testing.T) {
 		u, err := lockRegistry()
 		if err != nil {
 			t.Error(err)
-			close(got)
-			return
+			u = func() {}
 		}
 		got <- u
 	}()
@@ -94,7 +94,7 @@ func TestLockWaitsForTheHolder(t *testing.T) {
 
 func TestLockTimeoutNamesTheLockFileAndSaysItOnce(t *testing.T) {
 	setupWorktreeRepo(t)
-	fastLock(t, 80*time.Millisecond, time.Hour)
+	fastLock(t, 400*time.Millisecond, time.Hour)
 	p := plantLock(t, 0)
 	errOut := captureStderr(t)
 	_, err := lockRegistry()
@@ -135,6 +135,41 @@ func TestLockBreaksAnAbandonedLock(t *testing.T) {
 	}
 }
 
+func TestLockErrorShowsOnlyANumberAsThePid(t *testing.T) {
+	setupWorktreeRepo(t)
+	fastLock(t, 50*time.Millisecond, time.Hour)
+	p := plantLock(t, 0)
+	writeFile(t, p, "9\x1b[31m evil\n")
+	_, err := lockRegistry()
+	if err == nil || !strings.Contains(err.Error(), "pid unknown") || strings.Contains(err.Error(), "evil") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestClaimStaleGivesBackAFreshLock(t *testing.T) {
+	setupWorktreeRepo(t)
+	fastLock(t, time.Second, time.Minute)
+	p := plantLock(t, 2*time.Hour)
+	judged, err := os.Lstat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another run broke that lock and took a fresh one before this waiter got to remove it.
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, p, "777\n")
+	if claimStale(p, judged) {
+		t.Error("a fresh lock was reported as broken")
+	}
+	if b, err := os.ReadFile(p); err != nil || strings.TrimSpace(string(b)) != "777" {
+		t.Errorf("the fresh lock was not given back: %q, %v", b, err)
+	}
+	if names := dirNames(t, filepath.Dir(p)); len(names) != 1 {
+		t.Errorf("config directory holds %v", names)
+	}
+}
+
 func TestUnlockLeavesAForeignLock(t *testing.T) {
 	setupWorktreeRepo(t)
 	fastLock(t, time.Second, time.Hour)
@@ -157,6 +192,7 @@ func TestUnlockLeavesAForeignLock(t *testing.T) {
 func TestLockSerialisesReadModifyWrite(t *testing.T) {
 	setupWorktreeRepo(t)
 	fastLock(t, 60*time.Second, time.Hour)
+	captureStderr(t)
 	const n = 8
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {

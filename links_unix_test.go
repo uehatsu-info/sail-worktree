@@ -145,3 +145,46 @@ func TestReadSmallFileDoesNotBlockOnFIFO(t *testing.T) {
 		t.Fatal("blocked on a FIFO")
 	}
 }
+
+func TestLockCopesWithAFIFOAtTheLockPath(t *testing.T) {
+	setupWorktreeRepo(t)
+	fastLock(t, 100*time.Millisecond, time.Hour)
+	p := lockFilePath(t)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Fatalf("cannot create a FIFO (set TMPDIR to a filesystem that supports them): %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := lockRegistry(); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "pid unknown") {
+			t.Errorf("err = %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("blocked on a FIFO")
+	}
+}
+
+func TestLockFailsAtOnceWhereWaitingCannotHelp(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write to a directory without the permission")
+	}
+	setupWorktreeRepo(t)
+	fastLock(t, 30*time.Second, time.Hour)
+	dir := filepath.Dir(mustRegistryPath(t))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	start := time.Now()
+	_, err := lockRegistry()
+	if err == nil || !strings.Contains(err.Error(), "cannot create the registry lock") || time.Since(start) > 10*time.Second {
+		t.Errorf("err = %v after %v", err, time.Since(start))
+	}
+}

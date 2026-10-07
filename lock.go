@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,9 +24,6 @@ var lockTiming = struct{ poll, wait, stale, notice time.Duration }{
 // commands never lock). The lock is registry.json.lock next to the registry, created with O_EXCL. A caller that
 // updates the registry must read it after locking, so that it sees the update of the run it waited for. unlock is
 // idempotent and removes the lock file only if it is still the one this call created.
-//
-// An O_EXCL file was chosen over flock/LockFileEx: it needs no per-OS code and no dependency, at the price of the
-// stale rule and of a hand recovery that the error message describes.
 func lockRegistry() (unlock func(), err error) {
 	p, err := registryPath()
 	if err != nil {
@@ -40,41 +39,52 @@ func lockRegistry() (unlock func(), err error) {
 	for {
 		f, err := os.OpenFile(lock, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err == nil {
-			// Closed at once: on Windows an open file cannot be removed. The pid is for humans.
+			// The identity is taken from the open file, and the file is closed at once: on Windows an open file
+			// cannot be removed. The pid is for humans.
 			_, werr := fmt.Fprintf(f, "%d\n", os.Getpid())
+			fi, serr := f.Stat()
 			cerr := f.Close()
-			fi, serr := os.Lstat(lock)
-			if err := errors.Join(werr, cerr, serr); err != nil {
+			if err := errors.Join(werr, serr, cerr); err != nil {
 				os.Remove(lock)
 				return nil, fmt.Errorf("cannot write the registry lock %q: %w", lock, err)
 			}
 			return releaser(lock, fi), nil
 		}
-		if errors.Is(err, os.ErrExist) && breakStale(lock) {
+		// On Windows a lock whose removal is still pending, or a directory in its place, is "access denied" and not
+		// "exists", so there every error is retried (and an old leftover broken) until the deadline. Elsewhere any
+		// other error (no permission, no space) cannot go away by waiting.
+		retry := errors.Is(err, os.ErrExist) || runtime.GOOS == "windows"
+		if retry && breakStale(lock) {
 			continue
 		}
-		// Any other error (on Windows, a lock whose removal is still pending) is retried until the deadline too.
+		if !retry {
+			return nil, fmt.Errorf("cannot create the registry lock %q: %w", lock, err)
+		}
 		if time.Now().After(deadline) {
 			if errors.Is(err, os.ErrExist) {
 				return nil, fmt.Errorf("the registry is locked by another sail-worktree run (%s); lock file %q; "+
-					"if none is running, delete it and retry (a lock older than %s is removed automatically)",
-					lockHolder(lock), lock, lockTiming.stale)
+					"if none is running, delete it and retry (a lock older than %d seconds is removed automatically)",
+					lockHolder(lock), lock, int(lockTiming.stale.Seconds()))
 			}
 			return nil, fmt.Errorf("cannot create the registry lock %q: %w", lock, err)
 		}
 		if !noticed && time.Since(start) >= lockTiming.notice {
 			noticed = true
-			fmt.Fprintf(stderr, "waiting for another sail-worktree run to finish updating the registry (lock file %q)\n", lock)
+			fmt.Fprintf(stderr, "waiting for another sail-worktree run to finish updating the registry "+
+				"(lock file %q; a lock older than %d seconds is taken for abandoned)\n", lock, int(lockTiming.stale.Seconds()))
 		}
 		time.Sleep(lockTiming.poll)
 	}
 }
 
-// lockHolder describes the pid written in the lock file, for the error message only.
+// lockHolder describes the pid written in the lock file, for the error message only. The path may hold anything
+// (a link, a FIFO), so it is read with readSmallFile and only a number is shown.
 func lockHolder(lock string) string {
-	if b, err := os.ReadFile(lock); err == nil {
-		if pid := strings.TrimSpace(string(b)); pid != "" && len(pid) <= 20 {
-			return "pid " + pid
+	if b, err := readSmallFile(lock); err == nil {
+		if pid := strings.TrimSpace(string(b)); len(pid) <= 20 {
+			if _, err := strconv.ParseUint(pid, 10, 64); err == nil {
+				return "pid " + pid
+			}
 		}
 	}
 	return "pid unknown"
@@ -82,9 +92,7 @@ func lockHolder(lock string) string {
 
 // breakStale removes an abandoned lock and reports whether the caller should try to take the lock again at once.
 // A lock is abandoned when its modification time is older than lockTiming.stale or (clock skew, a restored backup)
-// well in the future. The file is claimed by renaming it to a unique name and checked to be the one that was judged,
-// so a waiter that was slow cannot remove the fresh lock another run created meanwhile (it puts it back); two waiters
-// that break the same lock still race on the next O_EXCL, and only one wins.
+// well in the future.
 func breakStale(lock string) bool {
 	fi, err := os.Lstat(lock)
 	if err != nil {
@@ -93,12 +101,22 @@ func breakStale(lock string) bool {
 	if age := time.Since(fi.ModTime()); age <= lockTiming.stale && age >= -5*time.Second {
 		return false
 	}
+	return claimStale(lock, fi)
+}
+
+// claimStale removes the lock that was judged stale (judged is its Lstat). The file is first renamed to a unique name
+// and checked to be the judged one (same file, same modification time: an inode number can be reused), so a waiter
+// that was slow cannot delete the fresh lock another run created meanwhile; that one is given back with a link, which
+// fails instead of replacing a lock a third run took in between. Two waiters that break the same lock race on the
+// next O_EXCL, and only one wins.
+func claimStale(lock string, judged os.FileInfo) bool {
 	claimed := fmt.Sprintf("%s.stale-%d-%d", lock, os.Getpid(), time.Now().UnixNano())
 	if err := os.Rename(lock, claimed); err != nil {
 		return os.IsNotExist(err)
 	}
-	if fi2, err := os.Lstat(claimed); err != nil || !os.SameFile(fi, fi2) {
-		os.Rename(claimed, lock) // not the file we judged: a fresh lock, give it back
+	if fi, err := os.Lstat(claimed); err != nil || !os.SameFile(judged, fi) || !fi.ModTime().Equal(judged.ModTime()) {
+		os.Link(claimed, lock)
+		os.Remove(claimed)
 		return false
 	}
 	os.Remove(claimed)
@@ -111,7 +129,12 @@ func releaser(lock string, ours os.FileInfo) func() {
 	return func() {
 		once.Do(func() {
 			if fi, err := os.Lstat(lock); err == nil && os.SameFile(ours, fi) {
-				os.Remove(lock)
+				// On Windows the removal fails while another run briefly has the file open (to read the pid).
+				err := os.Remove(lock)
+				for i := 0; err != nil && !os.IsNotExist(err) && runtime.GOOS == "windows" && i < 20; i++ {
+					time.Sleep(10 * time.Millisecond)
+					err = os.Remove(lock)
+				}
 			}
 		})
 	}

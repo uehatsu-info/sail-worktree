@@ -193,16 +193,19 @@ These come from deliberate decisions; change them only on purpose and update the
   succeeds. The lock is taken after docker and before the second read (never while docker runs); if it cannot be taken
   the error says that docker finished and that rm can be run again (`down` is idempotent).
 - **The registry lock.** `up` and `rm` update the registry under `lockRegistry` (`registry.json.lock` next to it,
-  `O_EXCL`, mode 0600, pid inside, closed at once because Windows cannot remove an open file). `up` takes it after the
-  `.env` checks and before `loadRegistry`, so reading, `allocatePorts`, writing `.env` and `save` are one step, and
-  releases it right after `save` and before `runSail`; `rm` takes it after docker. Never hold it while sail or docker
-  runs, and a caller must read the registry after locking. `ps`, `ports` and `status` never lock (the atomic save
-  keeps them consistent). A lock older than `lockTiming.stale` (or well in the future) is abandoned and broken by
-  renaming it to a unique name and checking that it is the file that was judged; `wait` is longer than `stale`;
-  `unlock` is idempotent and removes only the file it created. An `O_EXCL` file was chosen over flock/LockFileEx (no
-  per-OS code, no dependency); its cost is the stale rule and the hand recovery in the error message, and a holder
-  that stalls for longer than `stale` can overlap with the next run. Do not "improve" this into a lock held during
-  `sail up`.
+  `O_EXCL`, mode 0600, pid inside; the file is closed at once because Windows cannot remove an open file). `up` takes
+  it after the `.env` checks and before `loadRegistry`, so reading, `allocatePorts`, writing `.env` and `save` are one
+  step, and releases it right after `save` and before `runSail`; `rm` takes it after docker. Never hold it while sail
+  or docker runs, and read the registry after locking. `ps`, `ports` and `status` never lock (the atomic save keeps
+  them consistent). A lock whose mtime is older than `lockTiming.stale` or more than 5 seconds in the future is
+  abandoned: `claimStale` renames it to a unique name, checks that it is the file that was judged (same file and same
+  mtime, since an inode can be reused) and removes it, or gives a fresh one back with `os.Link`, which fails instead
+  of replacing a lock a third run took. `wait` is longer than `stale`. `unlock` is idempotent and removes only the
+  file it created. Only on Windows are errors other than "exists" retried (a pending removal looks like access
+  denied); elsewhere they fail at once. The pid in the error comes through `readSmallFile` and is shown only if it is
+  a number. An `O_EXCL` file was chosen over flock/LockFileEx (no per-OS code, no dependency); its cost is the stale
+  rule and the hand recovery in the error message, and a run suspended for longer than `stale` can lose its lock to
+  the next one. Do not "improve" this into a lock held during `sail up`.
 - **Ports.** A new port is searched from default+1 upwards (the default is left to the main worktree), skipping ports
   of other worktrees and ports in use. A port counts as free only if it binds on all interfaces and on `127.0.0.1`;
   `loopbackBindBlocked` decides how a failure on `127.0.0.1` is treated per OS.
