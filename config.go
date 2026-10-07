@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,17 +12,18 @@ import (
 
 const configName = ".sail-worktree.json"
 
-// Config is the project-level setting. It is committed to the repository and shared by all worktrees.
+// Config is the project-level setting: read from .sail-worktree.json (optional, usually committed and shared by all
+// worktrees) or detected from the compose file.
 type Config struct {
 	Compose  string    `json:"compose"`
 	PortVars []PortVar `json:"port_vars"`
 }
 
 func loadConfig(root string) (*Config, error) {
-	b, err := os.ReadFile(filepath.Join(root, configName))
+	b, err := readSmallFile(filepath.Join(root, configName))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%s not found; run `sail-worktree init` first", configName)
+			return nil, fmt.Errorf("%s disappeared from %q", configName, root)
 		}
 		return nil, err
 	}
@@ -35,10 +37,47 @@ func loadConfig(root string) (*Config, error) {
 	return &c, nil
 }
 
-// unsafeComposePath reports whether the compose value is not a relative path inside the project directory (the one
-// with .sail-worktree.json). It is passed to rm's -f, so besides empty, absolute and ".." paths it also rejects forms
-// that point at a drive or a server on Windows ("C:x", "\\srv\x") and rooted paths without a drive letter ("/x",
-// "\x": filepath.IsAbs is false for them).
+// maxSmallFile bounds what readSmallFile reads from a compose file or .sail-worktree.json.
+const maxSmallFile = 1 << 20
+
+// readSmallFile reads a regular file of at most maxSmallFile bytes. Links are followed (a linked compose file works for
+// up and stop as before; rm checks where it leads), but the open does not block on a FIFO swapped in after the lookup,
+// and a larger file is an error rather than being cut, which could drop port variables silently.
+func readSmallFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|openNonBlock, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil {
+		return nil, err
+	} else if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q is not a regular file", path)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxSmallFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxSmallFile {
+		return nil, fmt.Errorf("%q is larger than %d bytes", path, maxSmallFile)
+	}
+	return b, nil
+}
+
+// detectConfig builds the configuration from the compose file name (relative to root) when there is no
+// .sail-worktree.json. It returns plain errors; callers add advice.
+func detectConfig(root, compose string) (*Config, error) {
+	b, err := readSmallFile(filepath.Join(root, compose))
+	if err != nil {
+		return nil, err
+	}
+	return &Config{Compose: compose, PortVars: detectPortVars(string(b))}, nil
+}
+
+// unsafeComposePath reports whether the compose value is not a relative path inside the project directory. It is
+// passed to rm's -f, so besides empty, absolute and ".." paths it also rejects forms that point at a drive or a server
+// on Windows ("C:x", "\\srv\x") and rooted paths without a drive letter ("/x", "\x": filepath.IsAbs is false for
+// them).
 // It only reads the string; composeInsideProject checks where the file really is.
 func unsafeComposePath(p string) bool {
 	if p == "" || filepath.IsAbs(p) || filepath.VolumeName(p) != "" || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
@@ -51,8 +90,8 @@ func unsafeComposePath(p string) bool {
 // composeInsideProject resolves the compose file under root (the project directory, a real path) through every link
 // and returns the real path that rm passes to -f: down -v cannot be undone, so a link that leaves the project directory
 // must not choose the file.
-// Only rm calls it: up, stop and init do not run docker with -f (init stats and reads the compose file, up and stop
-// stat compose names only for a not-found hint).
+// Only rm calls it: up, stop and init do not run docker with -f (they stat and read the compose file to find the
+// project and detect port variables, following links).
 // Limits: EvalSymlinks does not follow Windows junctions (Go 1.23+), so they are not detected, and a link swapped
 // after the check is not caught (best effort).
 func composeInsideProject(root, rel string) (string, error) {
@@ -65,7 +104,7 @@ func composeInsideProject(root, rel string) (string, error) {
 		return "", fmt.Errorf("compose file %+q resolves outside the project directory (%+q); replace the link with a real file or a link whose target is inside the project directory", rel, resolved)
 	}
 	if fi, err := os.Stat(resolved); err != nil || !fi.Mode().IsRegular() {
-		return "", fmt.Errorf("compose file %+q is not a regular file (%+q); point compose at a regular file inside the project directory", rel, resolved)
+		return "", fmt.Errorf("compose file %+q is not a regular file (%+q); use a regular file inside the project directory", rel, resolved)
 	}
 	return resolved, nil
 }

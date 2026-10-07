@@ -13,14 +13,13 @@ import (
 const usage = `sail-worktree - assign non-conflicting ports to Laravel Sail projects running in git worktrees
 
 Usage:
-  sail-worktree init            create .sail-worktree.json for the project
+  sail-worktree init            (optional) write .sail-worktree.json to pin the detected compose file and port variables
   sail-worktree up [args...]    create or update .env, then run sail up (e.g. up -d)
   sail-worktree stop            run sail stop
   sail-worktree rm [-y]         remove containers, networks, volumes and built images, and release the ports
   sail-worktree version         print the version (the tag for go install ...@vX.Y.Z; (devel) or a pseudo-version for a local build)
 
-Run the commands in your Laravel project's directory (the one with the compose file, and .sail-worktree.json after
-init) or below it.
+Run the commands in your Laravel project's directory (the one with artisan and the compose file) or below it.
 The project may be in a subdirectory of the repository.
 `
 

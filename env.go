@@ -7,10 +7,13 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
-var composePortRe = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*PORT):-?(\d+)\}`)
+// composePortRe matches a host-side port mapping such as '${APP_PORT:-80}:80'. The ":" after "}" keeps environment
+// entries (- DB_PORT=${DB_PORT:-3306}) out, since up rewrites every variable it detects.
+var composePortRe = regexp.MustCompile(`\$\{([A-Z][A-Z0-9_]*PORT):-(\d+)\}:`)
 
 // PortVar is a port environment variable detected in compose.yml.
 type PortVar struct {
@@ -19,7 +22,7 @@ type PortVar struct {
 }
 
 // detectPortVars detects the port variables, in order of appearance, from the ports entries
-// of compose.yml (e.g. - '${APP_PORT:-80}:80').
+// of compose.yml (e.g. - '${APP_PORT:-80}:80'). A default that is not a port number (0, above 65535) is dropped.
 func detectPortVars(composeYAML string) []PortVar {
 	var vars []PortVar
 	seen := map[string]bool{}
@@ -32,11 +35,11 @@ func detectPortVars(composeYAML string) []PortVar {
 			if seen[m[1]] {
 				continue
 			}
-			seen[m[1]] = true
-			var d int
-			for _, c := range m[2] {
-				d = d*10 + int(c-'0')
+			d, err := strconv.Atoi(m[2])
+			if err != nil || d < 1 || d > 65535 {
+				continue
 			}
+			seen[m[1]] = true
 			vars = append(vars, PortVar{Name: m[1], Default: d})
 		}
 	}

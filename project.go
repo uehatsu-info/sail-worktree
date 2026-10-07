@@ -10,9 +10,10 @@ import (
 	"strings"
 )
 
-// The project directory is the nearest directory, from the cwd up to the worktree root, that holds a marker file:
-// .sail-worktree.json for up, stop and rm, a compose file for init. This lets the Laravel project live in a
-// subdirectory of the repository.
+// The project directory is found from the cwd up to the worktree root, so the Laravel project can live in a
+// subdirectory of the repository: the nearest directory with .sail-worktree.json wins, and without one anywhere, the
+// nearest directory with artisan and a compose file (lookupProject). init writes into the nearest directory of either
+// kind.
 
 var composeNames = []string{"compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"}
 
@@ -89,15 +90,24 @@ func findMarker(dir string, names []string) (string, bool, error) {
 	return "", false, nil
 }
 
-// findProject returns the real path of the nearest candidate that holds one of names, and the candidate itself.
-// The candidate is nil when none has one.
-func findProject(wtTop, prefix string, names []string) (string, *candidate, error) {
+// matcher reports whether dir is a project directory and which marker file made it one. It looks only at files
+// directly in dir. findProject stops on an error; the hints ignore errors.
+type matcher func(dir string) (marker string, ok bool, err error)
+
+// markerIn matches a directory that holds one of names (see findMarker).
+func markerIn(names []string) matcher {
+	return func(dir string) (string, bool, error) { return findMarker(dir, names) }
+}
+
+// findProject returns the real path of the nearest candidate that match accepts, and the candidate itself.
+// The candidate is nil when none matches.
+func findProject(wtTop, prefix string, match matcher) (string, *candidate, error) {
 	cands, err := projectCandidates(wtTop, prefix)
 	if err != nil {
 		return "", nil, err
 	}
 	for i := range cands {
-		name, ok, err := findMarker(cands[i].dir, names)
+		name, ok, err := match(cands[i].dir)
 		if err != nil {
 			return "", nil, err
 		}
@@ -119,11 +129,10 @@ func findProject(wtTop, prefix string, names []string) (string, *candidate, erro
 	return "", nil, nil
 }
 
-// subdirsWith lists the direct subdirectories of the cwd's directory and of wtTop that hold one of names, relative to
+// subdirsWith lists the direct subdirectories of the cwd's directory and of wtTop that match accepts, relative to
 // wtTop, for the hint in a not-found error. Only plain directories are entered (no links, no Windows junctions);
-// vendor, node_modules and .git are skipped. A marker that is itself a link is still followed, as when reading it. It
-// is best effort: errors only shorten the list.
-func subdirsWith(wtTop, prefix string, names []string) []string {
+// vendor, node_modules and .git are skipped. It is best effort: errors only shorten the list.
+func subdirsWith(wtTop, prefix string, match matcher) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, base := range []string{filepath.Join(wtTop, filepath.FromSlash(strings.TrimSuffix(prefix, "/"))), wtTop} {
@@ -141,7 +150,7 @@ func subdirsWith(wtTop, prefix string, names []string) []string {
 				continue
 			}
 			seen[rel] = true
-			if _, ok, err := findMarker(sub, names); err == nil && ok {
+			if _, ok, err := match(sub); err == nil && ok {
 				out = append(out, filepath.ToSlash(rel))
 			}
 		}
@@ -161,25 +170,89 @@ func quoteList(names []string) string {
 	return strings.Join(q, ", ")
 }
 
-// configNotFoundError tells where to run the command, naming the subdirectories that look like the project.
-func configNotFoundError(wtTop, prefix string) error {
-	msg := fmt.Sprintf("%s not found in this directory or its parents up to the worktree root %q; "+
-		"run this in your Laravel project's directory (the one with %s), or run `sail-worktree init` there first",
-		configName, wtTop, configName)
-	if dirs := subdirsWith(wtTop, prefix, []string{configName}); len(dirs) > 0 {
-		msg += fmt.Sprintf("\n%s found in: %s", configName, quoteList(dirs))
-	} else if dirs := subdirsWith(wtTop, prefix, composeNames); len(dirs) > 0 {
-		msg += fmt.Sprintf("\na compose file found in: %s (run `sail-worktree init` there first)", quoteList(dirs))
+// hasConfig matches a directory with .sail-worktree.json.
+var hasConfig = markerIn([]string{configName})
+
+const artisanName = "artisan"
+
+// isLaravelProject matches a directory with artisan and a compose file; the marker is the compose file's name.
+// artisan is checked first, so a broken compose file in an unrelated directory (docker/, .devcontainer/) does not
+// stop the lookup, and an artisan that is not a regular file just means "not a project".
+func isLaravelProject(dir string) (string, bool, error) {
+	fi, err := os.Stat(filepath.Join(dir, artisanName))
+	if os.IsNotExist(err) {
+		return "", false, nil
 	}
-	return errors.New(msg)
+	if err != nil {
+		return "", false, err
+	}
+	if !fi.Mode().IsRegular() {
+		return "", false, nil
+	}
+	return findMarker(dir, composeNames)
 }
 
-// composeNotFoundError is init's not-found error.
-func composeNotFoundError(wtTop, prefix string) error {
-	msg := fmt.Sprintf("no compose file (%s) found in this directory or its parents up to the worktree root %q; "+
-		"run init in your Laravel project's directory (the one with the compose file)", strings.Join(composeNames, ", "), wtTop)
-	if dirs := subdirsWith(wtTop, prefix, composeNames); len(dirs) > 0 {
-		msg += fmt.Sprintf("\na compose file found in: %s (run init there)", quoteList(dirs))
+// configOrLaravel is init's rule: the nearest directory of either kind.
+func configOrLaravel(dir string) (string, bool, error) {
+	if m, ok, err := hasConfig(dir); err != nil || ok {
+		return m, ok, err
+	}
+	return isLaravelProject(dir)
+}
+
+// lookupProject finds the project directory for up, stop and rm. detected is true when there is no
+// .sail-worktree.json and the configuration has to be detected from cand.marker, the compose file.
+func lookupProject(wtTop, prefix string) (root string, cand *candidate, detected bool, err error) {
+	if root, cand, err = findProject(wtTop, prefix, hasConfig); err != nil || cand != nil {
+		if cand != nil {
+			warnIgnoredNearerProject(wtTop, prefix, root, cand)
+		}
+		return root, cand, false, err
+	}
+	if root, cand, err = findProject(wtTop, prefix, isLaravelProject); err != nil || cand != nil {
+		return root, cand, true, err
+	}
+	return "", nil, false, projectNotFoundError(wtTop, prefix)
+}
+
+// warnIgnoredNearerProject warns when a .sail-worktree.json further up wins over a nearer Laravel project. It is best
+// effort: errors only mean no warning.
+func warnIgnoredNearerProject(wtTop, prefix, root string, chosen *candidate) {
+	cands, err := projectCandidates(wtTop, prefix)
+	if err != nil {
+		return
+	}
+	for _, c := range cands {
+		if c.rel == chosen.rel {
+			return
+		}
+		if _, ok, err := isLaravelProject(c.dir); err == nil && ok {
+			fmt.Fprintf(stderr, "warning: using %s in %q; the nearer Laravel project %q is ignored (run `sail-worktree init` in it to use it)\n", configName, root, c.dir)
+			return
+		}
+	}
+}
+
+// projectNotFoundError tells where to run the commands. The hints name subdirectories that would be found, and
+// directories on the way up that have only half of a Laravel project.
+func projectNotFoundError(wtTop, prefix string) error {
+	msg := fmt.Sprintf("no Laravel project found in this directory or its parents up to the worktree root %q\n"+
+		"looked for %s, or a compose file next to %s; run this in your Laravel project's directory", wtTop, configName, artisanName)
+	if dirs := subdirsWith(wtTop, prefix, configOrLaravel); len(dirs) > 0 {
+		msg += fmt.Sprintf("\na project found in: %s", quoteList(dirs))
+	}
+	if cands, err := projectCandidates(wtTop, prefix); err == nil {
+		for _, c := range cands {
+			artisan, aerr := os.Stat(filepath.Join(c.dir, artisanName))
+			hasArtisan := aerr == nil && artisan.Mode().IsRegular()
+			compose, ok, cerr := findMarker(c.dir, composeNames)
+			switch {
+			case cerr == nil && ok && !hasArtisan:
+				msg += fmt.Sprintf("\nfound %q, but no %s next to it", filepath.Join(c.dir, compose), artisanName)
+			case cerr == nil && !ok && hasArtisan:
+				msg += fmt.Sprintf("\nfound %s in %q, but no compose file (%s) next to it", artisanName, c.dir, strings.Join(composeNames, ", "))
+			}
+		}
 	}
 	return errors.New(msg)
 }

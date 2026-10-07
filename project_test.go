@@ -188,7 +188,7 @@ func TestLoadCtxIgnoresMarkersAboveWorktree(t *testing.T) {
 	writeFile(t, filepath.Join(filepath.Dir(wt), "compose.yaml"), "services: {}\n")
 	t.Chdir(wt)
 	_, err := loadCtx()
-	if err == nil || !strings.Contains(err.Error(), configName+" not found") {
+	if err == nil || !strings.Contains(err.Error(), "no Laravel project found") {
 		t.Fatalf("a config above the worktree root was used: %v", err)
 	}
 }
@@ -229,19 +229,22 @@ func TestConfigNotFoundNamesSubdirectories(t *testing.T) {
 		t.Fatal("no error at the worktree root")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "run this in your Laravel project's directory") || !strings.Contains(msg, configName+` found in: "laravel"`) {
+	if !strings.Contains(msg, "run this in your Laravel project's directory") || !strings.Contains(msg, `a project found in: "laravel"`) {
 		t.Errorf("no hint: %s", msg)
 	}
 	if strings.Contains(msg, "linked") {
 		t.Errorf("a linked directory is listed: %s", msg)
 	}
-	// Before init there is only a compose file.
+	// Without the file, a compose file is a project only next to artisan.
 	if err := os.Remove(filepath.Join(wt, "laravel", configName)); err != nil {
 		t.Fatal(err)
 	}
-	_, err = loadCtx()
-	if err == nil || !strings.Contains(err.Error(), `a compose file found in: "laravel" (run `+"`sail-worktree init`"+` there first)`) {
-		t.Errorf("no init hint: %v", err)
+	if _, err = loadCtx(); err == nil || strings.Contains(err.Error(), "a project found in") {
+		t.Errorf("a compose file without artisan is listed: %v", err)
+	}
+	writeFile(t, filepath.Join(wt, "laravel", artisanName), "#!/usr/bin/env php\n")
+	if _, err = loadCtx(); err == nil || !strings.Contains(err.Error(), `a project found in: "laravel"`) {
+		t.Errorf("no hint for a project without the file: %v", err)
 	}
 }
 
@@ -490,7 +493,7 @@ func readConfigAt(t *testing.T, dir string) Config {
 }
 
 func TestInitInSubdirectory(t *testing.T) {
-	top := initRepo(t, map[string]string{"laravel/compose.yaml": sampleCompose}, "laravel/app/Http")
+	top := initRepo(t, map[string]string{"laravel/compose.yaml": sampleCompose, "laravel/artisan": "x\n"}, "laravel/app/Http")
 	if err := cmdInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -504,12 +507,12 @@ func TestInitInSubdirectory(t *testing.T) {
 }
 
 func TestInitAtRootNamesSubdirectory(t *testing.T) {
-	top := initRepo(t, map[string]string{"laravel/compose.yaml": sampleCompose}, ".")
+	top := initRepo(t, map[string]string{"laravel/compose.yaml": sampleCompose, "laravel/artisan": "x\n"}, ".")
 	err := cmdInit()
 	if err == nil {
 		t.Fatal("init succeeded without a compose file at the root")
 	}
-	for _, want := range []string{"compose.yaml, compose.yml, docker-compose.yml, docker-compose.yaml", "run init in your Laravel project's directory", `a compose file found in: "laravel"`} {
+	for _, want := range []string{"no Laravel project found", "run this in your Laravel project's directory", `a project found in: "laravel"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("%q is missing: %v", want, err)
 		}
@@ -520,7 +523,7 @@ func TestInitAtRootNamesSubdirectory(t *testing.T) {
 }
 
 func TestInitRootProjectFromSubdirectory(t *testing.T) {
-	top := initRepo(t, map[string]string{"compose.yaml": sampleCompose, "docs/x.md": "x\n"}, "docs")
+	top := initRepo(t, map[string]string{"compose.yaml": sampleCompose, "artisan": "x\n", "docs/x.md": "x\n"}, "docs")
 	if err := cmdInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +533,7 @@ func TestInitRootProjectFromSubdirectory(t *testing.T) {
 }
 
 func TestInitSkipsComposeUnderVendor(t *testing.T) {
-	top := initRepo(t, map[string]string{"compose.yaml": sampleCompose, "vendor/acme/pkg/docker-compose.yml": sampleCompose}, "vendor/acme/pkg")
+	top := initRepo(t, map[string]string{"compose.yaml": sampleCompose, "artisan": "x\n", "vendor/acme/pkg/docker-compose.yml": sampleCompose, "vendor/acme/pkg/artisan": "x\n"}, "vendor/acme/pkg")
 	if err := cmdInit(); err != nil {
 		t.Fatal(err)
 	}
@@ -541,14 +544,14 @@ func TestInitSkipsComposeUnderVendor(t *testing.T) {
 }
 
 func TestInitFirstExistingComposeNameDecides(t *testing.T) {
-	initRepo(t, map[string]string{"compose.yml": sampleCompose, "compose.yaml/x": "x\n"}, ".")
+	initRepo(t, map[string]string{"compose.yml": sampleCompose, "compose.yaml/x": "x\n", "artisan": "x\n"}, ".")
 	if err := cmdInit(); err == nil || !strings.Contains(err.Error(), "is not a regular file") {
 		t.Errorf("a directory named compose.yaml is not refused: %v", err)
 	}
 }
 
 func TestInitRefusesLinkedConfig(t *testing.T) {
-	top := initRepo(t, map[string]string{"compose.yaml": sampleCompose}, ".")
+	top := initRepo(t, map[string]string{"compose.yaml": sampleCompose, "artisan": "x\n"}, ".")
 	target := filepath.Join(realTempDir(t), "target")
 	writeFile(t, target, "keep\n")
 	symlinkOrSkip(t, target, filepath.Join(top, configName))
@@ -574,15 +577,15 @@ func TestUpRootProjectWithoutSourceEnv(t *testing.T) {
 func TestInitWithoutAnyComposeFile(t *testing.T) {
 	initRepo(t, map[string]string{"README.md": "x\n"}, ".")
 	err := cmdInit()
-	if err == nil || !strings.Contains(err.Error(), "no compose file") || strings.Contains(err.Error(), "found in:") {
+	if err == nil || !strings.Contains(err.Error(), "no Laravel project found") || strings.Contains(err.Error(), "found in:") {
 		t.Errorf("error = %v", err)
 	}
 }
 
 func TestInitWithoutPortVariables(t *testing.T) {
-	top := initRepo(t, map[string]string{"laravel/compose.yaml": "services: {}\n"}, "laravel")
+	top := initRepo(t, map[string]string{"laravel/compose.yaml": "services: {}\n", "laravel/artisan": "x\n"}, "laravel")
 	err := cmdInit()
-	if want := fmt.Sprintf("no port variable (${XXX_PORT:-1234}) found in %q", filepath.Join(top, "laravel", "compose.yaml")); err == nil || err.Error() != want {
+	if want := fmt.Sprintf("no port variable found in %q (a host port mapping such as '${APP_PORT:-80}:80'); add one to the compose file, or write .sail-worktree.json by hand (see README)", filepath.Join(top, "laravel", "compose.yaml")); err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %s", err, want)
 	}
 }

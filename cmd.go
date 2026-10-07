@@ -30,46 +30,83 @@ func cmdInit() error {
 	if err != nil {
 		return fmt.Errorf("run this inside a git repository: %w", err)
 	}
-	root, cand, err := findProject(wtTop, prefix, composeNames)
+	root, cand, err := findProject(wtTop, prefix, configOrLaravel)
 	if err != nil {
 		return err
 	}
 	if cand == nil {
-		return composeNotFoundError(wtTop, prefix)
+		return projectNotFoundError(wtTop, prefix)
 	}
-	compose := cand.marker
-	b, err := os.ReadFile(filepath.Join(root, compose))
+	path := filepath.Join(root, configName)
+	compose, existed := initCompose(root, cand.marker)
+	if compose == "" {
+		return fmt.Errorf("no compose file (%s) found in %q", strings.Join(composeNames, ", "), root)
+	}
+	cfg, err := detectConfig(root, compose)
 	if err != nil {
 		return err
 	}
-	vars := detectPortVars(string(b))
-	if len(vars) == 0 {
-		return fmt.Errorf("no port variable (${XXX_PORT:-1234}) found in %q", filepath.Join(root, compose))
+	if len(cfg.PortVars) == 0 {
+		return noPortVarError(filepath.Join(root, compose))
 	}
-	data, _ := json.MarshalIndent(Config{Compose: compose, PortVars: vars}, "", "  ")
-	path := filepath.Join(root, configName)
-	// The project directory may be any subdirectory now, so never write through a link placed there.
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	// The project directory may be any subdirectory, so never write through a link placed there.
 	if err := writeFileNoFollow(path, append(data, '\n'), 0o644); err != nil {
 		if errors.Is(err, errNotOwnFile) {
 			return fmt.Errorf("%w; replace it with a real file", err)
 		}
 		return err
 	}
-	fmt.Printf("created %q (commit it to share it with all worktrees)\n", path)
-	for _, v := range vars {
+	if existed {
+		fmt.Printf("updated %q (detected from %s; edits made by hand are replaced)\n", path, compose)
+	} else {
+		fmt.Printf("created %q\n", path)
+	}
+	fmt.Println("commit it to share it with all worktrees, or delete it to go back to detection")
+	for _, v := range cfg.PortVars {
 		fmt.Printf("  %s (default %d)\n", v.Name, v.Default)
 	}
 	return nil
 }
 
+func noPortVarError(compose string) error {
+	return fmt.Errorf("no port variable found in %q (a host port mapping such as '${APP_PORT:-80}:80'); add one to the compose file, or write %s by hand (see README)", compose, configName)
+}
+
+// initCompose picks the compose file init detects from. An existing .sail-worktree.json is read best effort only to
+// keep its compose value; a value that is unsafe or does not open as a regular file falls back to the standard names
+// (the write refuses a linked or non-regular .sail-worktree.json later). existed reports a file to be replaced.
+func initCompose(root, marker string) (compose string, existed bool) {
+	if marker != configName {
+		return marker, false
+	}
+	if b, err := readSmallFile(filepath.Join(root, configName)); err == nil {
+		var old Config
+		if json.Unmarshal(b, &old) == nil && !unsafeComposePath(old.Compose) {
+			if _, err := readSmallFile(filepath.Join(root, old.Compose)); err == nil {
+				return old.Compose, true
+			}
+		}
+	}
+	if name, ok, err := findMarker(root, composeNames); err == nil && ok {
+		return name, true
+	}
+	return "", true
+}
+
 // ctx is the information shared by the commands that run inside a worktree.
-// root and main are the project directories (the one with .sail-worktree.json) of this worktree and of the main
-// worktree; wtTop and mainTop are the roots of the two worktrees. All of them are real paths.
+// root and main are the project directories of this worktree and of the main worktree; wtTop and mainTop are the
+// roots of the two worktrees. All of them are real paths. The configuration is read through config(), because a
+// configuration error is reported only after the main-worktree refusal.
 type ctx struct {
 	root, main     string
 	wtTop, mainTop string
+	detected       bool // no .sail-worktree.json: compose file and port variables were detected
 	cfg            *Config
+	cfgErr         error
 }
+
+func (c *ctx) config() (*Config, error) { return c.cfg, c.cfgErr }
 
 func loadCtx() (*ctx, error) {
 	dir, err := cwd()
@@ -84,25 +121,24 @@ func loadCtx() (*ctx, error) {
 	if err != nil {
 		return nil, err
 	}
-	root, cand, err := findProject(wtTop, prefix, []string{configName})
+	root, cand, detected, err := lookupProject(wtTop, prefix)
 	if err != nil {
 		return nil, err
-	}
-	if cand == nil {
-		return nil, configNotFoundError(wtTop, prefix)
 	}
 	main, err := counterpart(mainTop, cand.rel)
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := loadConfig(root)
-	if err != nil {
-		return nil, err
+	c := &ctx{root: root, main: main, wtTop: wtTop, mainTop: mainTop, detected: detected}
+	if detected {
+		c.cfg, c.cfgErr = detectConfig(root, cand.marker)
+	} else {
+		c.cfg, c.cfgErr = loadConfig(root)
 	}
 	if cand.rel != strings.TrimSuffix(prefix, "/") {
 		fmt.Fprintf(stderr, "project directory: %q\n", root)
 	}
-	return &ctx{root: root, main: main, wtTop: wtTop, mainTop: mainTop, cfg: cfg}, nil
+	return c, nil
 }
 
 // isMain reports whether the command runs in the main worktree. The worktree roots decide; comparing the project
@@ -136,6 +172,13 @@ func cmdUp(args []string) error {
 	if c.isMain() {
 		return fmt.Errorf("cannot run in the main worktree; run it in a worktree you have created")
 	}
+	cfg, err := c.config()
+	if err != nil {
+		return err
+	}
+	if c.detected && len(cfg.PortVars) == 0 {
+		return noPortVarError(filepath.Join(c.root, cfg.Compose))
+	}
 	envPath := filepath.Join(c.root, ".env")
 	if err := checkOwnEnv(envPath); err != nil {
 		return err
@@ -160,7 +203,6 @@ func cmdUp(args []string) error {
 			}
 			return fmt.Errorf("cannot read the source .env from the main worktree: %w", err)
 		}
-		fmt.Fprintln(stdout, "creating .env (copied from the main worktree)")
 	} else if err != nil {
 		return err
 	}
@@ -168,11 +210,11 @@ func cmdUp(args []string) error {
 	if k, ok := env.overrideKey(upOverrideKeys); ok {
 		return upOverrideError(k, src)
 	}
-	ports, err := allocatePorts(c.cfg.PortVars, reg.Worktrees[c.root], reg.used(c.root), portFree)
+	ports, err := allocatePorts(cfg.PortVars, reg.Worktrees[c.root], reg.used(c.root), portFree)
 	if err != nil {
 		return err
 	}
-	for _, v := range c.cfg.PortVars {
+	for _, v := range cfg.PortVars {
 		env.Set(v.Name, strconv.Itoa(ports[v.Name]))
 	}
 	proj := c.projectName()
@@ -186,8 +228,15 @@ func cmdUp(args []string) error {
 			statefulAdded, statefulWarning = addStatefulDomain(env, u)
 		}
 	}
+	// The first write: nothing is written in a directory without Sail.
+	if _, err := sailPath(c.root); err != nil {
+		return err
+	}
 	if err := env.Write(envPath); err != nil {
 		return err
+	}
+	if src != envOwn {
+		fmt.Fprintln(stdout, "created .env (copied from the main worktree)")
 	}
 	reg.Worktrees[c.root] = ports
 	if err := reg.save(); err != nil {
@@ -207,7 +256,7 @@ func cmdUp(args []string) error {
 	if statefulWarning != "" {
 		fmt.Fprintf(stderr, "warning: %s\n", statefulWarning)
 	}
-	return runSail(c.root, c.cfg, append([]string{"up"}, args...))
+	return runSail(c.root, cfg, append([]string{"up"}, args...))
 }
 
 // envSource is where up took .env from. It is remembered to tailor the guidance in the refusal error.
@@ -238,12 +287,16 @@ func cmdStop(args []string) error {
 	if err != nil {
 		return err
 	}
+	cfg, err := c.config()
+	if err != nil {
+		return err
+	}
 	// stop never writes .env and stopping can be undone, so it does not refuse like up and rm do.
 	// It only warns when it may stop another project.
 	if !c.isMain() {
 		warnStopTarget(c)
 	}
-	return runSail(c.root, c.cfg, append([]string{"stop"}, args...))
+	return runSail(c.root, cfg, append([]string{"stop"}, args...))
 }
 
 // stdin, stdout and stderr are the input of the confirmation prompt, up's report and warnings (replaced by tests).
@@ -312,6 +365,10 @@ func cmdRm(args []string) error {
 	if c.isMain() {
 		return fmt.Errorf("cannot run in the main worktree")
 	}
+	cfg, err := c.config()
+	if err != nil {
+		return err
+	}
 	envPath := filepath.Join(c.root, ".env")
 	if err := checkOwnEnv(envPath); err != nil {
 		return err
@@ -334,7 +391,7 @@ func cmdRm(args []string) error {
 	}
 	// Do every refusing check before the confirmation prompt (never refuse after the user answered y).
 	// -f gets the checked real path, not the configured one, so docker does not resolve the links again.
-	composePath, err := composeInsideProject(c.root, c.cfg.Compose)
+	composePath, err := composeInsideProject(c.root, cfg.Compose)
 	if err != nil {
 		return err
 	}
@@ -375,10 +432,19 @@ func rmArgs(proj, root, composePath string) []string {
 		"-f", composePath, "down", "-v", "--rmi", "local", "--remove-orphans"}
 }
 
-func runSail(root string, cfg *Config, args []string) error {
+// sailPath returns vendor/bin/sail of the project, or an error when it is missing.
+func sailPath(root string) (string, error) {
 	sail := filepath.Join(root, "vendor", "bin", "sail")
 	if _, err := os.Stat(sail); err != nil {
-		return fmt.Errorf("%s not found; run `composer install`", sail)
+		return "", fmt.Errorf("%s not found; run `composer install`", sail)
+	}
+	return sail, nil
+}
+
+func runSail(root string, cfg *Config, args []string) error {
+	sail, err := sailPath(root)
+	if err != nil {
+		return err
 	}
 	// Shell variables take precedence over .env, so drop the port variables to keep them in line with the assigned ports.
 	drop := make([]string, 0, len(cfg.PortVars))
