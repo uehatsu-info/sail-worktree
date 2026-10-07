@@ -38,9 +38,10 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `v
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`, `foldRegistry` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
+| `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `lockTiming` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
 | `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `sanctumUnquote`, `statefulDisabled`, `addStatefulDomain` |
-| `sail_worktree_test.go`, `project_test.go`, `detect_test.go`, `sanctum_test.go`, `ps_test.go`, `registry_test.go`, `status_test.go`, `portsview_test.go`, `links_unix_test.go` | Tests |
+| `sail_worktree_test.go`, `project_test.go`, `detect_test.go`, `sanctum_test.go`, `ps_test.go`, `registry_test.go`, `lock_test.go`, `status_test.go`, `portsview_test.go`, `links_unix_test.go` | Tests |
 | `.github/workflows/ci.yml`, `release.yml`, `.github/dependabot.yml`, `.goreleaser.yaml` | CI and release |
 
 State outside the repository: the port registry is `os.UserConfigDir()/sail-worktree/registry.json`. The project
@@ -189,7 +190,19 @@ These come from deliberate decisions; change them only on purpose and update the
   `.sail-worktree.json` keep `writeFileNoFollow`.
 - **Registry handling in `rm`.** Read the registry once before the prompt (to fail early on a broken file) and again
   after `docker` (so an update made meanwhile by another `up` is not lost); release the worktree only after docker
-  succeeds.
+  succeeds. The lock is taken after docker and before the second read (never while docker runs); if it cannot be taken
+  the error says that docker finished and that rm can be run again (`down` is idempotent).
+- **The registry lock.** `up` and `rm` update the registry under `lockRegistry` (`registry.json.lock` next to it,
+  `O_EXCL`, mode 0600, pid inside, closed at once because Windows cannot remove an open file). `up` takes it after the
+  `.env` checks and before `loadRegistry`, so reading, `allocatePorts`, writing `.env` and `save` are one step, and
+  releases it right after `save` and before `runSail`; `rm` takes it after docker. Never hold it while sail or docker
+  runs, and a caller must read the registry after locking. `ps`, `ports` and `status` never lock (the atomic save
+  keeps them consistent). A lock older than `lockTiming.stale` (or well in the future) is abandoned and broken by
+  renaming it to a unique name and checking that it is the file that was judged; `wait` is longer than `stale`;
+  `unlock` is idempotent and removes only the file it created. An `O_EXCL` file was chosen over flock/LockFileEx (no
+  per-OS code, no dependency); its cost is the stale rule and the hand recovery in the error message, and a holder
+  that stalls for longer than `stale` can overlap with the next run. Do not "improve" this into a lock held during
+  `sail up`.
 - **Ports.** A new port is searched from default+1 upwards (the default is left to the main worktree), skipping ports
   of other worktrees and ports in use. A port counts as free only if it binds on all interfaces and on `127.0.0.1`;
   `loopbackBindBlocked` decides how a failure on `127.0.0.1` is treated per OS.
