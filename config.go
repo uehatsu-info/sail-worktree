@@ -6,8 +6,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
 const configName = ".sail-worktree.json"
@@ -153,8 +155,61 @@ func (r *Registry) save() error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
-	b, _ := json.MarshalIndent(r, "", "  ")
-	return os.WriteFile(p, append(b, '\n'), 0o644)
+	b, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(p, append(b, '\n'))
+}
+
+// renameRetries is how often a replace is retried on Windows, where it fails while another process (ps, ports or
+// status reading the registry) has the target open.
+var renameRetries = 50
+
+// writeFileAtomic replaces path with data so that a reader sees the old or the new content, never a partial file: it
+// writes a temporary file next to the target and renames it over. A symbolic link at path is resolved first, so the
+// link keeps pointing at the file that is replaced; a hard link is broken. The mode of an existing file is kept
+// (0644 for a new one).
+func writeFileAtomic(path string, data []byte) error {
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		path = r
+	}
+	mode := os.FileMode(0o644)
+	if fi, err := os.Lstat(path); err == nil && fi.Mode().IsRegular() {
+		mode = fi.Mode().Perm()
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".registry-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	fail := func(err error) error {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return fail(err)
+	}
+	if err := f.Chmod(mode); err != nil && runtime.GOOS != "windows" {
+		return fail(err)
+	}
+	if err := f.Sync(); err != nil {
+		return fail(err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	err = os.Rename(tmp, path)
+	for i := 0; err != nil && runtime.GOOS == "windows" && i < renameRetries; i++ {
+		time.Sleep(20 * time.Millisecond)
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
 }
 
 // migrate merges keys that are aliases of root (recorded by an older version under a symlinked path) into root.
