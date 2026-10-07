@@ -74,9 +74,10 @@ func detectConfig(root, compose string) (*Config, error) {
 	return &Config{Compose: compose, PortVars: detectPortVars(string(b))}, nil
 }
 
-// unsafeComposePath reports whether the compose value is not a relative path inside the project directory. It is passed to rm's -f, so besides empty, absolute and ".." paths it also rejects forms
-// that point at a drive or a server on Windows ("C:x", "\\srv\x") and rooted paths without a drive letter ("/x",
-// "\x": filepath.IsAbs is false for them).
+// unsafeComposePath reports whether the compose value is not a relative path inside the project directory. It is
+// passed to rm's -f, so besides empty, absolute and ".." paths it also rejects forms that point at a drive or a server
+// on Windows ("C:x", "\\srv\x") and rooted paths without a drive letter ("/x", "\x": filepath.IsAbs is false for
+// them).
 // It only reads the string; composeInsideProject checks where the file really is.
 func unsafeComposePath(p string) bool {
 	if p == "" || filepath.IsAbs(p) || filepath.VolumeName(p) != "" || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) {
