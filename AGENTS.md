@@ -111,10 +111,11 @@ These come from deliberate decisions; change them only on purpose and update the
   must pass `--no-docker`. Every untrusted string is printed through `cell`/`escapeControl`. The JSON field names of
   `ps` are a public contract (`--json` goes through `jsonEscape`). Output goes to the package `stdout`, never
   `fmt.Println`. `status` reuses `checkOwnEnv`, `upOverrideKeys`, `projectName` and `addStatefulDomain` (on a copy of
-  `.env`) instead of re-implementing them, prints only an allow-list of facts (never other `.env` values; `APP_URL`
-  without credentials), never reads a symlinked `.env`, and exits 1 after the report when it found a problem (warnings
-  do not). Known limit: with `--all` an entry is attributed to the longest listed worktree that contains it, so an
-  independent repository nested inside a listed worktree is attributed to the outer one when that one is already
+  `.env`) instead of re-implementing them, prints only an allow-list of facts (never other `.env` values, and not even
+  an invalid port value, because a port variable name may be any key; `APP_URL` without credentials, query and
+  fragment), never reads a symlinked `.env`, and exits 1 after the report when it found a problem (warnings do not).
+- **`ps --all` attribution.** With `--all` an entry is attributed to the longest listed worktree that contains it, so
+  an independent repository nested inside a listed worktree is attributed to the outer one when that one is already
   known.
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
   case-insensitively) from the environment passed to `sail` and `docker`. It must never return `nil`: a `nil`

@@ -107,7 +107,7 @@ myapp-x   .       feat-x  APP_PORT=81 FORWARD_DB_PORT=3307  running  /work/myapp
 
 ### `sail-worktree status [--no-docker]`
 
-Shows how the current worktree is set up and reports what is wrong with it. Run it in the project directory (or below it), like `up`; it works in the main worktree too, where it only says that nothing is recorded.
+Shows how the current worktree is set up and reports what is wrong with it. Run it in the project directory (or below it), like `up`; it works in the main worktree too, where it only says that `up`, `stop` and `rm` do not run there and nothing is recorded for it.
 
 ```
 project directory: "/work/myapp-x"
@@ -122,10 +122,10 @@ ports:
 APP_URL:           "http://localhost:81"
 ```
 
-- It shows only a fixed list of facts (paths, the compose project name, the assigned ports, `APP_URL` without credentials); other `.env` values are never printed.
+- It shows only a fixed list of facts (paths, the compose project name, the assigned ports, `APP_URL` without credentials, query and fragment); other `.env` values are never printed.
 - `problems:` lists what `up` would fix or refuse; any problem is reported after the whole report with `error: found N problem(s)` and exit status 1: a configuration error; `.env` missing, a symbolic or hard link, or not a regular file (a link is not read); `COMPOSE_FILE`, `COMPOSE_ENV_FILES` or `SAIL_FILES` in `.env`; `COMPOSE_PROJECT_NAME` missing or different from this worktree's name; a port variable that is missing or not a number in `.env`, different from the registry, not in the registry, or also recorded for another entry; an `APP_URL` that does not use `APP_PORT`; and a `SANCTUM_STATEFUL_DOMAINS` that lacks the entry for `APP_URL` (the same rule as `up`).
-- `warnings:` do not change the exit status: a port that cannot be bound while the project is not running (another process may use it; a permission error looks the same), and the `SANCTUM_STATEFUL_DOMAINS` value that `up` only warns about. A port is not probed while docker says the project is running, nor when docker could not be asked (`unknown`) or with `--no-docker`.
-- The docker state is the one `ps` shows (see above). To see whether a port is free, `status` binds it for an instant and closes it again; nothing is written to disk.
+- The report ends with `warnings:` and then `problems:`. `warnings:` do not change the exit status: a port that cannot be bound while the project is not running (another process may use it; a permission error looks the same), and the `SANCTUM_STATEFUL_DOMAINS` value that `up` only warns about. A port is not probed while docker says the project is running, nor when docker could not be asked (`unknown`) or with `--no-docker` (the `docker:` line then says `not asked`, and the ports show `host=not probed`).
+- The docker state is the one `ps` shows (see above). To see whether a port is free, `status` binds it for an instant and closes it again; nothing is written to disk, but a firewall may notice the bind.
 
 ## Project directory
 

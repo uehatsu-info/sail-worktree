@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 )
 
@@ -93,7 +94,11 @@ func cmdStatus(args []string) error {
 		projects, derr := dockerProjects()
 		state = dockerState(projects, derr, proj)
 	}
-	r.line("docker:            %s", state)
+	if noDocker {
+		r.line("docker:            not asked (--no-docker)")
+	} else {
+		r.line("docker:            %s", state)
+	}
 
 	env := statusEnv(c, r)
 	if env != nil {
@@ -135,7 +140,13 @@ func statusEnv(c *ctx, r *report) *envFile {
 		return nil
 	}
 	if err := checkOwnEnv(path); err != nil {
-		r.line(".env:              not a plain file")
+		label := "hard link"
+		if fi.Mode()&os.ModeSymlink != 0 {
+			label = "symbolic link"
+		} else if !fi.Mode().IsRegular() {
+			label = "not a regular file"
+		}
+		r.line(".env:              %s", label)
 		r.problem("%v", err)
 		if !fi.Mode().IsRegular() {
 			return nil
@@ -181,18 +192,20 @@ func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) 
 	for _, v := range vars {
 		envPort, haveEnv := 0, false
 		if env != nil {
-			if s, ok := env.Get(v.Name); ok {
-				if p, err := strconv.Atoi(s); err == nil && p >= 1 && p <= 65535 {
-					envPort, haveEnv = p, true
-				} else {
-					r.problem("%s in .env is %+q, not a port number", v.Name, s)
-				}
-			} else {
+			if s, ok := env.Get(v.Name); !ok {
 				r.problem("%s is not set in .env; run up", v.Name)
+			} else if p, ok := parsePort(s); !ok {
+				// The value is not shown: a port variable name comes from a committed file and may be any key.
+				r.problem("%s in .env is not a port number", v.Name)
+			} else {
+				envPort, haveEnv = p, true
 			}
 		}
 		regPort, haveReg := mine[v.Name]
-		if !haveReg {
+		if haveReg && (regPort < 1 || regPort > 65535) {
+			r.problem("%s is recorded as %d in the registry, which is not a port number", v.Name, regPort)
+			regPort, haveReg = 0, false
+		} else if !haveReg {
 			r.problem("%s is not recorded in the registry; run up", v.Name)
 		}
 		if haveEnv && haveReg && envPort != regPort {
@@ -202,22 +215,42 @@ func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) 
 		if !haveEnv {
 			port = regPort
 		}
-		for other, ports := range view {
-			if other == c.root {
-				continue
-			}
-			for name, p := range ports {
-				if port != 0 && p == port {
-					r.problem("port %d (%s) is also recorded for %q (%s)", port, v.Name, other, name)
-				}
-			}
+		for _, other := range otherHolders(view, c.root, port) {
+			r.problem("port %d (%s) is also recorded for %s", port, v.Name, other)
 		}
-		r.line("  %-20s env=%s registry=%s host=%s", v.Name, portText(envPort, haveEnv), portText(regPort, haveReg),
-			hostText(port, state))
-		if port != 0 && state != stateRunning && state != stateUnknown && state != stateNone && !probePort(port) {
-			r.warn("port %d (%s) cannot be bound although the project is not running; another process may use it", port, v.Name)
+		host, blocked := hostState(port, state)
+		r.line("  %-20s env=%s registry=%s host=%s", v.Name, portText(envPort, haveEnv), portText(regPort, haveReg), host)
+		if blocked {
+			r.warn("port %d (%s) cannot be bound although the project is not running; another process may use it",
+				port, v.Name)
 		}
 	}
+}
+
+// parsePort reads a port number from an .env value.
+func parsePort(s string) (int, bool) {
+	p, err := strconv.Atoi(s)
+	return p, err == nil && p >= 1 && p <= 65535
+}
+
+// otherHolders lists, sorted, the registry entries other than self that record port, as "dir (VARIABLE)".
+func otherHolders(view map[string]map[string]int, self string, port int) []string {
+	if port == 0 {
+		return nil
+	}
+	var out []string
+	for dir, ports := range view {
+		if dir == self {
+			continue
+		}
+		for name, p := range ports {
+			if p == port {
+				out = append(out, fmt.Sprintf("%q (%s)", dir, name))
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func portText(p int, ok bool) string {
@@ -227,20 +260,21 @@ func portText(p int, ok bool) string {
 	return strconv.Itoa(p)
 }
 
-// hostText is what the probe says about a port. A running project holds its own ports, and without docker's answer a
-// bound port may be this project's own, so neither is probed.
-func hostText(port int, state string) string {
+// hostState is what the probe says about a port, and whether that is a finding: only a port that cannot be bound
+// while docker says the project is not running. A running project holds its own ports, and without docker's answer
+// (unknown, or --no-docker) a bound port may be this project's own, so neither is probed.
+func hostState(port int, state string) (text string, blocked bool) {
 	switch {
 	case port == 0:
-		return "-"
+		return "-", false
 	case state == stateRunning:
-		return "in use by this project"
+		return "in use by this project", false
 	case state == stateUnknown || state == stateNone:
-		return "not probed"
+		return "not probed", false
 	case probePort(port):
-		return "free"
+		return "free", false
 	}
-	return "cannot bind"
+	return "cannot bind", true
 }
 
 // statusAppURL checks that APP_URL points at the assigned APP_PORT and that SANCTUM_STATEFUL_DOMAINS has its entry.
@@ -248,6 +282,7 @@ func hostText(port int, state string) string {
 func statusAppURL(r *report, env *envFile, vars []PortVar) {
 	raw, ok := env.Get("APP_URL")
 	if !ok {
+		r.line("APP_URL:           -")
 		return
 	}
 	u, err := url.Parse(raw)
@@ -255,14 +290,12 @@ func statusAppURL(r *report, env *envFile, vars []PortVar) {
 		r.line("APP_URL:           (not a URL with a host)")
 		return
 	}
-	u.User = nil
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", "" // may hold secrets
 	r.line("APP_URL:           %q", u.String())
-	appPort := 0
+	appPort := 0 // up rewrites APP_URL with the APP_PORT it assigned; an invalid value is reported with the ports
 	for _, v := range vars {
-		if v.Name == "APP_PORT" {
-			if s, ok := env.Get("APP_PORT"); ok {
-				appPort, _ = strconv.Atoi(s)
-			}
+		if s, ok := env.Get("APP_PORT"); v.Name == "APP_PORT" && ok {
+			appPort, _ = parsePort(s)
 		}
 	}
 	if appPort == 0 {
