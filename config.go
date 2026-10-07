@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -18,10 +19,10 @@ type Config struct {
 }
 
 func loadConfig(root string) (*Config, error) {
-	b, err := os.ReadFile(filepath.Join(root, configName))
+	b, err := readSmallFile(filepath.Join(root, configName))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%s not found; run `sail-worktree init` first", configName)
+			return nil, fmt.Errorf("%s disappeared from %q", configName, root)
 		}
 		return nil, err
 	}
@@ -33,6 +34,43 @@ func loadConfig(root string) (*Config, error) {
 		return nil, fmt.Errorf("compose (%q) in %s must be a relative path inside the project directory", c.Compose, configName)
 	}
 	return &c, nil
+}
+
+// maxSmallFile bounds what readSmallFile reads from a compose file or .sail-worktree.json.
+const maxSmallFile = 1 << 20
+
+// readSmallFile reads a regular file of at most maxSmallFile bytes. Links are followed (a linked compose file works for
+// up and stop as before; rm checks where it leads), but the open does not block on a FIFO swapped in after the lookup,
+// and a larger file is an error rather than being cut, which could drop port variables silently.
+func readSmallFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|openNonBlock, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil {
+		return nil, err
+	} else if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q is not a regular file", path)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, maxSmallFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxSmallFile {
+		return nil, fmt.Errorf("%q is larger than %d bytes", path, maxSmallFile)
+	}
+	return b, nil
+}
+
+// detectConfig builds the configuration from the compose file name (relative to root) when there is no
+// .sail-worktree.json. It returns plain errors; callers add advice.
+func detectConfig(root, compose string) (*Config, error) {
+	b, err := readSmallFile(filepath.Join(root, compose))
+	if err != nil {
+		return nil, err
+	}
+	return &Config{Compose: compose, PortVars: detectPortVars(string(b))}, nil
 }
 
 // unsafeComposePath reports whether the compose value is not a relative path inside the project directory (the one
@@ -65,7 +103,7 @@ func composeInsideProject(root, rel string) (string, error) {
 		return "", fmt.Errorf("compose file %+q resolves outside the project directory (%+q); replace the link with a real file or a link whose target is inside the project directory", rel, resolved)
 	}
 	if fi, err := os.Stat(resolved); err != nil || !fi.Mode().IsRegular() {
-		return "", fmt.Errorf("compose file %+q is not a regular file (%+q); point compose at a regular file inside the project directory", rel, resolved)
+		return "", fmt.Errorf("compose file %+q is not a regular file (%+q); use a regular file inside the project directory", rel, resolved)
 	}
 	return resolved, nil
 }

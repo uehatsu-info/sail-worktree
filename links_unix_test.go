@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -122,6 +123,23 @@ func TestWriteFileNoFollowRefusesFIFO(t *testing.T) {
 	case err := <-done:
 		if err == nil {
 			t.Error("wrote to a FIFO")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked on a FIFO")
+	}
+}
+
+func TestReadSmallFileDoesNotBlockOnFIFO(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "compose.yaml")
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Fatalf("cannot create a FIFO (set TMPDIR to a filesystem that supports them): %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := readSmallFile(p); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "is not a regular file") {
+			t.Errorf("error = %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("blocked on a FIFO")

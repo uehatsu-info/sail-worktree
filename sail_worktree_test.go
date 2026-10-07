@@ -1153,7 +1153,7 @@ func TestComposeInsideProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	const notRegular = "is not a regular file"
-	const notRegularHint = "point compose at a regular file inside the project directory"
+	const notRegularHint = "use a regular file inside the project directory"
 	cases := []struct {
 		name, rel, want string // want is an error substring; empty means accepted
 	}{
