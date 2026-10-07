@@ -103,6 +103,9 @@ func TestConfigFurtherUpWinsWithWarning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := c.config(); err != nil {
+		t.Fatal(err)
+	}
 	if c.root != wt || c.detected {
 		t.Errorf("root = %q, detected = %v", c.root, c.detected)
 	}
@@ -122,7 +125,8 @@ func TestHalfProjectsAreNotProjects(t *testing.T) {
 	docker := filepath.Join(wt, "laravel", "docker")
 	writeFile(t, filepath.Join(docker, "compose.yaml"), detectCompose)
 	t.Chdir(docker) // compose without artisan: walks on to laravel/
-	if c, err := loadCtx(); err != nil || c.root != filepath.Join(wt, "laravel") {
+	captureStderr(t)
+	if c, err := loadCtx(); err != nil || c.root != filepath.Join(wt, "laravel") || c.cfgErr != nil {
 		t.Fatalf("compose without artisan: %+v, %v", c, err)
 	}
 	if err := os.Remove(filepath.Join(wt, "laravel", artisanName)); err != nil {
@@ -154,7 +158,7 @@ func TestArtisanDirectoryAndBrokenComposeDoNotStopTheWalk(t *testing.T) {
 	}
 	t.Chdir(sub)
 	captureStderr(t)
-	if c, err := loadCtx(); err != nil || c.root != wt {
+	if c, err := loadCtx(); err != nil || c.root != wt || c.cfgErr != nil {
 		t.Errorf("ctx = %+v, %v", c, err)
 	}
 }
@@ -166,7 +170,7 @@ func TestDetectionSkipsVendorAndStopsAtTheRoot(t *testing.T) {
 	writeFile(t, filepath.Join(pkg, "compose.yaml"), detectCompose)
 	t.Chdir(pkg)
 	captureStderr(t)
-	if c, err := loadCtx(); err != nil || c.root != filepath.Join(wt, "laravel") {
+	if c, err := loadCtx(); err != nil || c.root != filepath.Join(wt, "laravel") || c.cfgErr != nil {
 		t.Errorf("vendor/ was not skipped: %+v, %v", c, err)
 	}
 	writeFile(t, filepath.Join(filepath.Dir(wt), artisanName), "x\n")
@@ -338,6 +342,26 @@ func TestInitUpdatesAndKeepsACustomCompose(t *testing.T) {
 	}
 	if s := out(); !strings.Contains(s, "updated ") || !strings.Contains(s, "detected from docker/compose.dev.yml") {
 		t.Errorf("stdout = %q", s)
+	}
+}
+
+func TestInitWithAnUnusableComposeValue(t *testing.T) {
+	_, wt := setupDetectedRepo(t, "")
+	writeFile(t, filepath.Join(wt, configName), `{"compose":"missing.yml","port_vars":[]}`)
+	if err := os.Remove(filepath.Join(wt, "compose.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	captureStdoutFile(t)
+	if err := cmdInit(); err == nil || !strings.Contains(err.Error(), "no compose file (compose.yaml") {
+		t.Errorf("error = %v", err)
+	}
+	// With a standard name present, init falls back to it.
+	writeFile(t, filepath.Join(wt, "compose.yaml"), detectCompose)
+	if err := cmdInit(); err != nil {
+		t.Fatal(err)
+	}
+	if c := readConfigAt(t, wt); c.Compose != "compose.yaml" {
+		t.Errorf("config = %+v", c)
 	}
 }
 

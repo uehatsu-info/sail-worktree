@@ -227,7 +227,7 @@ func warnIgnoredNearerProject(wtTop, prefix, root string, chosen *candidate) {
 			return
 		}
 		if _, ok, err := isLaravelProject(c.dir); err == nil && ok {
-			fmt.Fprintf(stderr, "warning: using %s in %q; the nearer Laravel project %q is ignored (run sail-worktree init in it to use it)\n", configName, root, c.dir)
+			fmt.Fprintf(stderr, "warning: using %s in %q; the nearer Laravel project %q is ignored (run `sail-worktree init` in it to use it)\n", configName, root, c.dir)
 			return
 		}
 	}

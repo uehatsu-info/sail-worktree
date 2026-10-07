@@ -47,7 +47,7 @@ func cmdInit() error {
 		return err
 	}
 	if len(cfg.PortVars) == 0 {
-		return fmt.Errorf("no port variable found in %q (a host port mapping such as '${APP_PORT:-80}:80'); add one to the compose file, or write %s by hand (see README)", filepath.Join(root, compose), configName)
+		return noPortVarError(filepath.Join(root, compose))
 	}
 	data, _ := json.MarshalIndent(cfg, "", "  ")
 	// The project directory may be any subdirectory, so never write through a link placed there.
@@ -67,6 +67,10 @@ func cmdInit() error {
 		fmt.Printf("  %s (default %d)\n", v.Name, v.Default)
 	}
 	return nil
+}
+
+func noPortVarError(compose string) error {
+	return fmt.Errorf("no port variable found in %q (a host port mapping such as '${APP_PORT:-80}:80'); add one to the compose file, or write %s by hand (see README)", compose, configName)
 }
 
 // initCompose picks the compose file init detects from. An existing .sail-worktree.json is read best effort only to
@@ -173,7 +177,7 @@ func cmdUp(args []string) error {
 		return err
 	}
 	if c.detected && len(cfg.PortVars) == 0 {
-		return fmt.Errorf("no port variable found in %q (a host port mapping such as '${APP_PORT:-80}:80'); add one to the compose file, or write %s (see README)", filepath.Join(c.root, cfg.Compose), configName)
+		return noPortVarError(filepath.Join(c.root, cfg.Compose))
 	}
 	envPath := filepath.Join(c.root, ".env")
 	if err := checkOwnEnv(envPath); err != nil {
@@ -199,7 +203,6 @@ func cmdUp(args []string) error {
 			}
 			return fmt.Errorf("cannot read the source .env from the main worktree: %w", err)
 		}
-		fmt.Fprintln(stdout, "creating .env (copied from the main worktree)")
 	} else if err != nil {
 		return err
 	}
@@ -231,6 +234,9 @@ func cmdUp(args []string) error {
 	}
 	if err := env.Write(envPath); err != nil {
 		return err
+	}
+	if src != envOwn {
+		fmt.Fprintln(stdout, "created .env (copied from the main worktree)")
 	}
 	reg.Worktrees[c.root] = ports
 	if err := reg.save(); err != nil {
