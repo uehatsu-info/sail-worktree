@@ -89,15 +89,23 @@ func findMarker(dir string, names []string) (string, bool, error) {
 	return "", false, nil
 }
 
-// findProject returns the real path of the nearest candidate that holds one of names, and the candidate itself.
-// The candidate is nil when none has one.
-func findProject(wtTop, prefix string, names []string) (string, *candidate, error) {
+// matcher reports whether dir is a project directory and which marker file made it one. An error stops the lookup.
+type matcher func(dir string) (marker string, ok bool, err error)
+
+// markerIn matches a directory that holds one of names (see findMarker).
+func markerIn(names []string) matcher {
+	return func(dir string) (string, bool, error) { return findMarker(dir, names) }
+}
+
+// findProject returns the real path of the nearest candidate that match accepts, and the candidate itself.
+// The candidate is nil when none matches.
+func findProject(wtTop, prefix string, match matcher) (string, *candidate, error) {
 	cands, err := projectCandidates(wtTop, prefix)
 	if err != nil {
 		return "", nil, err
 	}
 	for i := range cands {
-		name, ok, err := findMarker(cands[i].dir, names)
+		name, ok, err := match(cands[i].dir)
 		if err != nil {
 			return "", nil, err
 		}
@@ -119,11 +127,11 @@ func findProject(wtTop, prefix string, names []string) (string, *candidate, erro
 	return "", nil, nil
 }
 
-// subdirsWith lists the direct subdirectories of the cwd's directory and of wtTop that hold one of names, relative to
+// subdirsWith lists the direct subdirectories of the cwd's directory and of wtTop that match accepts, relative to
 // wtTop, for the hint in a not-found error. Only plain directories are entered (no links, no Windows junctions);
 // vendor, node_modules and .git are skipped. A marker that is itself a link is still followed, as when reading it. It
 // is best effort: errors only shorten the list.
-func subdirsWith(wtTop, prefix string, names []string) []string {
+func subdirsWith(wtTop, prefix string, match matcher) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, base := range []string{filepath.Join(wtTop, filepath.FromSlash(strings.TrimSuffix(prefix, "/"))), wtTop} {
@@ -141,7 +149,7 @@ func subdirsWith(wtTop, prefix string, names []string) []string {
 				continue
 			}
 			seen[rel] = true
-			if _, ok, err := findMarker(sub, names); err == nil && ok {
+			if _, ok, err := match(sub); err == nil && ok {
 				out = append(out, filepath.ToSlash(rel))
 			}
 		}
@@ -166,9 +174,9 @@ func configNotFoundError(wtTop, prefix string) error {
 	msg := fmt.Sprintf("%s not found in this directory or its parents up to the worktree root %q; "+
 		"run this in your Laravel project's directory (the one with %s), or run `sail-worktree init` there first",
 		configName, wtTop, configName)
-	if dirs := subdirsWith(wtTop, prefix, []string{configName}); len(dirs) > 0 {
+	if dirs := subdirsWith(wtTop, prefix, markerIn([]string{configName})); len(dirs) > 0 {
 		msg += fmt.Sprintf("\n%s found in: %s", configName, quoteList(dirs))
-	} else if dirs := subdirsWith(wtTop, prefix, composeNames); len(dirs) > 0 {
+	} else if dirs := subdirsWith(wtTop, prefix, markerIn(composeNames)); len(dirs) > 0 {
 		msg += fmt.Sprintf("\na compose file found in: %s (run `sail-worktree init` there first)", quoteList(dirs))
 	}
 	return errors.New(msg)
@@ -178,7 +186,7 @@ func configNotFoundError(wtTop, prefix string) error {
 func composeNotFoundError(wtTop, prefix string) error {
 	msg := fmt.Sprintf("no compose file (%s) found in this directory or its parents up to the worktree root %q; "+
 		"run init in your Laravel project's directory (the one with the compose file)", strings.Join(composeNames, ", "), wtTop)
-	if dirs := subdirsWith(wtTop, prefix, composeNames); len(dirs) > 0 {
+	if dirs := subdirsWith(wtTop, prefix, markerIn(composeNames)); len(dirs) > 0 {
 		msg += fmt.Sprintf("\na compose file found in: %s (run init there)", quoteList(dirs))
 	}
 	return errors.New(msg)

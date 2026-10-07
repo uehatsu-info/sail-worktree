@@ -30,7 +30,7 @@ func cmdInit() error {
 	if err != nil {
 		return fmt.Errorf("run this inside a git repository: %w", err)
 	}
-	root, cand, err := findProject(wtTop, prefix, composeNames)
+	root, cand, err := findProject(wtTop, prefix, markerIn(composeNames))
 	if err != nil {
 		return err
 	}
@@ -84,7 +84,7 @@ func loadCtx() (*ctx, error) {
 	if err != nil {
 		return nil, err
 	}
-	root, cand, err := findProject(wtTop, prefix, []string{configName})
+	root, cand, err := findProject(wtTop, prefix, markerIn([]string{configName}))
 	if err != nil {
 		return nil, err
 	}
