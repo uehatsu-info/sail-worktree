@@ -89,7 +89,7 @@ sail-worktree up -d
 
 ## ワークツリーの確認
 
-これらのコマンドは読み取り専用です。`.env`・`.sail-worktree.json`・レジストリを書き換えず、`.env` を `source` もしません。
+`ps` と `status` は読み取り専用です。`.env`・`.sail-worktree.json`・レジストリを書き換えず、`.env` を `source` もしません。
 
 ### `sail-worktree ps [--all] [--json] [--no-docker]`
 
@@ -104,6 +104,28 @@ myapp-x   .       feat-x  APP_PORT=81 FORWARD_DB_PORT=3307  running  /work/myapp
 - `STATE` は、ワークツリーやディレクトリが無い（または git が prunable と報告する）エントリ、キーが有効なパスでないエントリでは `stale`、ディレクトリはあるが git がワークツリーに位置づけられないもの（リポジトリでない、git が失敗した）では `unattributed`（`--all` のときのみ）、それ以外ではエントリの compose プロジェクトについての docker の見え方です（`docker compose ls -a` を 1 回だけ実行し、環境から `COMPOSE_*` を除きます）。`running`（コンテナが動いている）・`stopped`（コンテナはあるが `running` のものがない。一時停止中や再起動中も stopped）・`down`（docker にそのプロジェクトが無い）・`unknown`（docker に問い合わせられなかった: 未インストール・未起動・応答が遅い。`ps` は失敗しません）。プロジェクトはワークツリー用に再計算した名前で探すので、`.env` の `COMPOSE_PROJECT_NAME` が別の名前のワークツリーは、動いていても `down` と出ることがあります。`DOCKER_HOST`・`DOCKER_CONTEXT`・`DOCKER_CONFIG` は意図的に残すので、状態はそのデーモンから見たものです（リモートならネットワーク越しで、最長 10 秒）。`--no-docker` は docker に問い合わせず `-` を表示します。stale なエントリも、`rm` が解放するかレジストリを編集するまでポートを占有したままです。無くなっている、または無効で、このリポジトリのものと判定できないエントリは、数を stderr の注記に出します。一覧には `--all` を使ってください。
 - 古い版がシンボリックリンク経由のパスで記録したキーは、メモリ上でのみ実パスに統合します。レジストリは書き換えません。
 - `--json` は、`dir`・`worktree`・`subdir`・`branch`（detached HEAD は `(detached)`、不明なら空）・`ports`（オブジェクト）・`name`（compose のプロジェクト名）・`state` をフィールドに持つオブジェクトの配列を出力します。
+
+### `sail-worktree status [--no-docker]`
+
+今いるワークツリーの状態を表示し、おかしな点を報告します。`up` と同じくプロジェクトディレクトリ（またはその下）で実行します。メインワークツリーでも動き、そこでは何も記録されていないことだけを表示します。
+
+```
+project directory: "/work/myapp-x"
+worktree:          myapp-x (branch feat-x)
+main worktree:     "/work/myapp"
+compose project:   myapp-myapp-x-1a2b3c
+configuration:     .sail-worktree.json, compose file "compose.yaml"
+docker:            running
+.env:              ok
+ports:
+  APP_PORT             env=81 registry=81 host=in use by this project
+APP_URL:           "http://localhost:81"
+```
+
+- 表示するのは決まった項目だけです（パス・compose のプロジェクト名・割り当てたポート・認証情報を除いた `APP_URL`）。それ以外の `.env` の値は表示しません。
+- `problems:` は `up` が直す、または拒否する点です。1 件でもあれば、報告の最後に `error: found N problem(s)` を出して終了ステータス 1 になります。設定エラー、`.env` が無い・シンボリックリンクやハードリンク・通常ファイルでない（リンクは読みません）、`.env` に `COMPOSE_FILE`・`COMPOSE_ENV_FILES`・`SAIL_FILES` がある、`COMPOSE_PROJECT_NAME` が無い・このワークツリーの名前と違う、ポート変数が `.env` に無い・数字でない・レジストリと違う・レジストリに無い・他のエントリにも記録されている、`APP_URL` が `APP_PORT` を使っていない、`SANCTUM_STATEFUL_DOMAINS` に `APP_URL` のエントリが無い（`up` と同じ規則）です。
+- `warnings:` は終了ステータスを変えません。プロジェクトが動いていないのにポートを bind できない（他のプロセスが使っている可能性。権限エラーも同じに見えます）、`up` が警告するだけの `SANCTUM_STATEFUL_DOMAINS` の値です。docker がプロジェクトを `running` と答えたとき、docker に問い合わせられなかった（`unknown`）とき、`--no-docker` のときは、ポートを調べません。
+- docker の状態は `ps` が表示するものと同じです（上記）。ポートが空いているかは、一瞬だけ bind してすぐ閉じて調べます。ディスクには何も書きません。
 
 ## プロジェクトディレクトリ
 
