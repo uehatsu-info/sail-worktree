@@ -213,6 +213,12 @@ Your checks and the copy are not one step, so a process writing in the worktree 
 
 ## Upgrading
 
+### v0.8.0
+
+- New read-only commands `ps`, `ports` and `status` (see [Inspecting worktrees](#inspecting-worktrees)). Nothing changes for the existing commands' options or output.
+- `up` and `rm` now take a lock while they update the port registry, so several `up` commands can run at the same time without choosing the same port or dropping each other's entry. While they run, a file `registry.json.lock` exists next to `registry.json`; a run that is killed can leave it behind, and the next run removes it once it is 60 seconds old (see the [Notes](#notes)). The old advice not to run several `up` commands at the same time no longer applies.
+- `registry.json` is now replaced atomically instead of being rewritten in place, so a reader never sees a half-written file. The format is unchanged and nothing needs to be migrated. If `registry.json` is a symbolic link, the link is kept and its target is replaced; a hard link is broken.
+
 ### v0.7.0
 
 - `.sail-worktree.json` is optional: without it, `up`, `stop` and `rm` detect the compose file and the port variables on every run in a directory with `artisan` and a compose file. Projects that have the file behave as before.
