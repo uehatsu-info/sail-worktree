@@ -54,7 +54,7 @@ func lockRegistry() (unlock func(), err error) {
 		// "exists", so there every error is retried (and an old leftover broken) until the deadline. Elsewhere any
 		// other error (no permission, no space) cannot go away by waiting.
 		retry := errors.Is(err, os.ErrExist) || runtime.GOOS == "windows"
-		if retry && breakStale(lock) {
+		if retry && breakStale(lock) && time.Now().Before(deadline) {
 			continue
 		}
 		if !retry {
@@ -128,7 +128,7 @@ func releaser(lock string, ours os.FileInfo) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			if fi, err := os.Lstat(lock); err == nil && os.SameFile(ours, fi) {
+			if fi, err := os.Lstat(lock); err == nil && os.SameFile(ours, fi) && fi.ModTime().Equal(ours.ModTime()) {
 				// On Windows the removal fails while another run briefly has the file open (to read the pid).
 				err := os.Remove(lock)
 				for i := 0; err != nil && !os.IsNotExist(err) && runtime.GOOS == "windows" && i < 20; i++ {
