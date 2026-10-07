@@ -85,6 +85,7 @@ func TestParseLsof(t *testing.T) {
 		{"bad pid", "pabc\ncphp\n", "", 0, false},
 		{"zero pid", "p0\ncphp\n", "", 0, false},
 		{"carriage returns", "p5\r\ncphp\r\n", "", 0, false}, // a bad pid line ("5\r") is ignored
+		{"long name is cut", "p3\nc" + strings.Repeat("x", 200) + "\n", strings.Repeat("x", maxProcessName), 3, true},
 		{"noise", "garbage\n\n\x00\np7\nxjunk\ncsshd\n", "sshd", 7, true},
 	}
 	for _, c := range cases {
@@ -115,7 +116,7 @@ func TestLsofOwnerRunsAFixedCommand(t *testing.T) {
 		t.Fatalf("got (%q, %d, %v) after %d calls", name, pid, ok, len(got))
 	}
 	c := got[0]
-	if c.name != "lsof" || strings.Join(c.args, " ") != "-nP -iTCP:8080 -sTCP:LISTEN -Fcp" {
+	if c.name != "lsof" || strings.Join(c.args, " ") != "-nP -w -iTCP:8080 -sTCP:LISTEN -Fcp" {
 		t.Errorf("call = %+v", c)
 	}
 	for _, kv := range c.env {
@@ -278,7 +279,7 @@ func TestPortsFilter(t *testing.T) {
 func TestPortsRejectsBadArguments(t *testing.T) {
 	portsSetup(t)
 	portsFakes(t, nil, nil)
-	for _, args := range [][]string{{"0"}, {"65536"}, {"+80"}, {"-80"}, {"8 0"}, {"abc"}, {"1e3"}, {""}, {"80", "81"}, {"--bogus"}} {
+	for _, args := range [][]string{{"0"}, {"65536"}, {"+80"}, {"-80"}, {"8 0"}, {"abc"}, {"1e3"}, {""}, {"80", "81"}, {"--bogus"}, {"99999999999999999999"}, {"\u0663"}} {
 		if _, _, err := runPorts(t, args...); err == nil {
 			t.Errorf("%q was accepted", args)
 		}
@@ -391,5 +392,27 @@ func TestPortsNoDockerAndDockerFailure(t *testing.T) {
 		if r.State != stateUnknown || r.Host != hostFree {
 			t.Errorf("docker failure: %+v", r)
 		}
+	}
+}
+
+func TestPortsMixedStatesOnOnePort(t *testing.T) {
+	_, wt, other := portsSetup(t)
+	writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}, other: {"APP_PORT": 81}})
+	probes, _ := portsFakes(t, map[int]bool{81: true}, map[int]owner{81: {"docker-proxy", 9}})
+	mainTop, _ := mainWorktree(wt)
+	useDocker(t, `[{"Name":"`+projectName(mainTop, wt, wt)+`","Status":"running(1)"}]`, nil)
+	byWorktree := map[string]portRow{}
+	for _, r := range portsJSON(t) {
+		byWorktree[r.Worktree] = r
+	}
+	// The running entry's row is its own port; the other row cannot tell, so it probes: both are flagged.
+	if r := byWorktree["app-feat"]; r.Host != hostOwn || !r.Conflict {
+		t.Errorf("running row: %+v", r)
+	}
+	if r := byWorktree["app-other"]; r.Host != hostUnavailable || r.Process != "docker-proxy" || !r.Conflict {
+		t.Errorf("other row: %+v", r)
+	}
+	if len(*probes) != 1 {
+		t.Errorf("probes = %v", *probes)
 	}
 }

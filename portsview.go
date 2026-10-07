@@ -42,11 +42,22 @@ func lsofOwner(port int) (name string, pid int, ok bool) {
 		return "", 0, false
 	}
 	env := []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C"}
-	out, err := output(os.TempDir(), env, 5*time.Second, "lsof", "-nP", "-iTCP:"+strconv.Itoa(port), "-sTCP:LISTEN", "-Fcp")
+	out, err := output(os.TempDir(), env, 5*time.Second, "lsof",
+		"-nP", "-w", "-iTCP:"+strconv.Itoa(port), "-sTCP:LISTEN", "-Fcp")
 	if err != nil {
 		return "", 0, false
 	}
 	return parseLsof(string(out))
+}
+
+// maxProcessName keeps a long or hostile name from taking over a table row.
+const maxProcessName = 64
+
+func truncateRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
 
 // parseLsof reads `lsof -Fcp` output: a "p<pid>" line starts a process and the "c<command>" line after it names it.
@@ -63,7 +74,7 @@ func parseLsof(out string) (name string, pid int, ok bool) {
 				pid, name, ok = n, "", true
 			}
 		case strings.HasPrefix(line, "c") && ok && name == "":
-			name = strings.TrimRight(line[1:], "\r")
+			name = truncateRunes(strings.TrimRight(line[1:], "\r"), maxProcessName)
 		}
 	}
 	if !ok || name == "" {
@@ -148,9 +159,9 @@ func cmdPorts(args []string) error {
 		case a == "--no-docker":
 			noDocker = true
 		case strings.HasPrefix(a, "-"):
-			return fmt.Errorf("unknown argument: %s", a)
+			return fmt.Errorf("unknown argument: %q", a)
 		case filter != 0:
-			return fmt.Errorf("unexpected argument: %s (give one port at most)", a)
+			return fmt.Errorf("unexpected argument: %q (give one port at most)", a)
 		default:
 			p, err := parsePortArg(a)
 			if err != nil {
@@ -167,7 +178,8 @@ func cmdPorts(args []string) error {
 		fillDockerStates(entries)
 	}
 	if hidden > 0 {
-		fmt.Fprintf(stderr, "note: registry entries not listed: %d (gone or invalid, they still hold their ports); use --all\n", hidden)
+		fmt.Fprintf(stderr, "note: registry entries not listed: %d (gone or invalid, they still hold their ports); "+
+			"use --all\n", hidden)
 	}
 	rows := portsOf(entries)
 	if filter != 0 {

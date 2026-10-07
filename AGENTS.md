@@ -115,10 +115,11 @@ These come from deliberate decisions; change them only on purpose and update the
   `.env`) instead of re-implementing them, prints only an allow-list of facts (never other `.env` values, and not even
   an invalid port value, because a port variable name may be any key; `APP_URL` without credentials, query and
   fragment), never reads a symlinked `.env`, and exits 1 after the report when it found a problem (warnings do not).
-- **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once, so
-  nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`, fixed
-  arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the process called
-  itself: it is printed through `cell`/`jsonEscape`. The port argument is digits only, 1 to 65535.
+- **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once,
+  so nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`,
+  fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the
+  process called itself: it is printed through `cell`/`jsonEscape`. The port argument is digits only, 1 to 65535. The
+  JSON fields of `ports`, `process` and `pid` included, are a public contract too.
 - **`ps --all` attribution.** With `--all` an entry is attributed to the longest listed worktree that contains it, so
   an independent repository nested inside a listed worktree is attributed to the outer one when that one is already
   known.

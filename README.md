@@ -129,7 +129,7 @@ APP_URL:           "http://localhost:81"
 
 ### `sail-worktree ports [PORT] [--all] [--json] [--no-docker]`
 
-Lists the ports recorded in the registry, one row per port variable, sorted by port: who holds it and whether this host can bind it. Like `ps` it works anywhere inside the repository and shows the repository you are in (`--all`: every entry).
+Lists the ports recorded in the registry, one row per port variable, sorted by port: which entry records it and whether this host can bind it. Like `ps` it works anywhere inside the repository and shows the repository you are in (`--all`: every entry).
 
 ```
 PORT  VARIABLE         WORKTREE  SUBDIR  STATE    HOST                       CONFLICT
@@ -138,10 +138,10 @@ PORT  VARIABLE         WORKTREE  SUBDIR  STATE    HOST                       CON
 3307  FORWARD_DB_PORT  myapp-x   .       stopped  free                       -
 ```
 
-- `HOST` is `free`, `unavailable` (the port cannot be bound: in use, or not allowed to bind) or `in use by this project` (docker says the project runs, so its own port is not probed). For an unavailable port, on Unix and if `lsof` can see it, the process name and pid are added (`lsof` is only called for such ports; without it, or on Windows, you get plain `unavailable`). Every port is bound for an instant and closed again; nothing is written to disk, but a firewall may notice the bind.
-- `STATE` is the one `ps` shows (including `stale` for entries whose worktree is gone, which still hold their ports); `--no-docker` skips the docker query, so no port is taken for a running project's own.
+- `HOST` is `free`, `unavailable` (the port cannot be bound: in use, or not allowed to bind) or `in use by this project` (docker says the project runs, so its own port is not probed). For an unavailable port, on Unix and if `lsof` can see it, the name and pid of the first listening process are added (`lsof` is only called for such ports; without it, or on Windows, you get plain `unavailable`; `status` calls the same condition `cannot bind`). Every port is bound for an instant and closed again; nothing is written to disk, but a firewall may notice the bind.
+- `STATE` is the one `ps` shows (including `stale` for entries whose worktree is gone, which still hold their ports); `--no-docker` does not ask docker, so a running project's own ports are probed too and may show as `unavailable`.
 - `CONFLICT` is `yes` when the port is recorded more than once, by two entries or by two variables of one entry. `up` never assigns the same port twice, so this points at a hand-edited registry or an alias that was not merged.
-- With `PORT` (digits only, 1 to 65535) only that port is shown; if nothing records it, one row without a variable still tells whether the host can bind it.
+- With `PORT` (digits only, 1 to 65535) only that port is shown; if nothing records it (also when only another repository does, without `--all`), one row without a variable (empty strings in `--json`) still tells whether the host can bind it.
 - `--json` prints an array of objects with the fields `port`, `variable`, `worktree`, `subdir`, `state`, `host` (the three values above), `process` (empty when unknown), `pid` (0 when unknown) and `conflict`.
 
 ## Project directory
