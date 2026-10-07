@@ -89,7 +89,7 @@ sail-worktree up -d
 
 ## ワークツリーの確認
 
-`ps` と `status` は読み取り専用です。`.env`・`.sail-worktree.json`・レジストリを書き換えず、`.env` を `source` もしません。
+`ps`・`ports`・`status` は読み取り専用です。`.env`・`.sail-worktree.json`・レジストリを書き換えず、`.env` を `source` もしません。
 
 ### `sail-worktree ps [--all] [--json] [--no-docker]`
 
@@ -126,6 +126,23 @@ APP_URL:           "http://localhost:81"
 - `problems:` は `up` が直す、または拒否する点です。1 件でもあれば、報告の最後に `error: found N problem(s)` を出して終了ステータス 1 になります。設定エラー、`.env` が無い・シンボリックリンクやハードリンク・通常ファイルでない（リンクは読みません）、`.env` に `COMPOSE_FILE`・`COMPOSE_ENV_FILES`・`SAIL_FILES` がある、`COMPOSE_PROJECT_NAME` が無い・このワークツリーの名前と違う、ポート変数が `.env` に無い・数字でない・レジストリと違う・レジストリに無い・他のエントリにも記録されている、`APP_URL` が `APP_PORT` を使っていない、`SANCTUM_STATEFUL_DOMAINS` に `APP_URL` のエントリが無い（`up` と同じ規則）です。
 - 報告は `warnings:`、`problems:` の順で終わります。`warnings:` は終了ステータスを変えません。プロジェクトが動いていないのにポートを bind できない（他のプロセスが使っている可能性。権限エラーも同じに見えます）、`up` が警告するだけの `SANCTUM_STATEFUL_DOMAINS` の値です。docker がプロジェクトを `running` と答えたとき、docker に問い合わせられなかった（`unknown`）とき、`--no-docker` のときは、ポートを調べません（`docker:` 行は `not asked`、ポートは `host=not probed` になります）。
 - docker の状態は `ps` が表示するものと同じです（上記）。ポートが空いているかは、一瞬だけ bind してすぐ閉じて調べます。ディスクには何も書きませんが、ファイアウォールが bind に気づくことがあります。
+
+### `sail-worktree ports [PORT] [--all] [--json] [--no-docker]`
+
+レジストリに記録されたポートを、ポート変数ごとに 1 行、ポート番号順に一覧します。誰が持っているか、このホストで bind できるかを表示します。`ps` と同じくリポジトリ内のどこでも実行でき、今いるリポジトリのものを表示します（`--all`: 全エントリ）。
+
+```
+PORT  VARIABLE         WORKTREE  SUBDIR  STATE    HOST                       CONFLICT
+81    APP_PORT         myapp-x   .       stopped  unavailable (php pid 123)  -
+82    APP_PORT         myapp-y   .       running  in use by this project     -
+3307  FORWARD_DB_PORT  myapp-x   .       stopped  free                       -
+```
+
+- `HOST` は `free`、`unavailable`（bind できない: 使用中、または bind する権限がない）、`in use by this project`（docker がプロジェクトは動いていると答えたので、自身のポートは調べない）のいずれかです。unavailable のポートには、Unix で `lsof` から見えれば、プロセス名と pid を添えます（`lsof` はそのようなポートにだけ呼びます。無い場合や Windows では単に `unavailable` です）。どのポートも一瞬だけ bind してすぐ閉じて調べます。ディスクには何も書きませんが、ファイアウォールが bind に気づくことがあります。
+- `STATE` は `ps` が表示するものと同じです（ワークツリーが無くなったエントリは `stale`。ポートは占有したままです）。`--no-docker` は docker に問い合わせないので、動いているプロジェクト自身のポートも調べます。
+- `CONFLICT` は、ポートが 2 回以上記録されている（2 つのエントリ、または 1 つのエントリの 2 つの変数）とき `yes` です。`up` は同じポートを 2 回割り当てないので、レジストリを手で編集した、またはエイリアスが統合されていないことを示します。
+- `PORT`（数字のみ、1 から 65535）を指定すると、そのポートだけを表示します。どこにも記録されていなければ、変数の無い 1 行で、ホストが bind できるかを表示します。
+- `--json` は、`port`・`variable`・`worktree`・`subdir`・`state`・`host`（上の 3 つの値）・`process`（不明なら空）・`pid`（不明なら 0）・`conflict` をフィールドに持つオブジェクトの配列を出力します。
 
 ## プロジェクトディレクトリ
 

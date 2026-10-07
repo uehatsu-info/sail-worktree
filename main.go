@@ -20,12 +20,15 @@ Usage:
   sail-worktree ps [--all] [--json] [--no-docker]
                                 list the worktrees in the port registry with their docker state (read-only;
                                 --all: every repository, --no-docker: do not ask docker)
+  sail-worktree ports [PORT] [--all] [--json] [--no-docker]
+                                list the recorded ports with their holders and whether the host can bind them
+                                (read-only; PORT: only that port)
   sail-worktree status [--no-docker]
                                 show how this worktree is set up and report problems (read-only; exit 1 if any)
   sail-worktree version         print the version (the tag for go install ...@vX.Y.Z; (devel) or a pseudo-version for a local build)
 
 Run the commands in your Laravel project's directory (the one with artisan and the compose file) or below it.
-The project may be in a subdirectory of the repository.
+The project may be in a subdirectory of the repository. ps and ports work anywhere inside the repository.
 `
 
 func version() string {
@@ -51,6 +54,8 @@ func main() {
 		err = cmdStop(args)
 	case "rm":
 		err = cmdRm(args)
+	case "ports":
+		err = cmdPorts(args)
 	case "status":
 		err = cmdStatus(args)
 	case "ps":
