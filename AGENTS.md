@@ -35,7 +35,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `version`. See `READM
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
-| `ps.go` | `ps` and the registry view the read-only commands share: `entry`, `collectEntries`, `foldRegistry` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell` |
+| `ps.go` | `ps` and its registry view: `entry`, `collectEntries`, `foldRegistry` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
 | `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `sanctumUnquote`, `statefulDisabled`, `addStatefulDomain` |
 | `sail_worktree_test.go`, `project_test.go`, `detect_test.go`, `sanctum_test.go`, `ps_test.go`, `links_unix_test.go` | Tests |
@@ -100,13 +100,13 @@ These come from deliberate decisions; change them only on purpose and update the
   cannot see one, only the link count could, and compose files are sometimes shared that way. A plain checkout cannot
   create one because git stores no hard links, but a script or the user can. Hard-link detection exists only for the
   files this tool writes (`.env`, `.sail-worktree.json`), and only on Unix.
-- **`ps` only reads (the later read-only commands follow the same rules).** It never `save` or `migrate` the registry (`foldRegistry` folds
+- **`ps` only reads.** It never `save` or `migrate` the registry (`foldRegistry` folds
   symlink aliases in a copy), never write `.env` or `.sail-worktree.json`, and never source `.env`. Registry keys are
   untrusted: a key that is not an absolute clean path is never used as a directory; git runs in registry directories
   only through `listWorktrees` (`worktree list` with `core.fsmonitor=false`, `GIT_DIR`, `GIT_WORK_TREE`,
   `GIT_INDEX_FILE` and `GIT_COMMON_DIR` removed). External queries go through `runOutput` (explicit env, timeout, no
   stdin, stdout capped while read). Every untrusted string is printed through `cell`/`escapeControl`. The JSON field
-  names of `ps` are a public contract (`--json` is passed through `escapeControl` too). Output goes to the package
+  names of `ps` are a public contract (`--json` goes through `jsonEscape`). Output goes to the package
   `stdout`, never `fmt.Println`. Known limit: with `--all` an entry is attributed to the longest listed worktree that
   contains it, so an independent repository nested inside a listed worktree is attributed to the outer one when that
   one is already known.

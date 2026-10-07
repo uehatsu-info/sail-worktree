@@ -12,6 +12,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 )
 
 // ps, status and ports only read: they never save the registry, never write .env or .sail-worktree.json and never
@@ -287,6 +288,24 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 	return entries, hidden, nil
 }
 
+// jsonEscape writes the runes that strconv.IsPrint rejects (DEL, format characters such as U+202E, ...) as \uXXXX
+// escapes, which encoding/json leaves raw; the result is still valid JSON (non-BMP runes become surrogate pairs).
+func jsonEscape(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == utf8.RuneError || strconv.IsPrint(r):
+			b.WriteRune(r)
+		case r > 0xffff:
+			r -= 0x10000
+			fmt.Fprintf(&b, `\u%04x\u%04x`, 0xd800+(r>>10), 0xdc00+(r&0x3ff))
+		default:
+			fmt.Fprintf(&b, `\u%04x`, r)
+		}
+	}
+	return b.String()
+}
+
 // cell makes a value safe for a table: control characters are escaped (escapeControl) and a newline, which it keeps
 // for layout, is written out. An empty value is "-".
 func cell(s string) string {
@@ -348,8 +367,7 @@ func cmdPs(args []string) error {
 		if err != nil {
 			return err
 		}
-		// encoding/json leaves format characters such as U+202E raw; \uXXXX is valid JSON for them.
-		fmt.Fprintln(stdout, escapeControl(string(b)))
+		fmt.Fprintln(stdout, jsonEscape(string(b)))
 		return nil
 	}
 	renderPs(stdout, entries)

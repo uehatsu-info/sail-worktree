@@ -533,17 +533,17 @@ func TestPsNestedWorktreeAndUnattributedEntries(t *testing.T) {
 
 func TestPsJSONEscapesFormatCharacters(t *testing.T) {
 	setupWorktreeRepo(t)
-	key := filepath.Join(string(filepath.Separator), "x", "a\u202eb")
+	key := filepath.Join(string(filepath.Separator), "x", "a\u202eb\x7f\U000e0001")
 	writeRegistry(t, map[string]map[string]int{key: {"APP_PORT": 81}})
 	out, _, err := runPs(t, "--all", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.ContainsRune(out, '\u202e') {
+	if strings.ContainsAny(out, "\u202e\x7f\U000e0001") || !json.Valid([]byte(out)) {
 		t.Errorf("raw format character in %q", out)
 	}
 	var es []entry
-	if err := json.Unmarshal([]byte(out), &es); err != nil || len(es) != 1 || !strings.Contains(es[0].Dir, "\u202e") {
+	if err := json.Unmarshal([]byte(out), &es); err != nil || len(es) != 1 || !strings.Contains(es[0].Dir, "\u202e") || !strings.Contains(es[0].Dir, "\U000e0001") {
 		t.Errorf("round trip: %v, %+v", err, es)
 	}
 }
