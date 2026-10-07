@@ -21,12 +21,28 @@ go build -o sail-worktree .
 
 ## Usage
 
-### 1. `sail-worktree init`
+### 1. `sail-worktree init` (optional)
 
-Run it in the main worktree, in your Laravel project's directory (where `compose.yaml` is) or below it.
-It detects port variables such as `${APP_PORT:-80}` from the `ports:` section of the compose file and generates `.sail-worktree.json` next to it.
-Commit this file so that it is shared by all worktrees.
-The compose file is the nearest `compose.yaml`, `compose.yml`, `docker-compose.yml` or `docker-compose.yaml` from the current directory up to the worktree root (see [Project directory](#project-directory)).
+You do not need to run `init`: `up`, `stop` and `rm` find the compose file and its port variables by themselves (see [Project directory](#project-directory)). Run `init` only to pin that list in a file, for example when detection misses a port (a long-syntax `published:` entry, or ports in an `include:`d file) or when you want to edit the list.
+
+Run it in your Laravel project's directory (where `artisan` and the compose file are) or below it. It detects port variables such as `${APP_PORT:-80}` from host port mappings like `- '${APP_PORT:-80}:80'` in the compose file and writes `.sail-worktree.json` next to it. It prints "created", or "updated" when it replaces an existing file; hand edits in that file are replaced. Commit the file to share it with all worktrees, or delete it to go back to detection. The file wins over detection, so if `up` seems to ignore a change to the compose file, check `git status` for a forgotten, untracked `.sail-worktree.json`.
+
+#### The `.sail-worktree.json` file
+
+```json
+{
+  "compose": "compose.yaml",
+  "port_vars": [
+    { "name": "APP_PORT", "default": 80 },
+    { "name": "VITE_PORT", "default": 5173 }
+  ]
+}
+```
+
+- `compose`: the compose file, as a relative path inside the project directory (`rm` passes it to `docker compose -f`).
+- `port_vars`: the variables `up` assigns ports to. `default` is the port the compose file uses when the variable is unset; the search for a free port starts at `default` + 1.
+
+You can write the file by hand, for example to add a port that detection does not find; running `init` later replaces it with what it detects.
 
 ### 2. `sail-worktree up [args...]`
 
@@ -39,7 +55,9 @@ composer install
 sail-worktree up -d
 ```
 
+- The compose file and the port variables come from `.sail-worktree.json` if there is one; otherwise they are detected from the compose file on every run (only host port mappings such as `'${APP_PORT:-80}:80'` count, so an `environment:` entry is never rewritten). Without the file, a branch whose compose file adds or removes a port variable gets its ports assigned or released on the next `up`.
 - If `.env` does not exist, it is copied from the main worktree's `.env` (or `.env.example` if that is missing).
+- Nothing is written when `vendor/bin/sail` is missing.
 - Each port variable gets a free port. The search starts at the default value + 1, leaving the default value to the main worktree.
 - Ports already assigned to other worktrees and ports in use on the host are skipped.
 - `COMPOSE_PROJECT_NAME` is set, and the port in `APP_URL` is updated.
@@ -71,41 +89,44 @@ Prints the version (the tag for `go install ...@vX.Y.Z`; a local `go build` prin
 
 ## Project directory
 
-The Laravel project does not have to be at the root of the repository. The project directory is the directory that holds `.sail-worktree.json` (for `init`: the compose file). Every command looks for it from the current directory upwards and stops at the worktree root; directories under `vendor` and `node_modules` are skipped, and a `.sail-worktree.json` or compose file that exists but is not a regular file is an error. `.env`, `vendor/bin/sail`, the compose file and the port assignments all belong to the project directory.
+The Laravel project does not have to be at the root of the repository. Every command looks for its project directory from the current directory upwards and stops at the worktree root:
+
+1. the nearest directory with `.sail-worktree.json`, if there is one anywhere up to the worktree root;
+2. otherwise the nearest directory with `artisan` and a compose file (`compose.yaml`, `compose.yml`, `docker-compose.yml` or `docker-compose.yaml`, the first one that exists).
+
+`init` writes into the nearest directory of either kind, never into a directory that has only a compose file (such as `.devcontainer/`). Directories under `vendor` and `node_modules` are skipped, and a `.sail-worktree.json`, or a compose file next to `artisan`, that exists but is not a regular file is an error. `.env`, `vendor/bin/sail`, the compose file and the port assignments all belong to the project directory.
 
 ```
 myapp/                  <- worktree root
 |-- docs/
 `-- laravel/            <- project directory
-    |-- .sail-worktree.json
+    |-- artisan
     |-- compose.yaml
     `-- vendor/
 ```
 
 ```sh
-cd myapp/laravel                            # the main worktree's project directory
-sail-worktree init                          # once
-git add .sail-worktree.json && git commit -m "Add sail-worktree config"
-cd ..                                       # back to the worktree root
+cd myapp                                    # the main worktree
 git worktree add -b feature-x ../myapp-feature-x
 cd ../myapp-feature-x/laravel
 composer install
 sail-worktree up -d
 ```
 
-- The branch you check out must contain the committed `.sail-worktree.json` (a branch created before that commit does not have it: merge that commit into the branch, or rebase the branch onto it, first).
+- If you use `.sail-worktree.json`, the branch you check out must contain it (a branch created before that commit does not have it: merge that commit into the branch, or rebase the branch onto it, first).
+- A `.sail-worktree.json` further up wins over a nearer Laravel project, and every command warns about it. Ignore the warning if the nearer app is unrelated; to use that app instead, run `sail-worktree init` in it (it then becomes the project).
 - The main worktree needs the project at the same relative path: `up` copies `.env` from `<main worktree>/laravel/.env` (or `.env.example`). That directory must not resolve outside the main worktree (followed through symbolic links; Windows junctions are not followed). Only the directory is checked: a `.env` there that is itself a link is followed, as for a project at the root.
 - A project directory that resolves outside the worktree is an error. As with the compose check, a link swapped in after these checks is not caught.
 - When you run `up`, `stop` or `rm` below the project directory (for example in `laravel/app`), it prints `project directory: "<path>"` to stderr.
-- When no project directory is found, the error names the subdirectories that hold `.sail-worktree.json` (or a compose file, before `init`), so running a command at the worktree root tells you where to go.
+- When no project directory is found, the error names the subdirectories that would be found, and the directories on the way up that have only `artisan` or only a compose file, so running a command at the worktree root tells you where to go.
 - The project name is `<main worktree name>-<worktree name>-<hash of the project directory>`. For a project at the worktree root this is the same name as before.
 
 ## Notes
 
 - `up` and `rm` cannot be run in the main worktree.
 - `.env` safety: `up` and `rm` refuse a `.env` that is a symbolic link or (on Unix) has other hard links (so the main worktree's `.env` is never rewritten through a link), and `up` also refuses `COMPOSE_FILE`, `COMPOSE_ENV_FILES` and `SAIL_FILES` (with them, compose would not read the ports and project name `up` writes). `stop` does not check this, but note that Sail `source`s `.env` (or `.env.$APP_ENV`) as shell code, so a symlinked `.env` runs its target as shell code whether you use this tool or call `sail` directly; keep `.env` a real, trusted file. A new `.env` is created with mode 0600; an existing file keeps its mode (run `chmod 600 .env` yourself for one created by an older version). If a key that `up` writes appears on several lines, `up` keeps the first and drops the rest, so duplicate lines cannot disagree (Sail uses the last value, Laravel's Dotenv the first).
-- `compose` in `.sail-worktree.json` must be a relative path inside the project directory (`rm` passes it to `-f`). `rm` follows links first: it refuses a file whose real path is outside the project directory or is not a regular file, and it passes the real path to `-f`. Only `rm` is guarded this way, because `up` and `stop` run `sail`, which finds the compose file by itself and does not pass `-f`. See also the bullets below.
-- Limits: Windows junctions are not followed, so they are not detected; a link swapped after the check is not caught; relative `include:` and `extends:` paths in a compose file reached through a link are resolved from the directory of its target; and what the compose file refers to (`include:`, `extends:`, `env_file:`, volumes and so on) is not checked.
+- `compose` in `.sail-worktree.json` must be a relative path inside the project directory; it, or the detected compose file, is what `rm` passes to `-f`. Only that one file is passed, so `compose.override.yaml` is not read by `rm`: volumes defined only there are left behind. `rm` follows links first: it refuses a file whose real path is outside the project directory or is not a regular file, and it passes the real path to `-f`. Only `rm` is guarded this way, because `up` and `stop` run `sail`, which finds the compose file by itself and does not pass `-f`. See also the bullets below.
+- Limits: Windows junctions are not followed, so they are not detected; a broken link named `compose.yaml` is skipped, so a `docker-compose.yml` next to it is used; a link swapped after the check is not caught; relative `include:` and `extends:` paths in a compose file reached through a link are resolved from the directory of its target; and what the compose file refers to (`include:`, `extends:`, `env_file:`, volumes and so on) is not checked.
 - A compose file that is a hard link to a file outside the project directory is not detected, by choice: only a link count could reveal one, and that count would also flag files that are shared through a hard link on purpose, so `rm` does not check it for `compose`. A plain checkout cannot create a hard link (git stores none), but a script or you can. (`.env` is different: `up` and `rm` refuse a hard-linked `.env`, on Unix only. `init` likewise refuses to write `.sail-worktree.json` through a symbolic link, or through a hard link on Unix.)
 - To replace a `compose` link, or a hard link that `rm` does not detect, with a real copy, follow "Replacing a linked `compose` file" below.
 - A port is considered free only if it can be bound on all interfaces and on `127.0.0.1` (a permission error on `127.0.0.1` is ignored only on macOS, which does not let an unprivileged user bind a privileged port there although Docker can; a `127.0.0.1` that does not exist at all is also treated as free). Ports below 1024 can be assigned on macOS, but are skipped on Linux for an unprivileged user (the search then continues from 1024). On Windows `O_NOFOLLOW` is not available, so only the symlink check applies.
@@ -118,11 +139,11 @@ sail-worktree up -d
 
 Use this when `compose` is a symbolic link that resolves outside the project directory (`rm` refuses it) or a hard link to a file outside it (`rm` does not detect it). A symbolic link to a regular file inside the project directory already passes `rm`'s check, so you do not need these steps for it. Copying straight over the link would also change the file it points to, so these steps copy to a new name and move the copy over the link.
 
-Run them in one Unix shell, from the project directory (where `.sail-worktree.json` is). They were tried on macOS in sh and zsh, not on Linux or Windows.
+Run them in one Unix shell, from the project directory (where `.sail-worktree.json` or `artisan` is). They were tried on macOS in sh and zsh, not on Linux or Windows.
 
 Before step 1, shut down containers, editors and file watchers that write in the worktree.
 
-1. Put the value of `compose` from `.sail-worktree.json` in a variable, quoted: `f='compose.yaml'`. If the value contains a quote (`'`) or a backslash, do not use these steps (the quoted variable would break). Write it without `..`: `rm` and the shell resolve `..` differently when a link is in the path. For `docs/../compose.yaml`, first change `compose` to a path without `..`, such as `compose.yaml`.
+1. Put the value of `compose` from `.sail-worktree.json` (or the name of the detected compose file) in a variable, quoted: `f='compose.yaml'`. If the value contains a quote (`'`) or a backslash, do not use these steps (the quoted variable would break). Write it without `..`: `rm` and the shell resolve `..` differently when a link is in the path. For `docs/../compose.yaml`, first change `compose` to a path without `..`, such as `compose.yaml`.
 2. Run `ls -ldL -- "$f"`. It must start with `-` (a regular file), as in `-rw-r--r-- 1 you staff ... compose.yaml`. If it starts with anything else, or `ls` fails, stop: replace the link with a regular file inside the project directory, or set `compose` to such a file.
 3. Run `readlink -- "$f"`: it shows where a symbolic link points (a hard link prints nothing). The copy brings that content into the worktree, so stop if you do not want it there.
 4. If `compose` is in a subdirectory, run `ls -ld` on each directory in the path, without a trailing slash (for `docs/sub/compose.yaml`: `ls -ld -- docs docs/sub`). `ls -ldL` follows links, so only this shows a link in the path. Each must start with `d`; on anything else, or an `ls` error, stop and fix that link first.
@@ -133,6 +154,17 @@ Before step 1, shut down containers, editors and file watchers that write in the
 Your checks and the copy are not one step, so a process writing in the worktree at that moment can still make step 5 write outside it (a link planted as `$f.new`, or a directory in the path swapped for a link). Shutting down the processes first lowers this risk but does not remove it: other tools, git operations and other users can still write there. An outside file overwritten that way leaves no trace in these checks.
 
 ## Upgrading
+
+### v0.7.0
+
+- `.sail-worktree.json` is optional: without it, `up`, `stop` and `rm` detect the compose file and the port variables on every run in a directory with `artisan` and a compose file. Projects that have the file behave as before.
+- `init` needs `artisan` next to the compose file: it no longer writes into a directory that has only a compose file (such as `.devcontainer/`). It may print "updated" and replaces hand edits in an existing file.
+- Port detection only takes host port mappings (`'${APP_PORT:-80}:80'`) with a default between 1 and 65535, so `init` no longer lists `environment:` entries such as `DB_PORT=${DB_PORT:-3306}`.
+- Without the file, ports follow the compose file of the branch checked out in the worktree: a variable that disappears is released on the next `up`.
+- `up` checks `vendor/bin/sail` before it writes `.env` or the registry, and prints "created .env" after writing it.
+- In the main worktree, "cannot run in the main worktree" now comes before a configuration error, and the not-found error no longer says to run `init`.
+
+### Earlier versions
 
 - Laravel projects in a subdirectory of the repository are supported (see [Project directory](#project-directory)). Projects at the worktree root are unaffected: same project directory, project name and port assignments.
 - `init` writes `.sail-worktree.json` next to the nearest compose file from the current directory upwards; it used to write at the worktree root always. Running it in a subdirectory that has its own compose file (such as `.devcontainer/`) therefore writes there.
