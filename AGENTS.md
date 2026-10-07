@@ -29,7 +29,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `version`. See `READM
 | File | Role |
 |---|---|
 | `main.go` | Command dispatch, usage text, `version`, `printErr`/`escapeControl` |
-| `cmd.go` | `init`, `up`, `stop`, `rm`, error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput` (read-only queries) |
+| `cmd.go` | `init`, `up`, `stop`, `rm`, error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config), `detectConfig`, `readSmallFile`, the port registry, `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
@@ -105,8 +105,10 @@ These come from deliberate decisions; change them only on purpose and update the
   untrusted: a key that is not an absolute clean path is never used as a directory; git runs in registry directories
   only through `listWorktrees` (`worktree list` with `core.fsmonitor=false`, `GIT_DIR`, `GIT_WORK_TREE`,
   `GIT_INDEX_FILE` and `GIT_COMMON_DIR` removed). External queries go through `runOutput` (explicit env, timeout, no
-  stdin, stdout capped while read). Every untrusted string is printed through `cell`/`escapeControl`. The JSON field
-  names of `ps` are a public contract (`--json` goes through `jsonEscape`). Output goes to the package
+  stdin, stdout capped while read). docker is asked once (`dockerProjects`, through the replaceable `output`, with
+  `cleanEnv(nil)` in the system temp directory); a failure is the state `unknown`, never an error, and a test that
+  does not fake `output` must pass `--no-docker`. Every untrusted string is printed through
+  `cell`/`escapeControl`. The JSON field names of `ps` are a public contract (`--json` goes through `jsonEscape`). Output goes to the package
   `stdout`, never `fmt.Println`. Known limit: with `--all` an entry is attributed to the longest listed worktree that
   contains it, so an independent repository nested inside a listed worktree is attributed to the outer one when that
   one is already known.

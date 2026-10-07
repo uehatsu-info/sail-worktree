@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -39,8 +40,15 @@ func newRepoWithWorktree(t *testing.T, base, name, branch string) (main, wt stri
 	return main, wt
 }
 
+// psWithDocker lets runPs ask docker; useDocker sets it together with a fake. Every other test runs with --no-docker,
+// so that none of them reaches a real docker.
+var psWithDocker bool
+
 func runPs(t *testing.T, args ...string) (out, errOut string, err error) {
 	t.Helper()
+	if !psWithDocker {
+		args = append([]string{"--no-docker"}, args...)
+	}
 	o, e := captureStdout(t), captureStderr(t)
 	err = cmdPs(args)
 	return o.String(), e.String(), err
@@ -609,5 +617,155 @@ func TestRunOutputChildBehavior(t *testing.T) {
 	start := time.Now()
 	if _, err := run("sleep", 300*time.Millisecond); err == nil || time.Since(start) > 10*time.Second {
 		t.Errorf("timeout: err = %v after %v", err, time.Since(start))
+	}
+}
+
+type dockerCall struct {
+	dir  string
+	env  []string
+	name string
+	args []string
+}
+
+// useDocker replaces output with a fake that answers `docker compose ls` with json (or err) and records the calls.
+func useDocker(t *testing.T, json string, err error) *[]dockerCall {
+	t.Helper()
+	var calls []dockerCall
+	old := output
+	output = func(dir string, env []string, _ time.Duration, name string, args ...string) ([]byte, error) {
+		calls = append(calls, dockerCall{dir, env, name, args})
+		return []byte(json), err
+	}
+	psWithDocker = true
+	t.Cleanup(func() { output = old; psWithDocker = false })
+	return &calls
+}
+
+// dockerRepo is a main worktree plus three linked worktrees with registry entries; it returns the compose project
+// names of the linked ones.
+func dockerRepo(t *testing.T) (names map[string]string) {
+	t.Helper()
+	main, wt := setupWorktreeRepo(t)
+	names = map[string]string{}
+	reg := map[string]map[string]int{}
+	for _, b := range []string{"feat", "other", "third"} {
+		dir := wt
+		if b != "feat" {
+			dir = filepath.Join(filepath.Dir(wt), "app-"+b)
+			runGit(t, main, "worktree", "add", "-q", dir, "-b", b)
+		}
+		names[b] = projectName(main, dir, dir)
+		reg[dir] = map[string]int{"APP_PORT": 81}
+	}
+	writeRegistry(t, reg)
+	return names
+}
+
+func statesByBranch(t *testing.T, args ...string) map[string]string {
+	t.Helper()
+	got := map[string]string{}
+	for _, e := range psJSON(t, args...) {
+		got[e.Branch] = e.State
+	}
+	return got
+}
+
+func TestPsDockerStates(t *testing.T) {
+	names := dockerRepo(t)
+	list := `[{"Name":"` + names["feat"] + `","Status":"running(2)","ConfigFiles":"/x"},` +
+		`{"Name":"` + names["other"] + `","Status":"exited(2)"},` +
+		`{"Name":"` + names["third"] + `-more","Status":"running(1)"}]` // a longer name does not match
+	calls := useDocker(t, list, nil)
+	got := statesByBranch(t)
+	want := map[string]string{"feat": stateRunning, "other": stateStopped, "third": stateDown}
+	for b, st := range want {
+		if got[b] != st {
+			t.Errorf("state of %s = %q, want %q (all: %v)", b, got[b], st, got)
+		}
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("docker was asked %d times", len(*calls))
+	}
+	c := (*calls)[0]
+	if c.name != "docker" || strings.Join(c.args, " ") != "compose ls -a --format json" || c.dir != os.TempDir() {
+		t.Errorf("call = %+v", c)
+	}
+	out, _, err := runPs(t)
+	if err != nil || !strings.Contains(out, stateRunning) || !strings.Contains(out, stateDown) {
+		t.Errorf("table: %q, %v", out, err)
+	}
+}
+
+func TestPsDockerStatusPrecedenceAndEmptyList(t *testing.T) {
+	names := dockerRepo(t)
+	useDocker(t, `[{"Name":"`+names["feat"]+`","Status":"running(1), exited(1)"},{"Name":"`+names["other"]+`","Status":"RUNNING(1)"}]`, nil)
+	got := statesByBranch(t)
+	if got["feat"] != stateRunning || got["other"] != stateRunning || got["third"] != stateDown {
+		t.Errorf("states = %v", got)
+	}
+	useDocker(t, `[]`, nil)
+	got = statesByBranch(t)
+	if got["feat"] != stateDown || got["other"] != stateDown {
+		t.Errorf("empty list: %v", got)
+	}
+}
+
+func TestPsDockerFailureIsUnknownNotAnError(t *testing.T) {
+	dockerRepo(t)
+	for name, fake := range map[string]struct {
+		json string
+		err  error
+	}{
+		"exec error": {"", errors.New("exec: docker: not found")},
+		"bad json":   {"not json", nil},
+		"object":     {`{"Name":"x"}`, nil},
+	} {
+		useDocker(t, fake.json, fake.err)
+		out, errOut, err := runPs(t)
+		if err != nil || strings.Count(out, stateUnknown) != 3 {
+			t.Errorf("%s: err = %v, output:\n%s", name, err, out)
+		}
+		if errOut != "" || strings.Contains(out, "not found") {
+			t.Errorf("%s: docker's message leaked: %q / %q", name, out, errOut)
+		}
+	}
+}
+
+func TestPsNoDockerAndNothingToAsk(t *testing.T) {
+	dockerRepo(t)
+	calls := useDocker(t, `[]`, nil)
+	for _, e := range psJSON(t, "--no-docker") {
+		if e.State != stateNone {
+			t.Errorf("--no-docker state = %q", e.State)
+		}
+	}
+	if len(*calls) != 0 {
+		t.Errorf("--no-docker asked docker: %v", *calls)
+	}
+	// Stale and invalid entries are not looked up: no entry can be asked about, so docker is not called.
+	writeRegistry(t, map[string]map[string]int{"relative": {"APP_PORT": 81}})
+	if _, _, err := runPs(t, "--all"); err != nil || len(*calls) != 0 {
+		t.Errorf("err = %v, calls = %v", err, *calls)
+	}
+}
+
+func TestPsDockerGetsACleanEnvironment(t *testing.T) {
+	dockerRepo(t)
+	t.Setenv("COMPOSE_FILE", "/evil.yaml")
+	t.Setenv("COMPOSE_PROJECT_NAME", "evil")
+	t.Setenv("DOCKER_HOST", "unix:///keep.sock")
+	calls := useDocker(t, `[]`, nil)
+	if _, _, err := runPs(t); err != nil || len(*calls) != 1 {
+		t.Fatalf("err = %v, calls = %d", err, len(*calls))
+	}
+	var keep bool
+	for _, kv := range (*calls)[0].env {
+		if strings.HasPrefix(strings.ToUpper(kv), "COMPOSE_") {
+			t.Errorf("%s reached docker", kv)
+		}
+		keep = keep || kv == "DOCKER_HOST=unix:///keep.sock"
+	}
+	if !keep || (*calls)[0].env == nil {
+		t.Errorf("DOCKER_HOST was dropped: %v", (*calls)[0].env)
 	}
 }

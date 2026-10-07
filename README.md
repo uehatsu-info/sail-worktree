@@ -91,17 +91,17 @@ Prints the version (the tag for `go install ...@vX.Y.Z`; a local `go build` prin
 
 These commands only read. They never write `.env`, `.sail-worktree.json` or the registry, and never source `.env`.
 
-### `sail-worktree ps [--all] [--json]`
+### `sail-worktree ps [--all] [--json] [--no-docker]`
 
 Lists the worktrees recorded in the port registry, which is a view of `registry.json` and not `docker ps`. The main worktree is not listed, because `up` refuses to run there and records nothing for it.
 
 ```
-WORKTREE  SUBDIR  BRANCH  PORTS                             STATE  DIR
-myapp-x   .       feat-x  APP_PORT=81 FORWARD_DB_PORT=3307  -      /work/myapp-x
+WORKTREE  SUBDIR  BRANCH  PORTS                             STATE    DIR
+myapp-x   .       feat-x  APP_PORT=81 FORWARD_DB_PORT=3307  running  /work/myapp-x
 ```
 
 - Without `--all` it shows the projects of the repository you are in (the `SUBDIR` column tells projects of one repository apart); entries of other repositories are not shown. Run it anywhere inside the repository; no `.sail-worktree.json` or Laravel project is needed. `--all` shows every entry of the registry, also outside a repository, and runs `git worktree list` in the other entries' directories.
-- `STATE` is `stale` for an entry whose worktree or directory is gone (or that git lists as prunable) or whose key is not a valid path, `unattributed` (only with `--all`) for a directory that exists but that git does not place in a worktree (not a repository, or git failed), and `-` otherwise. A stale entry still holds its ports until `rm` releases them or you edit the registry. Entries that are gone or invalid and cannot be attributed to this repository are counted in a note on stderr; use `--all` to list them.
+- `STATE` is `stale` for an entry whose worktree or directory is gone (or that git lists as prunable) or whose key is not a valid path, `unattributed` (only with `--all`) for a directory that exists but that git does not place in a worktree (not a repository, or git failed), and otherwise docker's view of the entry's compose project, asked once with `docker compose ls -a` (`COMPOSE_*` variables are removed from its environment): `running` (a container runs), `stopped` (containers exist, none runs), `down` (docker knows no such project) or `unknown` (docker could not be asked: not installed, not running, too slow; this never fails `ps`). `--no-docker` does not ask docker and shows `-`. A stale entry still holds its ports until `rm` releases them or you edit the registry. Entries that are gone or invalid and cannot be attributed to this repository are counted in a note on stderr; use `--all` to list them.
 - Keys that an older version recorded under a symlinked path are folded into their real path in memory only; the registry is not rewritten.
 - `--json` prints an array of objects with the fields `dir`, `worktree`, `subdir`, `branch` (`(detached)` for a detached HEAD, empty when unknown), `ports` (an object), `name` (the compose project name) and `state`.
 

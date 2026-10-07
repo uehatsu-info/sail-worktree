@@ -491,6 +491,10 @@ func runCmdEnv(dir string, env []string, name string, args ...string) error {
 	return cmd.Run()
 }
 
+// output runs a read-only query for docker (tests replace it). git is queried through runOutput directly, so a test
+// that fakes docker still gets real git answers.
+var output = runOutput
+
 // maxOutput caps what runOutput keeps from a child process.
 const maxOutput = 1 << 20
 

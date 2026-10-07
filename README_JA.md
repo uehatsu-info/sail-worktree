@@ -91,17 +91,17 @@ sail-worktree up -d
 
 これらのコマンドは読み取り専用です。`.env`・`.sail-worktree.json`・レジストリを書き換えず、`.env` を `source` もしません。
 
-### `sail-worktree ps [--all] [--json]`
+### `sail-worktree ps [--all] [--json] [--no-docker]`
 
 ポートのレジストリに記録されたワークツリーを一覧します。`registry.json` の表示であり、`docker ps` ではありません。メインワークツリーは、`up` が拒否して何も記録しないので、一覧に出ません。
 
 ```
-WORKTREE  SUBDIR  BRANCH  PORTS                             STATE  DIR
-myapp-x   .       feat-x  APP_PORT=81 FORWARD_DB_PORT=3307  -      /work/myapp-x
+WORKTREE  SUBDIR  BRANCH  PORTS                             STATE    DIR
+myapp-x   .       feat-x  APP_PORT=81 FORWARD_DB_PORT=3307  running  /work/myapp-x
 ```
 
 - `--all` なしでは、今いるリポジトリのプロジェクトを表示します（同じリポジトリの複数プロジェクトは `SUBDIR` 列で区別します。他のリポジトリのエントリは表示しません）。リポジトリ内ならどこで実行してもよく、`.sail-worktree.json` や Laravel プロジェクトは不要です。`--all` はレジストリの全エントリを表示し、リポジトリの外でも使えます。他のエントリのディレクトリでは `git worktree list` を実行します。
-- `STATE` は、ワークツリーやディレクトリが無い（または git が prunable と報告する）エントリ、キーが有効なパスでないエントリでは `stale`、ディレクトリはあるが git がワークツリーに位置づけられないもの（リポジトリでない、git が失敗した）では `unattributed`（`--all` のときのみ）、それ以外では `-` です。stale なエントリも、`rm` が解放するかレジストリを編集するまでポートを占有したままです。無くなっている、または無効で、このリポジトリのものと判定できないエントリは、数を stderr の注記に出します。一覧には `--all` を使ってください。
+- `STATE` は、ワークツリーやディレクトリが無い（または git が prunable と報告する）エントリ、キーが有効なパスでないエントリでは `stale`、ディレクトリはあるが git がワークツリーに位置づけられないもの（リポジトリでない、git が失敗した）では `unattributed`（`--all` のときのみ）、それ以外ではエントリの compose プロジェクトについての docker の見え方です（`docker compose ls -a` を 1 回だけ実行し、環境から `COMPOSE_*` を除きます）。`running`（コンテナが動いている）・`stopped`（コンテナはあるが動いていない）・`down`（docker にそのプロジェクトが無い）・`unknown`（docker に問い合わせられなかった: 未インストール・未起動・応答が遅い。`ps` は失敗しません）。`--no-docker` は docker に問い合わせず `-` を表示します。stale なエントリも、`rm` が解放するかレジストリを編集するまでポートを占有したままです。無くなっている、または無効で、このリポジトリのものと判定できないエントリは、数を stderr の注記に出します。一覧には `--all` を使ってください。
 - 古い版がシンボリックリンク経由のパスで記録したキーは、メモリ上でのみ実パスに統合します。レジストリは書き換えません。
 - `--json` は、`dir`・`worktree`・`subdir`・`branch`（detached HEAD は `(detached)`、不明なら空）・`ports`（オブジェクト）・`name`（compose のプロジェクト名）・`state` をフィールドに持つオブジェクトの配列を出力します。
 

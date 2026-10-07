@@ -34,6 +34,11 @@ const (
 	stateNone         = "-"
 	stateStale        = "stale"        // the worktree or directory is gone, or the key is invalid
 	stateUnattributed = "unattributed" // the directory exists but git does not place it in a listed worktree
+	// docker's view of the compose project.
+	stateRunning = "running" // at least one container runs
+	stateStopped = "stopped" // containers exist, none runs
+	stateDown    = "down"    // docker knows no such project (never started, or removed)
+	stateUnknown = "unknown" // docker could not be asked
 )
 
 // worktreeInfo is a record of `git worktree list --porcelain`.
@@ -329,6 +334,59 @@ func portsCell(ports map[string]int) string {
 	return strings.Join(parts, " ")
 }
 
+// dockerProjects asks docker once for all compose projects, including stopped ones. A project is running when its
+// status lists a running container ("running(1), exited(1)" counts). docker's own text is only compared, never shown.
+func dockerProjects() (map[string]string, error) {
+	// The directory is the system temp directory, so that nothing in the current project can influence docker.
+	out, err := output(os.TempDir(), cleanEnv(nil), 10*time.Second, "docker", "compose", "ls", "-a", "--format", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list []struct{ Name, Status string }
+	if err := json.Unmarshal(out, &list); err != nil {
+		return nil, err
+	}
+	m := make(map[string]string, len(list))
+	for _, p := range list {
+		if strings.Contains(strings.ToLower(p.Status), "running") {
+			m[p.Name] = stateRunning
+		} else {
+			m[p.Name] = stateStopped
+		}
+	}
+	return m, nil
+}
+
+// dockerState is the state of the compose project name in the result of dockerProjects (err: docker failed).
+func dockerState(projects map[string]string, err error, name string) string {
+	if err != nil {
+		return stateUnknown
+	}
+	if st, ok := projects[name]; ok {
+		return st
+	}
+	return stateDown
+}
+
+// fillDockerStates sets the docker state of every entry that was not marked otherwise. docker is asked once, and
+// only when there is an entry to ask about; a docker failure makes the states unknown, never an error.
+func fillDockerStates(entries []entry) {
+	var projects map[string]string
+	var err error
+	asked := false
+	for i := range entries {
+		e := &entries[i]
+		if e.State != stateNone || e.Name == "" {
+			continue
+		}
+		if !asked {
+			projects, err = dockerProjects()
+			asked = true
+		}
+		e.State = dockerState(projects, err, e.Name)
+	}
+}
+
 func renderPs(w io.Writer, entries []entry) {
 	if len(entries) == 0 {
 		fmt.Fprintln(w, "no registry entries")
@@ -344,13 +402,15 @@ func renderPs(w io.Writer, entries []entry) {
 }
 
 func cmdPs(args []string) error {
-	var all, asJSON bool
+	var all, asJSON, noDocker bool
 	for _, a := range args {
 		switch a {
 		case "--all":
 			all = true
 		case "--json":
 			asJSON = true
+		case "--no-docker":
+			noDocker = true
 		default:
 			return fmt.Errorf("unknown argument: %s", a)
 		}
@@ -358,6 +418,9 @@ func cmdPs(args []string) error {
 	entries, hidden, err := collectEntries(all)
 	if err != nil {
 		return err
+	}
+	if !noDocker {
+		fillDockerStates(entries)
 	}
 	if hidden > 0 {
 		fmt.Fprintf(stderr, "note: registry entries not listed: %d (gone or invalid, they still hold their ports); use --all\n", hidden)
