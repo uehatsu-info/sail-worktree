@@ -29,7 +29,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `version`. See `README.md` 
 | File | Role |
 |---|---|
 | `main.go` | Command dispatch, usage text, `version`, `printErr`/`escapeControl` |
-| `cmd.go` | `init`, `up`, `stop`, `rm`, error messages, `cleanEnv`/`filterEnv` |
+| `cmd.go` | `init`, `up`, `stop`, `rm`, error messages, `sailPath`, `cleanEnv`/`filterEnv` |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config), `detectConfig`, `readSmallFile`, the port registry, `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
@@ -137,9 +137,10 @@ These come from deliberate decisions; change them only on purpose and update the
     `node_modules` and `.git`. The hints and the warning about a nearer Laravel project ignored for a file further up
     are best effort: their errors never fail a command.
   - Detection (`detectConfig`, `detectPortVars`) takes only host port mappings (`${X_PORT:-n}:`) with a default between
-    1 and 65535, because `up` rewrites every variable it detects; an `environment:` entry must never match. The compose
-    file and `.sail-worktree.json` are read with `readSmallFile` (non-blocking open, regular file, at most 1 MiB, an
-    error rather than a cut).
+    1 and 65535, because `up` rewrites every variable it detects; a usual `environment:` entry such as
+    `DB_PORT=${DB_PORT:-3306}` must not match. It is a line heuristic, not a YAML parser: only `- ...` list lines are
+    read. The compose file and `.sail-worktree.json` are read with `readSmallFile` (non-blocking open, regular file, at
+    most 1 MiB, an error rather than a cut).
   - A configuration error is kept in `ctx.cfgErr` and returned by `ctx.config()` after the main-worktree refusal; no
     command reads `ctx.cfg` directly. `stop` fails on it too, as it did with a broken file. Port variables are required
     only for `up` and only when detected (a file with `port_vars: []` still works).
@@ -183,10 +184,10 @@ These come from deliberate decisions; change them only on purpose and update the
 ## Testing notes
 
 - `setupWorktreeRepo` creates a real main worktree and a linked worktree in a temp dir, points `HOME`/`XDG_CONFIG_HOME`
-  at temp dirs so the real registry is never touched, and `chdir`s into the linked worktree.
-  `setupSubdirWorktreeRepo` does the same with the project in `laravel/` (optionally only on the feature branch) and
-  `chdir`s into `wt/laravel`; `setupDetectedRepo` creates a project without `.sail-worktree.json` (`artisan` and a
-  compose file) at a given path; `initRepo` is a single repository for `init`.
+  at temp dirs so the real registry is never touched, and `chdir`s into the linked worktree. `setupSubdirWorktreeRepo`
+  does the same with the project in `laravel/` (optionally only on the feature branch) and `chdir`s into `wt/laravel`;
+  `setupDetectedRepo` creates a project without `.sail-worktree.json` (`artisan` and a compose file) at a given path and
+  `chdir`s into it in the linked worktree; `initRepo` is a single repository for `init`.
 - Tests replace package variables (`runner`, `stdin`, `stdout`, `stderr`) through helpers such as `captureRunner`,
   `captureStdout` and `captureStderr`; restore them with `t.Cleanup`. These tests use `t.Setenv`/`t.Chdir`, so they
   cannot run in parallel.

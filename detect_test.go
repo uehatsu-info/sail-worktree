@@ -218,8 +218,12 @@ func TestUpPortVariablesRequiredOnlyWhenDetected(t *testing.T) {
 func TestUpWithoutSailWritesNothing(t *testing.T) {
 	_, wt := setupDetectedRepo(t, "")
 	captureRunner(t)
+	out := captureStdout(t)
 	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "not found; run `composer install`") {
 		t.Fatalf("error = %v", err)
+	}
+	if strings.Contains(out.String(), "created .env") {
+		t.Errorf("reported a .env it did not write: %q", out.String())
 	}
 	if _, err := os.Stat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
 		t.Errorf(".env was written: %v", err)

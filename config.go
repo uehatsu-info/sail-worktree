@@ -12,7 +12,8 @@ import (
 
 const configName = ".sail-worktree.json"
 
-// Config is the project-level setting. It is committed to the repository and shared by all worktrees.
+// Config is the project-level setting: read from .sail-worktree.json (optional, usually committed and shared by all
+// worktrees) or detected from the compose file.
 type Config struct {
 	Compose  string    `json:"compose"`
 	PortVars []PortVar `json:"port_vars"`
@@ -73,8 +74,7 @@ func detectConfig(root, compose string) (*Config, error) {
 	return &Config{Compose: compose, PortVars: detectPortVars(string(b))}, nil
 }
 
-// unsafeComposePath reports whether the compose value is not a relative path inside the project directory (the one
-// with .sail-worktree.json). It is passed to rm's -f, so besides empty, absolute and ".." paths it also rejects forms
+// unsafeComposePath reports whether the compose value is not a relative path inside the project directory. It is passed to rm's -f, so besides empty, absolute and ".." paths it also rejects forms
 // that point at a drive or a server on Windows ("C:x", "\\srv\x") and rooted paths without a drive letter ("/x",
 // "\x": filepath.IsAbs is false for them).
 // It only reads the string; composeInsideProject checks where the file really is.
@@ -89,8 +89,8 @@ func unsafeComposePath(p string) bool {
 // composeInsideProject resolves the compose file under root (the project directory, a real path) through every link
 // and returns the real path that rm passes to -f: down -v cannot be undone, so a link that leaves the project directory
 // must not choose the file.
-// Only rm calls it: up, stop and init do not run docker with -f (init stats and reads the compose file, up and stop
-// stat compose names only for a not-found hint).
+// Only rm calls it: up, stop and init do not run docker with -f (they stat and read the compose file to find the
+// project and detect port variables, following links).
 // Limits: EvalSymlinks does not follow Windows junctions (Go 1.23+), so they are not detected, and a link swapped
 // after the check is not caught (best effort).
 func composeInsideProject(root, rel string) (string, error) {
