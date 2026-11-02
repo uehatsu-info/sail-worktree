@@ -29,7 +29,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | File | Role |
 |---|---|
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
-| `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
+| `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `upLock` (the lock `up` takes, replaced by tests), `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
@@ -38,7 +38,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey`/`foldMains` (aliases folded in memory, replaced mains marked), `psPortsCell`, `listWorktrees`/`parseWorktreeList` (on `parseWorktreeRecords`), `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
-| `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `staleWorktreeKey`, `recheckReplaced` |
+| `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `staleWorktreeKey`, `recheckReplaced`, `prunedMain` (`stillPrunable`), `pruneLock` (the lock `prune` takes, replaced by tests) |
 | `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `readMains`, `refreshMains`, `checkConflicts`, `holder`, `suggestion` |
 | `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `claimStale`/`claimPath`, `releaser`, `lockTiming` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
@@ -193,14 +193,15 @@ These come from deliberate decisions; change them only on purpose and update the
   does not resolve to a directory (`staleWorktreeKey`, the `foldRegistry` rule, so an alias key of a live worktree is
   kept: it still holds that worktree's ports, and the next `up` there folds it with `migrate`, not `prune`), a `mains`
   key that fails `usableDir` (`validKey`, then `isDir`; links are not followed, mains are recorded as real paths), a
-  `mains` key that another record replaced (`replacedMain`, only for a key that passes `usableDir`; main keys are never
-  folded, so without it a record that a move left behind would conflict with the new one for ever: an alias whose real
-  path is a usable key of its own, or a directory without project markers (`projectMarkers`: `.sail-worktree.json`, or
-  `artisan` and a compose file, looked at with `Lstat` only, a link counts, an error other than not-exist counts as
-  present) while a usable key that is its own real path and has markers lies strictly below it; a `realPath` failure
-  keeps the record, and a main without such a second record keeps its ports; git is not asked), and entries of a kept
-  main's `worktrees` list that are stale by `staleWorktreeKey` (the rule of `worktrees` keys: an older version recorded
-  aliases there too, and one of a live worktree is kept). `validKey` always comes first, so an invalid key is never
+  `mains` key that another record replaced (`replacedMain`, below), and entries of a kept main's `worktrees` list that
+  are stale by `staleWorktreeKey` (the rule of `worktrees` keys: an older version recorded aliases there too, and one of
+  a live worktree is kept). Main keys are never folded, so without `replacedMain` a record that a move left behind would
+  conflict with the new one for ever. It is tested only for a key that passes `usableDir`, and finds a record replaced
+  in two cases. One is an alias whose real path is a usable key of its own. The other is a directory without project
+  markers while a usable key that is its own real path and has markers lies strictly below it; the markers
+  (`projectMarkers`) are `.sail-worktree.json`, or `artisan` and a compose file, looked at with `Lstat` only, so a link
+  counts and an error other than not-exist counts as present. A `realPath` failure keeps the record, a main without such
+  a second record keeps its ports, and git is not asked. `validKey` always comes first, so an invalid key is never
   looked at (on Windows its walk reads only the elements and links on the way, up to the first refused link). It lists
   and asks (package `stdin`/`stdout`, `-y` skips) without the lock, then takes `lockRegistry`, reads the registry again
   and removes only listed records that are still recorded and still unusable (with the same per-kind test), saving only
@@ -325,9 +326,12 @@ These come from deliberate decisions; change them only on purpose and update the
     records no main, while `stop` and `rm` run (`stop` drops it from sail's environment; `rm` keeps a shell value, with
     which compose only expands the compose file, and `down -v` picks what it removes by the pinned project name). Port
     variables are required only for `up` and only when detected (a file with `port_vars: []` still works).
-  - `up`'s order: main refusal, configuration, detected port variables, the existing `.env` checks and port
-    allocation, then `sailPath` right before the first write, so nothing is written without Sail and the order of the
-    existing refusals stays the same. A copy source that cannot be read fails before the lock is taken.
+  - `up`'s order: main refusal, configuration, detected port variables and `checkOwnEnv`; then, before the lock, a
+    registry read (used only for the base of the main's record and the alias keys), the main's `.env` (`mainPorts`, and
+    `mainEnvPorts` for variables that only the record keeps) and the copy source of a new `.env` (`readCopySource`; one
+    that cannot be read fails here); then `upLock`, the registry read again, `migrateAliases`, `recordMainRead`, the
+    remaining `.env` checks and port allocation, then `sailPath` right before the first write, so nothing is written
+    without Sail and the order of the existing refusals stays the same.
   - `rm` passes only the one compose file to `-f`, so `compose.override.yaml` is not read (volumes defined only there
     are left behind). A broken link named `compose.yaml` is skipped by `findMarker`, so a `docker-compose.yml` next to
     it is used.
