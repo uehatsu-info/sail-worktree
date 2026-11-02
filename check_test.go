@@ -568,7 +568,8 @@ func TestCheckFindsTheMainOfAWorktreeListedUnderAnAlias(t *testing.T) {
 			Worktrees: []string{links[0], unclean}}},
 	}
 	b := captureStdout(t)
-	checkConflicts(&report{w: stdout}, reg)
+	r := &report{w: stdout}
+	checkConflicts(r, reg)
 	out := b.String()
 	if want := fmt.Sprintf("worktree %q APP_PORT (of %q)", real, main); !strings.Contains(out, want) {
 		t.Errorf("missing %q in:\n%s", want, out)
@@ -579,9 +580,36 @@ func TestCheckFindsTheMainOfAWorktreeListedUnderAnAlias(t *testing.T) {
 	if bad := fmt.Sprintf("worktree %q APP_PORT (of", wt2); strings.Contains(out, bad) {
 		t.Errorf("an invalid list entry was resolved:\n%s", out)
 	}
+	// The alias entry is folded, so it is not warned about (prune keeps it, #99); the invalid entry is.
+	warnings := strings.Join(r.warnings, "\n")
+	if bad := fmt.Sprintf("lists linked worktree %q", links[0]); strings.Contains(warnings, bad) {
+		t.Errorf("the alias entry was warned about:\n%s", warnings)
+	}
+	if want := fmt.Sprintf("lists linked worktree %q", unclean); !strings.Contains(warnings, want) {
+		t.Errorf("missing %q in:\n%s", want, warnings)
+	}
 	// The fold is a view: the record itself is not changed.
 	if got := reg.Mains[main].Worktrees; len(got) != 2 || got[0] != links[0] || got[1] != unclean {
 		t.Errorf("the record was changed: %q", got)
+	}
+}
+
+// A worktree listed by a replaced main record and by the record that replaced it is named after the live one, whatever
+// the key order: the replaced key (base/work/app) sorts after the live one (base/data/app) (#99).
+func TestCheckNamesTheLiveMainOfAWorktree(t *testing.T) {
+	stale, live := aliasMain(t)
+	wt := realTempDir(t)
+	staleRec, liveRec := mainRec(80), mainRec(81)
+	staleRec.Worktrees, liveRec.Worktrees = []string{wt}, []string{wt}
+	reg := &Registry{
+		Worktrees: map[string]map[string]int{wt: {"APP_PORT": 81}},
+		Mains:     map[string]MainRecord{stale: staleRec, live: liveRec},
+	}
+	b := captureStdout(t)
+	checkConflicts(&report{w: stdout}, reg)
+	out := b.String()
+	if want := fmt.Sprintf("worktree %q APP_PORT (of %q)", wt, live); !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
 	}
 }
 

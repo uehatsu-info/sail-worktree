@@ -578,6 +578,41 @@ func TestCheckWarnsAboutTheLinkedEntriesPruneRemoves(t *testing.T) {
 	}
 }
 
+// An entry of a main's list that is an alias of a live worktree is folded, as a worktrees key is: check does not warn
+// about it and prune keeps it, also when it is tested again under the lock. A dangling alias is stale for both (#99).
+func TestPruneKeepsAnAliasEntryOfALiveWorktree(t *testing.T) {
+	isolatedRegistry(t)
+	_, links := newLinkedDir(t, "alias")
+	base := realTempDir(t)
+	main := mustMkdir(t, filepath.Join(base, "main"))
+	dangling := filepath.Join(base, "dangling")
+	symlinkOrSkip(t, filepath.Join(base, "missing"), dangling)
+	rec := mainRec(80)
+	rec.Worktrees = []string{links[0], dangling}
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{main: rec}})
+	out, err := runCheck(t)
+	if err != nil || strings.Contains(out, fmt.Sprintf("lists linked worktree %q", links[0])) ||
+		!strings.Contains(out, fmt.Sprintf("lists linked worktree %q", dangling)) {
+		t.Errorf("err = %v\n%s", err, out)
+	}
+	out, err = runPrune(t, strings.NewReader(""), "-y")
+	if err != nil || !strings.Contains(out, "0 main worktree record(s), 1 linked worktree entr(ies)") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, err := loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.Mains[main].Worktrees; !slices.Equal(got, []string{links[0]}) {
+		t.Errorf("list = %q", got)
+	}
+	// The test under the lock agrees with the list: an alias entry listed by an older run is kept.
+	done, kept := reg.prune(pruneList{linked: []linkedEntry{{main: main, worktree: links[0]}}})
+	if len(done.linked) != 0 || len(kept) != 1 {
+		t.Errorf("done = %+v, kept = %q", done, kept)
+	}
+}
+
 // The list of a replaced main record leaves with it, so check does not warn about its entries one by one either.
 func TestCheckDoesNotWarnAboutTheListOfAReplacedMain(t *testing.T) {
 	isolatedRegistry(t)

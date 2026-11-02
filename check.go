@@ -233,6 +233,7 @@ func checkConflicts(r *report, reg *Registry) {
 	reserved := reg.used("")
 	var holders []holder
 	mains := slices.Sorted(maps.Keys(reg.Mains))
+	var live []string // the mains that hold ports: only their lists name a worktree's main
 	for _, k := range mains {
 		rec := reg.Mains[k]
 		if !usableDir(k) {
@@ -243,19 +244,21 @@ func checkConflicts(r *report, reg *Registry) {
 			r.warn("the record of main worktree %q keeps ports free, but %s: %s", k, why, cell(portsCell(rec.Ports)))
 			continue
 		}
+		live = append(live, k)
 		for name, p := range rec.Ports {
 			holders = append(holders, holder{main: true, dir: k, name: name, port: p})
 		}
-		// prune's test for the list entries, so that prune removes only what check warns about.
+		// prune's test for the list entries (an alias of a live worktree is folded, not stale), so that prune removes
+		// only what check warns about.
 		for _, w := range slices.Sorted(slices.Values(rec.Worktrees)) {
-			if !usableDir(w) {
+			if staleWorktreeKey(w) {
 				r.warn("the record of main worktree %q lists linked worktree %q, which is not a usable local directory "+
 					"(the entry holds no ports; prune removes it)", k, w)
 			}
 		}
 	}
 	ofMain := map[string]string{} // keyed by the folded path, as view is, so that an alias still matches
-	for _, k := range mains {
+	for _, k := range live {
 		for _, w := range reg.Mains[k].Worktrees {
 			ofMain[foldKey(w)] = k
 		}
