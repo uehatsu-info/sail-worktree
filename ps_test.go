@@ -849,13 +849,30 @@ func TestPsAllFiltersWorktreePathsOfOtherRepositories(t *testing.T) {
 		return validKey(p) && p != otherMain
 	}
 	t.Cleanup(func() { registryPathOK = old })
-	for _, e := range psJSON(t, "--all") {
-		if e.Dir == otherWt && (e.State != stateUnattributed || e.Worktree != "") {
-			t.Errorf("another repository whose main path is refused is still attributed: %+v", e)
+	other := func() entry {
+		t.Helper()
+		var found []entry
+		for _, e := range psJSON(t, "--all") {
+			if e.Dir == otherWt {
+				found = append(found, e)
+			}
 		}
+		if len(found) != 1 {
+			t.Fatalf("entries for the other repository: %+v", found)
+		}
+		return found[0]
+	}
+	if e := other(); e.State != stateUnattributed || e.Worktree != "" {
+		t.Errorf("another repository whose main path is refused is still attributed: %+v", e)
 	}
 	// Only the other repository's listing goes through the filter; the current one is the user's own.
 	if len(asked) == 0 || slices.Contains(asked, wt) || slices.Contains(asked, main) {
 		t.Errorf("filter asked about %q", asked)
+	}
+
+	// A refused linked worktree next to the main one (the usual layout): its entry belongs to no listed worktree.
+	registryPathOK = func(p string) bool { return validKey(p) && p != otherWt }
+	if e := other(); e.State != stateUnattributed || e.Worktree != "" {
+		t.Errorf("an entry of a refused linked worktree is attributed: %+v", e)
 	}
 }
