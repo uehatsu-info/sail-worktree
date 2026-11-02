@@ -289,13 +289,18 @@ These come from deliberate decisions; change them only on purpose and update the
   removes it; `unlock` (`releaser`) is idempotent and removes only the file it created, under its claim, and leaves its
   lock to a run that holds the claim already. A fresh lock is therefore never removed or moved (no rename, no
   `os.Link`). A run killed while it holds a claim leaves the claim file, and that one lock is then not broken
-  automatically (the error's hand recovery still works); nothing removes such a leftover. `wait` is longer than `stale`.
-  Only on Windows are errors other than "exists" retried (a pending removal looks like access denied), always after
-  `poll`, since only a broken stale lock is retried at once; elsewhere they fail at once. The pid in the error comes
-  through `readSmallFile` and is shown only if it is a number. An `O_EXCL` file was chosen over flock/LockFileEx (no
-  per-OS code, no dependency); its cost is the stale rule and the hand recovery in the error message, and a run
-  suspended for longer than `stale` can lose its lock to the next one. Do not "improve" this into a lock held during
-  `sail up`.
+  automatically (the error's hand recovery still works); nothing removes such a leftover. A lock whose write or close
+  fails after a successful `Stat` is released through `releaser` as well, never removed by path (this run may have been
+  suspended for longer than `stale` and its path taken by another run); if `Stat` failed, the file has no identity and
+  is left to the stale rule or the hand recovery. The claims protect only runs of versions that use them: v0.8.0 and
+  v0.8.1 break a stale lock by renaming it and remove locks by path, and earlier versions take no lock, so running one
+  of them at the same time as this version reopens the window claims close (a fresh lock removed, two runs updating the
+  registry at once); the README says to use one version at a time. `wait` is longer than `stale`. Only on Windows are
+  errors other than "exists" retried (a pending removal looks like access denied), always after `poll`, since only a
+  broken stale lock is retried at once; elsewhere they fail at once. The pid in the error comes through `readSmallFile`
+  and is shown only if it is a number. An `O_EXCL` file was chosen over flock/LockFileEx (no per-OS code, no
+  dependency); its cost is the stale rule and the hand recovery in the error message, and a run suspended for longer
+  than `stale` can lose its lock to the next one. Do not "improve" this into a lock held during `sail up`.
 - **Ports.** A new port is searched from default+1 upwards (the default is left to the main worktree), skipping ports
   of other worktrees, ports recorded for any main worktree (`used` includes `mains`, so `up` moves a worktree off a
   main's port and says so) and ports in use. A port counts as free only if it binds on all interfaces and on `127.0.0.1`;

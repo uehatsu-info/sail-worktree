@@ -55,7 +55,12 @@ func lockRegistry() (unlock func(), err error) {
 			fi, serr := f.Stat()
 			cerr := f.Close()
 			if err := errors.Join(werr, serr, cerr); err != nil {
-				os.Remove(lock)
+				// Not os.Remove(lock): if this run was suspended for longer than lockTiming.stale, its lock may have
+				// been broken and the path may hold another run's fresh lock by now. Without an identity the file is
+				// left to the stale rule.
+				if serr == nil {
+					releaser(lock, fi)()
+				}
 				return nil, fmt.Errorf("cannot write the registry lock %q: %w", lock, err)
 			}
 			return releaser(lock, fi), nil
