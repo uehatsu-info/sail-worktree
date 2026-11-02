@@ -360,10 +360,11 @@ func cmdUp(args []string) error {
 // mainPorts returns the ports that the main worktree's project directory dir uses for vars: the value in its .env
 // when it is a port number, the compose default when .env does not set the variable, sets it empty or does not exist,
 // nothing for an invalid value. envOK is false when .env exists but is not a regular file that can be read (a link is
-// never followed); found is false when dir is not a directory (the main worktree may lack the project), and then
+// never followed); found is false when dir is not a directory or not a project directory (isProjectDir: the main
+// worktree may lack the project, or have an unrelated directory at that path, and such a main never runs), and then
 // nothing is recorded.
 func mainPorts(dir string, vars []PortVar) (ports, defaults map[string]int, envOK, found bool) {
-	if !isDir(dir) {
+	if !isDir(dir) || !isProjectDir(dir) {
 		return nil, nil, false, false
 	}
 	defaults = map[string]int{}

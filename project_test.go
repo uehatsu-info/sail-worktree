@@ -434,6 +434,83 @@ func TestUpWithoutMainCounterpart(t *testing.T) {
 	}
 }
 
+// A main worktree that has a directory at the project's relative path, but no project there, is not recorded: such a
+// main never runs, and a record would reserve the defaults (#95).
+func TestMainCounterpartThatIsNotAProjectIsNotRecorded(t *testing.T) {
+	main, wt := setupSubdirWorktreeRepo(t, true)
+	other := filepath.Join(main, "laravel")
+	writeFile(t, filepath.Join(other, "README.md"), "unrelated\n")
+	root := filepath.Join(wt, "laravel")
+	writeFakeSail(t, root)
+	writeFile(t, filepath.Join(root, ".env"), "APP_NAME=x\n")
+	captureRunner(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	if reg, _ := loadRegistry(); len(reg.Mains) != 0 {
+		t.Errorf("up recorded a main counterpart that is not a project: %+v", reg.Mains)
+	}
+	captureStderr(t)
+	out, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	if want := fmt.Sprintf("no main worktree was recorded: the main worktree has no project directory at %q", other); !strings.Contains(out, want) {
+		t.Errorf("no warning %q:\n%s", want, out)
+	}
+	if reg, _ := loadRegistry(); len(reg.Mains) != 0 {
+		t.Errorf("check recorded a main counterpart that is not a project: %+v", reg.Mains)
+	}
+}
+
+// A counterpart without .sail-worktree.json but with artisan and a compose file is a project by lookupProject's rule.
+func TestMainCounterpartThatIsALaravelProjectIsRecorded(t *testing.T) {
+	main, wt := setupSubdirWorktreeRepo(t, true)
+	other := filepath.Join(main, "laravel")
+	writeFile(t, filepath.Join(other, artisanName), "")
+	writeFile(t, filepath.Join(other, "compose.yaml"), "services: {}\n")
+	root := filepath.Join(wt, "laravel")
+	writeFakeSail(t, root)
+	writeFile(t, filepath.Join(root, ".env"), "APP_NAME=x\n")
+	captureRunner(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := loadRegistry()
+	if _, ok := reg.Mains[other]; !ok || len(reg.Mains) != 1 {
+		t.Errorf("the Laravel project in the main worktree was not recorded: %+v", reg.Mains)
+	}
+}
+
+func TestIsProjectDir(t *testing.T) {
+	mk := func(files ...string) string {
+		dir := realTempDir(t)
+		for _, f := range files {
+			writeFile(t, filepath.Join(dir, f), "")
+		}
+		return dir
+	}
+	badConfig := realTempDir(t)
+	if err := os.Mkdir(filepath.Join(badConfig, configName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		dir  string
+		want bool
+	}{
+		"plain directory":                {mk("README.md"), false},
+		"configuration":                  {mk(configName), true},
+		"artisan and compose file":       {mk(artisanName, "docker-compose.yml"), true},
+		"artisan alone":                  {mk(artisanName), false},
+		"compose file alone":             {mk("compose.yaml"), false},
+		"configuration that is a folder": {badConfig, false},
+	} {
+		if got := isProjectDir(c.dir); got != c.want {
+			t.Errorf("%s: isProjectDir = %v, want %v", name, got, c.want)
+		}
+	}
+}
+
 func TestMainCounterpartOutsideMainWorktreeIsRefused(t *testing.T) {
 	main, wt := setupSubdirWorktreeRepo(t, true)
 	outside := realTempDir(t)
