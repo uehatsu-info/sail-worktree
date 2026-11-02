@@ -167,10 +167,10 @@ func checkConflicts(r *report, reg *Registry) {
 			holders = append(holders, holder{main: true, dir: k, name: name, port: p})
 		}
 	}
-	ofMain := map[string]string{}
+	ofMain := map[string]string{} // keyed by the folded path, as view is, so that an alias still matches
 	for _, k := range mains {
 		for _, w := range reg.Mains[k].Worktrees {
-			ofMain[w] = k
+			ofMain[foldKey(w)] = k
 		}
 	}
 	view := foldRegistry(reg)

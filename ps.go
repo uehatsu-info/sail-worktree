@@ -177,12 +177,7 @@ func listWorktrees(dir string, usable func(string) bool) ([]worktreeInfo, error)
 func foldRegistry(r *Registry) map[string]map[string]int {
 	groups := map[string][]string{}
 	for k := range r.Worktrees {
-		rp := k
-		if validKey(k) {
-			if x, err := realPath(k); err == nil {
-				rp = x
-			}
-		}
+		rp := foldKey(k)
 		groups[rp] = append(groups[rp], k)
 	}
 	out := make(map[string]map[string]int, len(groups))
@@ -198,6 +193,17 @@ func foldRegistry(r *Registry) map[string]map[string]int {
 		out[rp] = r.Worktrees[pick]
 	}
 	return out
+}
+
+// foldKey returns the real path of a registry key, or the key itself when it fails validKey (never resolved, see
+// validKey) or cannot be resolved.
+func foldKey(k string) string {
+	if validKey(k) {
+		if rp, err := realPath(k); err == nil {
+			return rp
+		}
+	}
+	return k
 }
 
 // attribute finds the worktree that contains key: the longest match, compared per path element, so that a linked
