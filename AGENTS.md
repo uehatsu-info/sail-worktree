@@ -211,11 +211,12 @@ These come from deliberate decisions; change them only on purpose and update the
   reads the first line, because `up` writes its result back and collapses duplicates to the first line. A default counts
   only if it is 1 to 65535 (`validPort`), so a hand-edited recorded default outside that reserves nothing (`loadConfig`
   already refuses one in the configuration; the check stays for the registry). A main directory that does not exist is
-  never recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file is not read
-  for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves
-  nothing. The variables are those of the run's configuration (`cfg.PortVars`), which may be a branch's, so `recordMain`
-  merges: a variable of the old record's `defaults` that the run does not know keeps its recorded default and port. Only
-  a `check` run in the main worktree itself (`checkTarget.inMain`) replaces the record, so a variable that left the
+  never recorded (`counterpart` may return a lexical path). A `.env` that is a link, not a regular file or larger than
+  1 MiB (`readEnvIfRegular` refuses it rather than cut it) is not read for the record, although `up` copies `.env`
+  through a link: the record keeps its ports, and a new record reserves nothing. The variables are those of the run's
+  configuration (`cfg.PortVars`), which may be a branch's, so `recordMain` merges: a variable of the old record's
+  `defaults` that the run does not know keeps its recorded default and port. Only a `check` run in the main worktree
+  itself (`checkTarget.inMain`) replaces the record, so a variable that left the
   project is dropped only there (or by hand); until then it keeps its port reserved, and a variable that only a branch
   has is dropped there and comes back with that branch's next `up` or `check`. A kept value is not refreshed by `up`
   (which reads only the run's variables) or by a `check` in the project directory of a linked worktree of the same

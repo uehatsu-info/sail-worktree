@@ -860,6 +860,60 @@ func TestReadEnvIfRegularSkipsNonRegular(t *testing.T) {
 	}
 }
 
+// envPadding is comment lines of 100 bytes each, at least n bytes in all: many lines, since parseEnv's scanner also
+// limits a single line.
+func envPadding(n int) string {
+	line := "#" + strings.Repeat("x", 98) + "\n"
+	return strings.Repeat(line, (n+len(line)-1)/len(line))
+}
+
+func TestReadEnvIfRegularRefusesALargerFile(t *testing.T) {
+	dir := t.TempDir()
+	pad := envPadding(maxSmallFile - 100)
+	want := strings.Repeat("1", maxSmallFile-len(pad)-3)
+	fit := pad + "A=" + want + "\n"
+	if len(fit) != maxSmallFile {
+		t.Fatalf("fixture is %d bytes", len(fit))
+	}
+	p := filepath.Join(dir, "env")
+	writeFile(t, p, fit)
+	if e, ok := readEnvIfRegular(p); !ok {
+		t.Error("cannot read a file of exactly maxSmallFile bytes")
+	} else if v, _ := e.Get("A"); v != want {
+		t.Errorf("the last line was cut: A=%q", v)
+	}
+	writeFile(t, p, fit+"B=2\n")
+	if _, ok := readEnvIfRegular(p); ok {
+		t.Error("a file larger than maxSmallFile was read (cut)")
+	}
+}
+
+// A cut main .env could drop a port variable near its end and record the default silently; the record is kept instead.
+func TestUpKeepsTheMainRecordWhenTheMainEnvIsTooLarge(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(wt, ".env"), "APP_NAME=x\n")
+	writeFile(t, filepath.Join(main, ".env"), envPadding(maxSmallFile)+"APP_PORT=8124\n")
+	reg := &Registry{Worktrees: map[string]map[string]int{}, Mains: map[string]MainRecord{
+		main: {Ports: map[string]int{"APP_PORT": 8200}, Defaults: map[string]int{"APP_PORT": 80}},
+	}}
+	if err := reg.save(); err != nil {
+		t.Fatal(err)
+	}
+	captureRunner(t)
+	errOut := captureStderr(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ = loadRegistry()
+	if got := reg.Mains[main].Ports["APP_PORT"]; got != 8200 {
+		t.Errorf("the record was replaced from a cut .env: APP_PORT=%d", got)
+	}
+	if !strings.Contains(errOut.String(), mainEnvUnreadable(main)) {
+		t.Errorf("no warning: %q", errOut.String())
+	}
+}
+
 func newLinkedDir(t *testing.T, names ...string) (real string, links []string) {
 	t.Helper()
 	base, err := realPath(t.TempDir())

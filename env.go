@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -61,10 +62,11 @@ func readEnv(path string) (*envFile, error) {
 	return parseEnv(f)
 }
 
-// readEnvIfRegular reads path only if it is a regular file (used for stop's warning).
-// Links, FIFOs and devices are not read and ok is false. So that open does not block even if the path is swapped
-// for a FIFO between Lstat and open, it opens with O_NONBLOCK (which does not affect reading a regular file) and
-// Stats the opened fd again. At most 1MiB is read.
+// readEnvIfRegular reads path only if it is a regular file: stop's warning, status, the main worktree's .env for the
+// mains record (up and check, through readMainEnv) and the .env.example a bare layout copies. Links, FIFOs and devices
+// are not read and ok is false. So that open does not block even if the path is swapped for a FIFO between Lstat and
+// open, it opens with O_NONBLOCK (which does not affect reading a regular file) and Stats the opened fd again. A file
+// larger than maxSmallFile is refused (ok is false) rather than cut, since a cut could drop a port variable silently.
 func readEnvIfRegular(path string) (*envFile, bool) {
 	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
 		return nil, false
@@ -77,7 +79,11 @@ func readEnvIfRegular(path string) (*envFile, bool) {
 	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
 		return nil, false
 	}
-	e, err := parseEnv(io.LimitReader(f, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(f, maxSmallFile+1))
+	if err != nil || len(b) > maxSmallFile {
+		return nil, false
+	}
+	e, err := parseEnv(bytes.NewReader(b))
 	return e, err == nil
 }
 

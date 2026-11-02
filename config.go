@@ -154,7 +154,8 @@ var reservedNames = map[string]string{
 	"DOCKER_TLS_VERIFY":           dockerSetting,
 }
 
-// maxSmallFile bounds what readSmallFile reads from a compose file or .sail-worktree.json.
+// maxSmallFile bounds what readSmallFile reads from a compose file or .sail-worktree.json, and what
+// readEnvIfRegular reads from a .env; readEnvIfRegular refuses a larger file with ok false instead of an error.
 const maxSmallFile = 1 << 20
 
 // readSmallFile reads a regular file of at most maxSmallFile bytes. Links are followed (a linked compose file works for
