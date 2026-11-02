@@ -542,8 +542,9 @@ func usableDir(k string) bool { return validKey(k) && isDir(k) }
 // It only changes memory; the caller saves on success. An existing entry for root wins; otherwise the entry of the
 // alias with the smallest key (lexicographically) is adopted. The ports of dropped aliases are not left in used.
 // Keys whose path cannot be resolved (it no longer exists) and keys that fail validKey are left alone. Aliases of root
-// in the worktree lists of main records are replaced by root as well (a list that holds none is left as it is).
-func (r *Registry) migrate(root string) {
+// in the worktree list of main, the only record root can be listed in, are replaced by root as well (a list that holds
+// none is left as it is); other mains' lists are not looked at, since each entry may be resolved under the lock.
+func (r *Registry) migrate(root, main string) {
 	var aliases []string
 	for k := range r.Worktrees {
 		if k == root || !validKey(k) {
@@ -560,7 +561,7 @@ func (r *Registry) migrate(root string) {
 		}
 		delete(r.Worktrees, k)
 	}
-	for m, rec := range r.Mains {
+	if rec, ok := r.Mains[main]; ok {
 		ws := make([]string, 0, len(rec.Worktrees))
 		changed, seen := false, false
 		for _, w := range rec.Worktrees {
@@ -578,7 +579,7 @@ func (r *Registry) migrate(root string) {
 		if changed {
 			sort.Strings(ws)
 			rec.Worktrees = ws
-			r.Mains[m] = rec
+			r.Mains[main] = rec
 		}
 	}
 }
