@@ -630,3 +630,36 @@ func TestCheckDoesNotWarnAboutTheListOfAReplacedMain(t *testing.T) {
 		t.Errorf("err = %v\n%s", err, out)
 	}
 }
+
+// A worktree on a branch from before the project moved into laravel/ does not record the main worktree's root again
+// after prune removed that record (#98): since #95 up and check record a main only where it has the project.
+func TestPrunedReplacedMainIsNotRecordedAgainFromAnOldBranch(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	if err := os.Remove(filepath.Join(main, configName)); err != nil {
+		t.Fatal(err)
+	}
+	sub := projectDir(t, mustMkdir(t, filepath.Join(main, "laravel")))
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8123\n") // the source of the worktree's .env, still at the root
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{main: mainRec(80), sub: mainRec(80)}})
+	if out, err := runPrune(t, strings.NewReader(""), "-y"); err != nil ||
+		!strings.Contains(out, "removed 0 worktree record(s), 1 main worktree record(s)") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	captureRunner(t)
+	captureStderr(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, _ := loadRegistry()
+	if _, ok := reg.Mains[main]; ok || len(reg.Mains) != 1 {
+		t.Errorf("mains = %+v, want only %q", reg.Mains, sub)
+	}
+	if strings.Contains(out, "keeps ports free, but") {
+		t.Errorf("check warns about a replaced record again:\n%s", out)
+	}
+}

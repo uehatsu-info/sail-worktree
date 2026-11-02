@@ -10,12 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -225,7 +227,7 @@ func cmdUp(args []string) error {
 		return err
 	}
 	// The main's .env is read before the lock, so that a slow drive does not keep other runs waiting, and its base
-	// record before the .env (see recordMainRead). This registry is used for nothing else.
+	// record before the .env (see recordMainRead). This registry is used only for that and to find alias keys.
 	pre, err := loadRegistry()
 	if err != nil {
 		return err
@@ -243,6 +245,25 @@ func cmdUp(args []string) error {
 			warnMainEnv(c.main)
 		}
 	}
+	// The variables the record keeps although this configuration lacks them are read with the record's defaults, so
+	// that recordMainRead can refresh them too. It is a second read of the same .env, made only when there are such
+	// variables; both reads come after pre.
+	var kept map[string]int
+	keptOK := false
+	if mainFound && baseHad && hasOtherKeys(base.Defaults, mainDefaults) {
+		kept, _, keptOK = mainEnvPorts(c.main, base.Defaults)
+	}
+	aliases := pre.aliasesOf(c.root, c.main)
+	// The source of a new .env is read before the lock too. The worktree's own .env is still read under it, so a
+	// concurrent up in this worktree is not overwritten; if it is gone by then, the source is read there after all. An
+	// error other than not-exist is left to that read.
+	var preSrcEnv *envFile
+	var preSrc envSource
+	if _, err := os.Lstat(envPath); os.IsNotExist(err) {
+		if preSrcEnv, preSrc, err = readCopySource(c); err != nil {
+			return err
+		}
+	}
 	// Reading the registry, choosing ports, writing .env and saving are one step: another up that read the registry
 	// meanwhile would choose the same ports. The lock is released before sail runs, which can take minutes.
 	unlock, err := upLock()
@@ -256,32 +277,20 @@ func cmdUp(args []string) error {
 	}
 	// Before allocatePorts, adopt the keys an older version recorded under an alias path (saved when up succeeds). In a
 	// bare layout c.main is empty, so only the worktrees keys are folded.
-	reg.migrate(c.root, c.main)
+	reg.migrateAliases(c.root, c.main, aliases)
 	// Keep the main worktree's ports free as well: it uses them without a port record of its own (never in a bare
 	// layout: mainFound stays false there).
 	if mainFound {
 		reg.recordMainRead(c.main, c.root, mainRead{ports: mainP, defaults: mainDefaults, envOK: mainEnvOK,
-			basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad})
+			basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad, kept: kept, keptOK: keptOK})
 	}
 	src := envOwn
 	env, err := readEnv(envPath)
-	if os.IsNotExist(err) && c.bare { // first: the branches below read c.main, which is empty here
-		src = envFromOwnExample
-		if env, err = readOwnEnvExample(c.root); err != nil {
-			return err
-		}
+	if os.IsNotExist(err) && preSrcEnv != nil {
+		env, src = preSrcEnv, preSrc
 	} else if os.IsNotExist(err) {
-		src = envFromMain
-		env, err = readEnv(filepath.Join(c.main, ".env"))
-		if os.IsNotExist(err) {
-			src = envFromMainExample
-			env, err = readEnv(filepath.Join(c.main, ".env.example"))
-		}
-		if err != nil {
-			if c.main != c.mainTop {
-				return fmt.Errorf("cannot read the source .env from the main worktree's project directory %q (the main worktree needs the project at the same relative path): %w", c.main, err)
-			}
-			return fmt.Errorf("cannot read the source .env from the main worktree: %w", err)
+		if env, src, err = readCopySource(c); err != nil {
+			return err
 		}
 	} else if err != nil {
 		return err
@@ -294,6 +303,9 @@ func cmdUp(args []string) error {
 	// what this run read of the main's .env is avoided as well; it is not recorded.
 	used := reg.used(c.root)
 	for _, p := range mainP {
+		used[p] = true
+	}
+	for _, p := range kept {
 		used[p] = true
 	}
 	ports, err := allocatePorts(cfg.PortVars, reg.Worktrees[c.root], used, portFree)
@@ -386,17 +398,59 @@ type mainRead struct {
 	ports, defaults, basePorts, baseDefaults map[string]int
 	envOK, baseHad                           bool
 	inMain                                   bool // check runs in the main worktree (recordMain's inMain); up never does
+	// kept holds the ports read for every variable of baseDefaults; keptOK is false when that read failed (or was not
+	// made), which is not the same as a variable missing from kept (an invalid value).
+	kept   map[string]int
+	keptOK bool
 }
 
 // recordMainRead records m under the lock by the rule refreshMains follows: the read is applied only while the record is
 // still the one it was based on. A record that another run changed meanwhile (or that appeared) is newer and keeps its
 // ports and defaults; this relies on recordMain keeping them for ok=false, and worktree is still added. A record that
-// is gone (pruned meanwhile) is recorded from the read, which is then all there is to know. It reports whether the
-// record changed.
+// is gone (pruned meanwhile) is recorded from the read, which is then all there is to know. A record that is still the
+// base also has the variables it keeps for a run that lacks them (see recordMain) refreshed from kept, unless check
+// runs in the main worktree, which drops them. It reports whether the record changed.
 func (r *Registry) recordMainRead(main, worktree string, m mainRead) bool {
 	rec, had := r.Mains[main]
 	current := !had || m.baseHad && sameBase(rec, m.basePorts, m.baseDefaults)
-	return r.recordMain(main, worktree, m.ports, m.defaults, m.envOK && current, m.inMain)
+	ports, defaults := m.ports, m.defaults
+	if had && current && m.envOK && m.keptOK && !m.inMain {
+		ports, defaults = maps.Clone(ports), maps.Clone(defaults)
+		for name, def := range m.baseDefaults {
+			if _, known := m.defaults[name]; known {
+				continue
+			}
+			defaults[name] = def
+			if p, ok := m.kept[name]; ok {
+				ports[name] = p
+			}
+		}
+	}
+	return r.recordMain(main, worktree, ports, defaults, m.envOK && current, m.inMain)
+}
+
+// hasOtherKeys reports whether a has a key that b lacks.
+func hasOtherKeys(a, b map[string]int) bool {
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// mainEnvPorts reads the ports of the main worktree's project directory dir for the variables of defaults
+// (portsFromEnv), and the variables its .env sets on more than one line. ok is false when its .env cannot be read.
+// The caller checks dir first.
+func mainEnvPorts(dir string, defaults map[string]int) (ports map[string]int, duplicates []string, ok bool) {
+	env, ok := readMainEnv(dir)
+	if !ok {
+		return nil, nil, false
+	}
+	if env != nil {
+		duplicates = env.duplicateKeys(slices.Collect(maps.Keys(defaults)))
+	}
+	return portsFromEnv(env, defaults), duplicates, true
 }
 
 // readMainEnv reads the .env of a main worktree's project directory without following a link. env is nil when there
@@ -451,6 +505,31 @@ const (
 	envFromMainExample                  // the main worktree's .env.example (copied)
 	envFromOwnExample                   // the worktree's own .env.example (copied; bare layout only)
 )
+
+// readCopySource reads the file a new .env is copied from: in a bare layout the worktree's own .env.example, otherwise
+// the main worktree's .env, or its .env.example when that is missing.
+func readCopySource(c *ctx) (*envFile, envSource, error) {
+	if c.bare { // first: the branches below read c.main, which is empty here
+		env, err := readOwnEnvExample(c.root)
+		if err != nil {
+			return nil, 0, err
+		}
+		return env, envFromOwnExample, nil
+	}
+	src := envFromMain
+	env, err := readEnv(filepath.Join(c.main, ".env"))
+	if os.IsNotExist(err) {
+		src = envFromMainExample
+		env, err = readEnv(filepath.Join(c.main, ".env.example"))
+	}
+	if err != nil {
+		if c.main != c.mainTop {
+			return nil, 0, fmt.Errorf("cannot read the source .env from the main worktree's project directory %q (the main worktree needs the project at the same relative path): %w", c.main, err)
+		}
+		return nil, 0, fmt.Errorf("cannot read the source .env from the main worktree: %w", err)
+	}
+	return env, src, nil
+}
 
 // readOwnEnvExample reads .env.example of the project directory root, the source of .env in a bare layout. Unlike the
 // main worktree's files, it comes from the branch checked out here, so only a regular file is read: a link committed
@@ -622,11 +701,14 @@ func cmdRm(args []string) error {
 	if err != nil {
 		return err
 	}
-	// This read only detects a broken registry before anything is removed (the value is unused). The registry is read
-	// again after docker for the release. Do not remove it.
-	if _, err := loadRegistry(); err != nil {
+	// This read detects a broken registry before anything is removed, and finds the alias keys to release, so that only
+	// they are resolved under the lock (it never refuses). The registry is read again after docker for the release. Do
+	// not remove it.
+	pre, err := loadRegistry()
+	if err != nil {
 		return err
 	}
+	aliases := pre.aliasesOf(c.root, c.main)
 	if !yes && !confirm(fmt.Sprintf("This removes the containers, networks, volumes (including database data) "+
 		"and built images of project %q. Continue? [y/N] ", proj)) {
 		return nil
@@ -647,7 +729,7 @@ func cmdRm(args []string) error {
 	if err != nil {
 		return fmt.Errorf("docker finished removing, but the port assignments cannot be read: %w", err)
 	}
-	reg.migrate(c.root, c.main)
+	reg.migrateAliases(c.root, c.main, aliases)
 	delete(reg.Worktrees, c.root)
 	if !c.bare { // a bare layout records no main worktree
 		reg.forgetWorktree(c.main, c.root)

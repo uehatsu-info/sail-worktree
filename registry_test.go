@@ -683,3 +683,72 @@ func TestDriveTargetOnWindows(t *testing.T) {
 		}
 	}
 }
+
+// migrateAliases resolves only the paths aliasesOf found before the lock (#93), and each of them again after validKey.
+func TestMigrateAliasesResolvesOnlyTheFoundPaths(t *testing.T) {
+	real, links := newLinkedDir(t, "a-link", "b-link")
+	a, b := links[0], links[1]
+	gone := filepath.Join(filepath.Dir(real), "gone")
+	reg := func() *Registry {
+		return &Registry{Worktrees: map[string]map[string]int{a: {"APP_PORT": 81}, b: {"APP_PORT": 82}},
+			Mains: map[string]MainRecord{"/m": {Worktrees: []string{a, b}}}}
+	}
+	if got := reg().aliasesOf(real, "/m"); !slices.Equal(got, []string{a, b}) {
+		t.Fatalf("aliasesOf = %q", got)
+	}
+
+	// b was not found (recorded after the scan): it stays for a later run. gone cannot be resolved: no alias.
+	r := reg()
+	r.migrateAliases(real, "/m", []string{a, gone})
+	if len(r.Worktrees) != 2 || r.Worktrees[real]["APP_PORT"] != 81 || r.Worktrees[b]["APP_PORT"] != 82 {
+		t.Errorf("worktrees = %v", r.Worktrees)
+	}
+	if got := r.Mains["/m"].Worktrees; !slices.Equal(got, []string{b, real}) {
+		t.Errorf("list = %q", got)
+	}
+
+	// A found path that fails validKey under the lock is not resolved, and so not folded.
+	refuseKeyLinks(t, a)
+	r = reg()
+	r.migrateAliases(real, "/m", []string{a})
+	if _, ok := r.Worktrees[a]; !ok || len(r.Worktrees) != 2 || !slices.Equal(r.Mains["/m"].Worktrees, []string{a, b}) {
+		t.Errorf("a refused key was folded: %v %q", r.Worktrees, r.Mains["/m"].Worktrees)
+	}
+}
+
+// recordMainRead refreshes the variables a record keeps for a configuration that lacks them only from a read that
+// succeeded, of a record that is still the base, outside the main worktree (#88).
+func TestRecordMainReadRefreshesKeptVariables(t *testing.T) {
+	base := MainRecord{Ports: map[string]int{"APP_PORT": 80, "REDIS": 6380}, Defaults: map[string]int{"APP_PORT": 80, "REDIS": 6379}}
+	for _, tc := range []struct {
+		name      string
+		kept      map[string]int
+		keptOK    bool
+		inMain    bool
+		changed   bool // the record changed meanwhile
+		wantPort  int  // REDIS; 0 means none
+		wantKnown bool // REDIS in defaults
+	}{
+		{name: "refreshed", kept: map[string]int{"APP_PORT": 8080, "REDIS": 6390}, keptOK: true, wantPort: 6390, wantKnown: true},
+		{name: "invalid value", kept: map[string]int{"APP_PORT": 8080}, keptOK: true, wantKnown: true},
+		{name: "read failed", wantPort: 6380, wantKnown: true},
+		{name: "record changed", kept: map[string]int{"REDIS": 6390}, keptOK: true, changed: true, wantPort: 6381, wantKnown: true},
+		{name: "in the main", kept: map[string]int{"REDIS": 6390}, keptOK: true, inMain: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := base
+			if tc.changed {
+				now = MainRecord{Ports: map[string]int{"APP_PORT": 80, "REDIS": 6381}, Defaults: base.Defaults}
+			}
+			r := &Registry{Mains: map[string]MainRecord{"/m": now}}
+			r.recordMainRead("/m", "", mainRead{ports: map[string]int{"APP_PORT": 8080}, defaults: map[string]int{"APP_PORT": 80},
+				envOK: true, inMain: tc.inMain, basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: true,
+				kept: tc.kept, keptOK: tc.keptOK})
+			got := r.Mains["/m"]
+			p, hasPort := got.Ports["REDIS"]
+			if _, known := got.Defaults["REDIS"]; known != tc.wantKnown || p != tc.wantPort || hasPort != (tc.wantPort != 0) {
+				t.Errorf("record = %+v", got)
+			}
+		})
+	}
+}

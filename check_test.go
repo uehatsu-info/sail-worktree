@@ -98,21 +98,20 @@ func TestCheckInALinkedWorktreeListsIt(t *testing.T) {
 	}
 }
 
-// A branch whose configuration lacks a variable keeps it in the main's record; only the main's own configuration drops
-// it.
+// A branch whose configuration lacks a variable keeps it in the main's record, refreshed from the main's .env (#88);
+// only the main's own configuration drops it.
 func TestCheckKeepsAMainVariableUnknownToTheBranch(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	rec := MainRecord{Ports: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6380},
 		Defaults: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6379}}
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{main: rec}})
-	// The kept value is not re-read in a linked worktree (a documented limit), so 6390 is not seen yet.
 	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8080\nFORWARD_REDIS_PORT=6390\n")
 	if out, err := runCheck(t); err != nil {
 		t.Fatalf("err = %v\n%s", err, out)
 	}
 	reg, _ := loadRegistry()
 	got := reg.Mains[main]
-	if got.Ports["APP_PORT"] != 8080 || got.Ports["FORWARD_REDIS_PORT"] != 6380 || got.Defaults["FORWARD_REDIS_PORT"] != 6379 {
+	if got.Ports["APP_PORT"] != 8080 || got.Ports["FORWARD_REDIS_PORT"] != 6390 || got.Defaults["FORWARD_REDIS_PORT"] != 6379 {
 		t.Errorf("check in %q: record = %+v", wt, got)
 	}
 	t.Chdir(main)
@@ -452,7 +451,8 @@ func betweenReadAndLock(t *testing.T, fn func()) {
 	t.Cleanup(func() { checkLock = old })
 }
 
-// betweenUpReadAndLock is betweenReadAndLock for up: fn runs after up has read the main's .env and before it locks.
+// betweenUpReadAndLock is betweenReadAndLock for up: fn runs after up has read the main's .env, found alias keys and
+// read the source of a new .env, and before it locks.
 func betweenUpReadAndLock(t *testing.T, fn func()) {
 	t.Helper()
 	old := upLock
