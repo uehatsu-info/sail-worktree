@@ -237,8 +237,10 @@ These come from deliberate decisions; change them only on purpose and update the
     read. The compose file and `.sail-worktree.json` are read with `readSmallFile` (non-blocking open, regular file, at
     most 1 MiB, an error rather than a cut).
   - A configuration error is kept in `ctx.cfgErr` and returned by `ctx.config()` after the main-worktree refusal; no
-    command reads `ctx.cfg` directly. `stop` fails on it too, as it did with a broken file. Port variables are required
-    only for `up` and only when detected (a file with `port_vars: []` still works).
+    command reads `ctx.cfg` directly. `stop` fails on it too, as it did with a broken file. The exception: `stop` and
+    `rm` take a reserved name found by detection (`reservedPortVarError`, through `ctx.teardownConfig()`): they write no
+    port variable, and detection yields only `*PORT` names, so the name cannot be `DOCKER_HOST` or `PATH`. Port
+    variables are required only for `up` and only when detected (a file with `port_vars: []` still works).
   - `up`'s order: main refusal, configuration, detected port variables, the existing `.env` checks and port
     allocation, then `sailPath` right before the first write, so nothing is written without Sail and the order of the
     existing refusals stays the same.
@@ -309,14 +311,15 @@ These come from deliberate decisions; change them only on purpose and update the
   a space in the query) are no longer protected.
 - `compose` in `.sail-worktree.json` must be a relative path inside the project directory (`unsafeComposePath`),
   including on Windows forms such as `C:x`, `\\srv\x` and `/x`. That check only reads the string; `rm` also checks the
-  real path with `composeInsideProject` (see "`rm` is guarded"). Each `port_vars` entry must have a `shellName` name
-  and a `validPort` default (`validatePortVars`), because `up` writes `NAME=port` into `.env`; the names are not held
-  to the detection rule, so a hand-added variable may use any name compose does. A name `reservedPortVar` lists (keys
-  `up` writes, `COMPOSE_*`, `SAIL_FILES`, `DOCKER_*`, a few shell and Sail names; case-insensitive, as `cleanEnv`
-  drops them) is refused, by `detectConfig` too, so `init` never writes a file that `loadConfig` refuses. Keep the
-  list short, and add a key there when `up` starts to write it. A repeated name (also compared case-insensitively) is
-  refused, because `up` would assign two ports and `Set` keeps only the first line; `detectPortVars` yields each name
-  once (`composePortRe` matches upper-case names only), and a test pins that.
+  real path with `composeInsideProject` (see "`rm` is guarded"). Each `port_vars` entry must have a `shellName` name and
+  a `validPort` default (`validatePortVars`), because `up` writes `NAME=port` into `.env`; the names are not held to the
+  detection rule, so a hand-added variable may use any name compose does. A name `reservedPortVar` lists (keys `up`
+  writes, `COMPOSE_*`, `SAIL_FILES`, `DOCKER_*`, a few shell and Sail names; case-insensitive, as `cleanEnv` drops them)
+  is refused, by `detectConfig` too, so `init` never writes a file that `loadConfig` refuses (`up` and `init` fail on a
+  detected one; `stop` and `rm` do not, see the configuration error rule above). Keep the list short, and add a key
+  there when `up` starts to write it. A repeated name (also compared case-insensitively) is refused, because `up` would
+  assign two ports and `Set` keeps only the first line; `detectPortVars` yields each name once (`composePortRe` matches
+  upper-case names only), and a test pins that.
 
 ## Testing notes
 

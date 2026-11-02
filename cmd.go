@@ -107,17 +107,29 @@ func initCompose(root, marker string) (compose string, existed bool) {
 
 // ctx is the information shared by the commands that run inside a worktree.
 // root and main are the project directories of this worktree and of the main worktree; wtTop and mainTop are the
-// roots of the two worktrees. All of them are real paths. The configuration is read through config(), because a
-// configuration error is reported only after the main-worktree refusal.
+// roots of the two worktrees. All of them are real paths. The configuration is read through config() (stop and rm:
+// teardownConfig()), because a configuration error is reported only after the main-worktree refusal.
 type ctx struct {
 	root, main     string
 	wtTop, mainTop string
 	detected       bool // no .sail-worktree.json: compose file and port variables were detected
 	cfg            *Config
 	cfgErr         error
+	teardown       *Config // the detected configuration despite a reserved name, for stop and rm only
 }
 
 func (c *ctx) config() (*Config, error) { return c.cfg, c.cfgErr }
+
+// teardownConfig is config() for stop and rm. A reserved name found by detection does not block them: they write no
+// port variable, so the name cannot reach .env, and stopping or removing what runs should not wait for the compose
+// file to be fixed. stop still drops every detected name from sail's environment. A .sail-worktree.json that lists a
+// reserved name stays an error for them too, as a broken file always was.
+func (c *ctx) teardownConfig() (*Config, error) {
+	if c.teardown != nil {
+		return c.teardown, nil
+	}
+	return c.config()
+}
 
 func loadCtx() (*ctx, error) {
 	dir, err := cwd()
@@ -143,6 +155,10 @@ func loadCtx() (*ctx, error) {
 	c := &ctx{root: root, main: main, wtTop: wtTop, mainTop: mainTop, detected: detected}
 	if detected {
 		c.cfg, c.cfgErr = detectConfig(root, cand.marker)
+		var re *reservedPortVarError
+		if errors.As(c.cfgErr, &re) {
+			c.teardown = re.detected
+		}
 	} else {
 		c.cfg, c.cfgErr = loadConfig(root)
 	}
@@ -392,7 +408,7 @@ func cmdStop(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := c.config()
+	cfg, err := c.teardownConfig()
 	if err != nil {
 		return err
 	}
@@ -490,7 +506,7 @@ func cmdRm(args []string) error {
 	if c.isMain() {
 		return fmt.Errorf("cannot run in the main worktree")
 	}
-	cfg, err := c.config()
+	cfg, err := c.teardownConfig()
 	if err != nil {
 		return err
 	}
