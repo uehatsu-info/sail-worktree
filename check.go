@@ -27,6 +27,7 @@ func cmdCheck(args []string) error {
 	r := &report{w: stdout}
 	reg, err := checkRecord(r)
 	if err != nil {
+		r.printWarnings() // they may explain the error, and nothing else will show them
 		return err
 	}
 	checkConflicts(r, reg)

@@ -162,7 +162,8 @@ These come from deliberate decisions; change them only on purpose and update the
   of missing directories or invalid keys are warnings (their recorded ports printed as they are), never conflicts, so a
   deleted clone cannot make `check` fail for ever. A conflict is fixed by the user: a worktree by `up`, a main worktree
   by hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`). Exit 1 only for a
-  conflict (`report.finish`, shared with `status`) or an error. A variable of a record's `defaults` that the main's
+  conflict (`report.finish`, shared with `status`) or an error; an error still prints the warnings collected so far
+  (`printWarnings`). A variable of a record's `defaults` that the main's
   `.env` sets on more than one line is a warning (`warnDuplicates`, from the `.env` that `readMains` already read, so a
   main recorded by this run is checked from the next one; the name through `cell`, never a value). `duplicateKeys` reads
   line by line, as `portValue` does, so a line inside a multi-line quoted value counts: a documented limit, because only

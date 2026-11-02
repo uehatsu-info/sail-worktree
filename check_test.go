@@ -371,6 +371,15 @@ func TestCheckReportsWithoutTheLock(t *testing.T) {
 	}
 }
 
+// check prints its warnings alone when it fails (#75); without any there is no empty heading.
+func TestReportPrintWarningsWithoutWarnings(t *testing.T) {
+	var b strings.Builder
+	(&report{w: &b}).printWarnings()
+	if b.String() != "" {
+		t.Errorf("an empty list printed %q", b.String())
+	}
+}
+
 // Only a lock that another run holds is reported around; a lock that cannot be created at all (no permission, a
 // read-only file system) would keep every run from recording, so check fails instead of passing with a warning (#63).
 func TestCheckFailsWhenTheLockCannotBeCreated(t *testing.T) {
@@ -394,6 +403,10 @@ func TestCheckFailsWhenTheLockCannotBeCreated(t *testing.T) {
 	}
 	if strings.Contains(out, "registry:") || strings.Contains(out, "nothing was recorded") {
 		t.Errorf("check reported as if the lock were only busy:\n%s", out)
+	}
+	// The cwd is outside a repository, so a warning was collected before the lock failed; it is printed (#75).
+	if !strings.Contains(out, "warnings:\n  - no main worktree was recorded") {
+		t.Errorf("the collected warnings are not printed:\n%s", out)
 	}
 	if after, _ := os.ReadFile(p); string(after) != string(before) {
 		t.Error("the registry was written without the lock")

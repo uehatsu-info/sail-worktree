@@ -34,20 +34,26 @@ func (r *report) warn(format string, args ...any) {
 	r.warnings = append(r.warnings, fmt.Sprintf(format, args...))
 }
 
-func (r *report) finish() error {
-	if len(r.warnings) > 0 {
-		r.line("warnings:")
-		for _, m := range r.warnings {
-			r.line("  - %s", m)
-		}
+// list prints items under a heading, or nothing when there are none.
+func (r *report) list(heading string, items []string) {
+	if len(items) == 0 {
+		return
 	}
+	r.line("%s", heading)
+	for _, m := range items {
+		r.line("  - %s", m)
+	}
+}
+
+// printWarnings prints the warnings alone, for a command that stops with an error before its report is complete.
+func (r *report) printWarnings() { r.list("warnings:", r.warnings) }
+
+func (r *report) finish() error {
+	r.printWarnings()
 	if len(r.problems) == 0 {
 		return nil
 	}
-	r.line("problems:")
-	for _, m := range r.problems {
-		r.line("  - %s", m)
-	}
+	r.list("problems:", r.problems)
 	return fmt.Errorf("found %d problem(s)", len(r.problems))
 }
 
