@@ -265,6 +265,34 @@ func pathExists(p string) bool {
 type registryView struct {
 	all   bool
 	repos [][]worktreeInfo
+	tried map[string]bool // directories git has listed in (or failed in) for this view
+}
+
+// worktreeLister runs `git worktree list` for registryView.list (replaceable in tests, to count the runs).
+var worktreeLister = listWorktrees
+
+// list runs git in dir at most once per view, since each run can take up to its timeout, and adds the listing unless
+// the same repository (the same main worktree path) is already listed: attribute keeps the first of equal matches,
+// so a second copy would change nothing. It reports whether the repositories may have changed.
+func (v *registryView) list(dir string) bool {
+	if v.tried[dir] {
+		return false
+	}
+	if v.tried == nil {
+		v.tried = map[string]bool{}
+	}
+	v.tried[dir] = true
+	l, err := worktreeLister(dir, registryPathOK)
+	if err != nil || len(l) == 0 {
+		return false
+	}
+	for _, r := range v.repos { // listWorktrees never returns an empty listing without an error
+		if r[0].Path == l[0].Path {
+			return false
+		}
+	}
+	v.repos = append(v.repos, l)
+	return true
 }
 
 // placement is what a list shows for a registry record.
@@ -287,8 +315,7 @@ func (v *registryView) place(key string, present, listable func() bool,
 	find func(string, [][]worktreeInfo) (int, int, bool)) (ri, wi int, p placement) {
 	ri, wi, ok := find(key, v.repos)
 	if !ok && v.all && gitInRegistryDirs && listable() {
-		if l, err := listWorktrees(key, registryPathOK); err == nil && len(l) > 0 {
-			v.repos = append(v.repos, l)
+		if v.list(key) {
 			ri, wi, ok = find(key, v.repos)
 		}
 	}
