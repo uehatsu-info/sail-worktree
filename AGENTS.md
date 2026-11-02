@@ -197,26 +197,27 @@ These come from deliberate decisions; change them only on purpose and update the
   that are stale by `staleWorktreeKey` (the rule of `worktrees` keys: an older version recorded aliases there too, and
   one of a live worktree is kept). Main keys are never folded, so without `replacedMain` a record that a move left
   behind would conflict with the new one for ever. `replacedMain` is tested only for a key that passes `usableDir`, and
-  finds a record replaced in two cases. One is an alias whose real path is a usable key of its own. The other is a
-  directory without project markers while a usable key that is its own real path and has markers lies strictly below it;
-  the markers (`projectMarkers`) are `.sail-worktree.json`, or `artisan` and a compose file, looked at with `Lstat`
-  only, so a link counts and an error other than not-exist counts as present. A `realPath` failure keeps the record, a
-  main without such a second record keeps its ports, and git is not asked. `validKey` always comes first, so an invalid
-  key is never looked at (on Windows its walk reads only the elements and links on the way, up to the first refused
-  link). It lists and asks (package `stdin`/`stdout`, `-y` skips) without the lock, then takes `lockRegistry`, reads the
-  registry again and removes only listed records that are still recorded and still unusable (with the same per-kind
-  test), saving only when something was removed; records that became unusable after the prompt are left for the next
-  run, because the user did not confirm them. A replaced main is tested again after the prompt and before the lock
-  (`recheckReplaced`, so that the lock is not held while it reads the filesystem) and under the lock only compared in
-  the registry (`stillPrunable`: its record equals the listed one, and the record that replaces it is still there). It
-  never writes `.env` or `.sail-worktree.json` and runs neither docker, sail nor git: the containers, networks and
-  volumes of a removed worktree are left alone and the output says so (`docker compose ls -a`). Untrusted keys are
-  printed with `%q` and port names through `cell`. A directory that is only out of reach for the moment counts as
-  missing. So removing the record of a project that is still in use (one on a disk that is out of reach for the moment,
-  on Windows one run from a UNC path or through a link to one, which is not a usable key, or a main whose checkout has
-  no project markers at the moment while a main record with markers lies below it: a branch without the project there)
-  frees its ports in the registry until `up`, or for a main worktree also `check` in its project directory, records it
-  again; a port bound at that moment is still skipped by `up`'s `portFree`. The prompt lists the records first.
+  finds a record replaced in two cases. One is an alias whose real path is a usable key of its own. The other is a key
+  that is its own real path and a directory without project markers, while a usable key that is its own real path and
+  has markers lies strictly below it; the markers (`projectMarkers`) are `.sail-worktree.json`, or `artisan` and a
+  compose file, looked at with `Lstat` only, so a link counts and an error other than not-exist counts as present. A
+  `realPath` failure keeps the record, a main without such a second record keeps its ports, and git is not asked.
+  `validKey` always comes first, so an invalid key is never looked at (on Windows its walk reads only the elements and
+  links on the way, up to the first refused link). It lists and asks (package `stdin`/`stdout`, `-y` skips) without the
+  lock, then takes `lockRegistry`, reads the registry again and removes only listed records that are still recorded and
+  still unusable (with the same per-kind test), saving only when something was removed; records that became unusable
+  after the prompt are left for the next run, because the user did not confirm them. A replaced main is tested again
+  after the prompt and before the lock (`recheckReplaced`, so that the lock is not held while it reads the filesystem)
+  and under the lock only compared in the registry (`stillPrunable`: its record equals the listed one, and the record
+  that replaces it is still there). It never writes `.env` or `.sail-worktree.json` and runs neither docker, sail nor
+  git: the containers, networks and volumes of a removed worktree are left alone and the output says so (`docker compose
+  ls -a`). Untrusted keys are printed with `%q` and port names through `cell`. A directory that is only out of reach for
+  the moment counts as missing. So removing the record of a project that is still in use (one on a disk that is out of
+  reach for the moment, on Windows one run from a UNC path or through a link to one, which is not a usable key, or a
+  main whose checkout has no project markers at the moment while a main record with markers lies below it: a branch
+  without the project there) frees its ports in the registry until `up`, or for a main worktree also `check` in its
+  project directory, records it again; a port bound at that moment is still skipped by `up`'s `portFree`. The prompt
+  lists the records first.
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
@@ -329,10 +330,10 @@ These come from deliberate decisions; change them only on purpose and update the
   - `up`'s order: main refusal, configuration, detected port variables and `checkOwnEnv`. Then, before the lock, a
     registry read (used only for the base of the main's record and the alias keys), the main's `.env` (`mainPorts`, and
     `mainEnvPorts` for variables that only the record keeps; neither in a bare layout) and the copy source of a new
-    `.env` (`readCopySource`; one that cannot be read fails here, and it is read again under the lock if `.env` is gone
-    by then). Then `upLock`, the registry read again, `migrateAliases`, `recordMainRead`, the worktree's own `.env` read
-    with the override keys refused (`upOverrideKeys`), port allocation, then `sailPath` right before the first write, so
-    nothing is written without Sail and the order of the existing refusals stays the same.
+    `.env` (`readCopySource`; one that cannot be read fails here, or it is read under the lock instead if `.env` is gone
+    by then). Then `upLock`, the registry read again, `migrateAliases`, `recordMainRead`, the worktree's own `.env` (or
+    the copy source) with the override keys refused (`upOverrideKeys`), port allocation, then `sailPath` right before
+    the first write, so nothing is written without Sail and the order of the existing refusals stays the same.
   - `rm` passes only the one compose file to `-f`, so `compose.override.yaml` is not read (volumes defined only there
     are left behind). A broken link named `compose.yaml` is skipped by `findMarker`, so a `docker-compose.yml` next to
     it is used.
