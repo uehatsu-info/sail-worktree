@@ -85,32 +85,54 @@ func mainWorktree(dir string) (path string, bare bool, err error) {
 	return filepath.Clean(p), bare, nil
 }
 
-// parseMainWorktree reads the first record of `git worktree list --porcelain` (records end at a blank line), as
-// parseWorktreeList in ps.go reads every record; \r is removed only on Windows, as there.
+// parseMainWorktree reads the first record of `git worktree list --porcelain`: an empty path is an error, any other
+// text is returned as git printed it.
 func parseMainWorktree(out string, windows bool) (path string, bare bool, err error) {
+	list := parseWorktreeRecords(out, windows)
+	if len(list) == 0 || list[0].Path == "" {
+		return "", false, fmt.Errorf("cannot determine the main worktree")
+	}
+	return list[0].Path, list[0].Bare, nil
+}
+
+// parseWorktreeRecords splits the output of `git worktree list --porcelain` into records, the main worktree first,
+// for mainWorktree and ps (parseWorktreeList). A record starts at a "worktree <path>" line and ends at a blank line or
+// the next "worktree" line; lines before the first one are ignored. Path is git's text untouched (nothing here looks
+// at the filesystem), so each caller decides what it accepts. git does not quote it, so a path with a newline is
+// misread; -z would fix that, but only git 2.36 and later have it. \r is removed only on Windows, where git may end
+// lines with it; elsewhere it may be part of a name. The listing of another repository goes through parseWorktreeList,
+// which filters a path before anything looks at it. worktreeInfo is declared in ps.go.
+func parseWorktreeRecords(out string, windows bool) []worktreeInfo {
+	var list []worktreeInfo
+	in := false // a record is open, so its keys count
 	for _, line := range strings.Split(out, "\n") {
 		if windows {
 			line = strings.TrimSuffix(line, "\r")
 		}
 		if line == "" {
-			if path != "" {
-				break
-			}
+			in = false
 			continue
 		}
 		key, val, _ := strings.Cut(line, " ")
-		switch {
-		case key == "worktree" && path == "":
-			if val == "" {
-				return "", false, fmt.Errorf("cannot determine the main worktree")
-			}
-			path = val
-		case key == "bare" && path != "":
-			bare = true
+		if key == "worktree" {
+			list = append(list, worktreeInfo{Path: val})
+			in = true
+			continue
+		}
+		if !in {
+			continue
+		}
+		cur := &list[len(list)-1]
+		switch key {
+		case "branch":
+			cur.Branch = strings.TrimPrefix(val, "refs/heads/")
+		case "detached":
+			cur.Detached = true
+		case "bare":
+			cur.Bare = true
+		case "prunable":
+			cur.Prunable = true
 		}
 	}
-	if path == "" {
-		return "", false, fmt.Errorf("cannot determine the main worktree")
-	}
-	return path, bare, nil
+	return list
 }

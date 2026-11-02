@@ -840,6 +840,18 @@ func TestParseWorktreeListSkipsRefusedPaths(t *testing.T) {
 	if l := parseWorktreeList(out, func(p string) bool { return p != a }); l != nil {
 		t.Errorf("a refused main worktree does not drop the listing: %+v", l)
 	}
+	// An empty path or one that starts with a quote never reaches the filter (an empty one would be cleaned to ".").
+	seen = nil
+	odd := "worktree " + slash(a) + "\n\nworktree \n\nworktree \"" + slash(b) + "\n\nworktree " + slash(c) + "\n"
+	if l := parseWorktreeList(odd, refuseB); len(l) != 2 || l[0].Path != a || l[1].Path != c {
+		t.Errorf("empty or quoted linked paths are kept: %+v", l)
+	}
+	if len(seen) != 2 || seen[0] != a || seen[1] != c {
+		t.Errorf("filter saw %q", seen)
+	}
+	if l := parseWorktreeList("worktree \nbranch refs/heads/main\n\nworktree "+slash(b)+"\n", anyPath); l != nil {
+		t.Errorf("an empty main path does not drop the listing: %+v", l)
+	}
 }
 
 func TestPsAllFiltersWorktreePathsOfOtherRepositories(t *testing.T) {

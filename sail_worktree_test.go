@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -857,6 +858,60 @@ func TestReadEnvIfRegularSkipsNonRegular(t *testing.T) {
 	}
 	if _, ok := readEnvIfRegular(dir); ok {
 		t.Error("read a directory")
+	}
+}
+
+// envPadding is comment lines of 100 bytes each, at least n bytes in all: many lines, since parseEnv's scanner also
+// limits a single line.
+func envPadding(n int) string {
+	line := "#" + strings.Repeat("x", 98) + "\n"
+	return strings.Repeat(line, (n+len(line)-1)/len(line))
+}
+
+func TestReadEnvIfRegularRefusesALargerFile(t *testing.T) {
+	dir := t.TempDir()
+	pad := envPadding(maxSmallFile - 100)
+	want := strings.Repeat("1", maxSmallFile-len(pad)-3)
+	fit := pad + "A=" + want + "\n"
+	if len(fit) != maxSmallFile {
+		t.Fatalf("fixture is %d bytes", len(fit))
+	}
+	p := filepath.Join(dir, "env")
+	writeFile(t, p, fit)
+	if e, ok := readEnvIfRegular(p); !ok {
+		t.Error("cannot read a file of exactly maxSmallFile bytes")
+	} else if v, _ := e.Get("A"); v != want {
+		t.Errorf("the last line was cut: A=%q", v)
+	}
+	writeFile(t, p, fit+"B=2\n")
+	if _, ok := readEnvIfRegular(p); ok {
+		t.Error("a file larger than maxSmallFile was read (cut)")
+	}
+}
+
+// A cut main .env could drop a port variable near its end and record the default silently; the record is kept instead.
+func TestUpKeepsTheMainRecordWhenTheMainEnvIsTooLarge(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(wt, ".env"), "APP_NAME=x\n")
+	writeFile(t, filepath.Join(main, ".env"), envPadding(maxSmallFile)+"APP_PORT=8124\n")
+	reg := &Registry{Worktrees: map[string]map[string]int{}, Mains: map[string]MainRecord{
+		main: {Ports: map[string]int{"APP_PORT": 8200}, Defaults: map[string]int{"APP_PORT": 80}},
+	}}
+	if err := reg.save(); err != nil {
+		t.Fatal(err)
+	}
+	captureRunner(t)
+	errOut := captureStderr(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ = loadRegistry()
+	if got := reg.Mains[main].Ports["APP_PORT"]; got != 8200 {
+		t.Errorf("the record was replaced from a cut .env: APP_PORT=%d", got)
+	}
+	if !strings.Contains(errOut.String(), mainEnvUnreadable(main)) {
+		t.Errorf("no warning: %q", errOut.String())
 	}
 }
 
@@ -1803,6 +1858,33 @@ func TestParseMainWorktree(t *testing.T) {
 		if _, _, err := parseMainWorktree(bad, false); err == nil {
 			t.Errorf("accepted %q", bad)
 		}
+	}
+	// A bare line of the next record does not count for the main one, even without a blank line between them.
+	if _, bare, err := parseMainWorktree("worktree /r/app\nworktree /r/app.git\nbare\n", false); err != nil || bare {
+		t.Errorf("a later record's bare line counts: %v %v", bare, err)
+	}
+	// A path that starts with a quote is returned as git printed it (ps skips it; see parseWorktreeList).
+	if p, _, err := parseMainWorktree("worktree \"r/app\n", false); err != nil || p != `"r/app` {
+		t.Errorf("leading quote: %q %v", p, err)
+	}
+}
+
+func TestParseWorktreeRecords(t *testing.T) {
+	out := "bare\nworktree /r/app\nHEAD 1\nbranch refs/heads/main\nworktree /r/a\nprunable gone\n\ndetached\n\nworktree \"q\nbare\n"
+	// A bare line before the first record and a key after a blank line belong to no record; a worktree line starts a
+	// record without a blank line before it; the path is kept as git printed it.
+	got := parseWorktreeRecords(out, false)
+	want := []worktreeInfo{{Path: "/r/app", Branch: "main"}, {Path: "/r/a", Prunable: true}, {Path: `"q`, Bare: true}}
+	if !slices.Equal(got, want) {
+		t.Errorf("records = %+v, want %+v", got, want)
+	}
+	crlf := "worktree /r/app\r\nbare\r\n\r\nworktree /r/b\r\n"
+	if got := parseWorktreeRecords(crlf, true); len(got) != 2 || got[0].Path != "/r/app" || !got[0].Bare || got[1].Path != "/r/b" {
+		t.Errorf("CRLF on Windows = %+v", got)
+	}
+	// Elsewhere \r may be part of a name, so it stays (and "\r" alone is no blank line).
+	if got := parseWorktreeRecords(crlf, false); len(got) != 2 || got[0].Path != "/r/app\r" || got[0].Bare {
+		t.Errorf("CRLF elsewhere = %+v", got)
 	}
 }
 

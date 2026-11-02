@@ -33,9 +33,9 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
-| `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry) |
+| `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry), `parseWorktreeRecords` (the `git worktree list --porcelain` parser `ps` shares; paths come unquoted, and `-z` needs git 2.36, so a path with a newline is misread) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart (`counterpart`, `isProjectDir`) |
-| `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey`/`foldMains` (aliases folded in memory, replaced mains marked), `psPortsCell`, `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
+| `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey`/`foldMains` (aliases folded in memory, replaced mains marked), `psPortsCell`, `listWorktrees`/`parseWorktreeList` (on `parseWorktreeRecords`), `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
 | `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `staleWorktreeKey`, `recheckReplaced` |
@@ -227,23 +227,23 @@ These come from deliberate decisions; change them only on purpose and update the
   already refuses one in the configuration; the check stays for the registry). A main directory that does not exist is
   never recorded (`counterpart` may return a lexical path), nor one that is not a project directory by `lookupProject`'s
   rule (`isProjectDir`, `configOrLaravel`; stricter than prune's `projectMarkers` on purpose), as such a main never
-  runs; `check`'s "has no project directory" warning covers both. A `.env` that is a link or not a regular file is not
-  read for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves
-  nothing. The variables are those of the run's configuration (`cfg.PortVars`), which may be a branch's, so `recordMain`
-  merges: a variable of the old record's `defaults` that the run does not know keeps its recorded default and port. Only
-  a `check` run in the main worktree itself (`checkTarget.inMain`) replaces the record, so a variable that left the
-  project is dropped only there (or by hand); until then it keeps its port reserved, and a variable that only a branch
-  has is dropped there and comes back with that branch's next `up` or `check`. A kept value is refreshed from a read
-  before the lock for the record's `defaults` (`mainRead.kept`: `readMains`' read of the current main in `check`,
-  `mainEnvPorts` in `up`), only when that read succeeded (`keptOK`) and the record is still its base; otherwise it stays
-  as recorded. A `check` in the main worktree re-records or drops it, and a `check` anywhere else (`refreshMains`)
-  re-reads it.
-  An unreadable `.env`, or a record that another run changed while this run waited for the lock, keeps the whole record,
-  `inMain` included. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias
-  paths in a record's `worktrees` list are folded like the top-level `worktrees` keys: by `migrate` (saved by `up` and
-  `rm`; only in the current main's list, so an alias in another main's list is not folded by it), and by `check` in
-  memory only (`foldKey`, the key `ofMain` looks a worktree up by), and `prune` keeps them (`staleWorktreeKey`); an
-  entry that fails `validKey` is never resolved.
+  runs; `check`'s "has no project directory" warning covers both. A `.env` that is a link, not a regular file or larger
+  than 1 MiB (`readEnvIfRegular` refuses it rather than cut it) is not read for the record, although `up` copies `.env`
+  through a link: the record keeps its ports, and a new record reserves nothing. The variables are those of the run's
+  configuration (`cfg.PortVars`), which may be a branch's, so `recordMain` merges: a variable of the old record's
+  `defaults` that the run does not know keeps its recorded default and port. Only a `check` run in the main worktree
+  itself (`checkTarget.inMain`) replaces the record, so a variable that left the project is dropped only there (or by
+  hand); until then it keeps its port reserved, and a variable that only a branch has is dropped there and comes back
+  with that branch's next `up` or `check`. A kept value is refreshed from a read before the lock for the record's
+  `defaults` (`mainRead.kept`: `readMains`' read of the current main in `check`, `mainEnvPorts` in `up`), only when that
+  read succeeded (`keptOK`) and the record is still its base; otherwise it stays as recorded. A `check` in the main
+  worktree re-records or drops it, and a `check` anywhere else (`refreshMains`) re-reads it. An unreadable `.env`, or a
+  record that another run changed while this run waited for the lock, keeps the whole record, `inMain` included.
+  `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias paths in a record's
+  `worktrees` list are folded like the top-level `worktrees` keys: by `migrate` (saved by `up` and `rm`; only in the
+  current main's list, so an alias in another main's list is not folded by it), and by `check` in memory only
+  (`foldKey`, the key `ofMain` looks a worktree up by), and `prune` keeps them (`staleWorktreeKey`); an entry that fails
+  `validKey` is never resolved.
 - **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once,
   so nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`,
   fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the process
