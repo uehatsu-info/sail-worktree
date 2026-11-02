@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1711,6 +1712,33 @@ func TestParseMainWorktree(t *testing.T) {
 		if _, _, err := parseMainWorktree(bad, false); err == nil {
 			t.Errorf("accepted %q", bad)
 		}
+	}
+	// A bare line of the next record does not count for the main one, even without a blank line between them.
+	if _, bare, err := parseMainWorktree("worktree /r/app\nworktree /r/app.git\nbare\n", false); err != nil || bare {
+		t.Errorf("a later record's bare line counts: %v %v", bare, err)
+	}
+	// A path that starts with a quote is returned as git printed it (ps skips it; see parseWorktreeList).
+	if p, _, err := parseMainWorktree("worktree \"r/app\n", false); err != nil || p != `"r/app` {
+		t.Errorf("leading quote: %q %v", p, err)
+	}
+}
+
+func TestParseWorktreeRecords(t *testing.T) {
+	out := "bare\nworktree /r/app\nHEAD 1\nbranch refs/heads/main\nworktree /r/a\nprunable gone\n\ndetached\n\nworktree \"q\nbare\n"
+	// A bare line before the first record and a key after a blank line belong to no record; a worktree line starts a
+	// record without a blank line before it; the path is kept as git printed it.
+	got := parseWorktreeRecords(out, false)
+	want := []worktreeInfo{{Path: "/r/app", Branch: "main"}, {Path: "/r/a", Prunable: true}, {Path: `"q`, Bare: true}}
+	if !slices.Equal(got, want) {
+		t.Errorf("records = %+v, want %+v", got, want)
+	}
+	crlf := "worktree /r/app\r\nbare\r\n\r\nworktree /r/b\r\n"
+	if got := parseWorktreeRecords(crlf, true); len(got) != 2 || got[0].Path != "/r/app" || !got[0].Bare || got[1].Path != "/r/b" {
+		t.Errorf("CRLF on Windows = %+v", got)
+	}
+	// Elsewhere \r may be part of a name, so it stays (and "\r" alone is no blank line).
+	if got := parseWorktreeRecords(crlf, false); len(got) != 2 || got[0].Path != "/r/app\r" || got[0].Bare {
+		t.Errorf("CRLF elsewhere = %+v", got)
 	}
 }
 

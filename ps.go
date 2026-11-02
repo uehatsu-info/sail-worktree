@@ -59,66 +59,29 @@ type worktreeInfo struct {
 	Prunable bool
 }
 
-// parseWorktreeList parses the porcelain output: records are separated by a blank line and start with "worktree
-// <path>". The main worktree is first. A record whose path git C-quoted (it starts with a double quote) is skipped,
-// because the path cannot be recovered without -z, and so is a record whose path usable refuses, before anything
-// looks at that path; if that is the main worktree's record the whole listing is dropped (nil), since every index and
-// the project name depend on it. Paths are made real as far as they exist.
+// parseWorktreeList reads the porcelain output (parseWorktreeRecords) and keeps the records whose path can be used.
+// A path that is empty or starts with a double quote is skipped (git prints paths unquoted, but older versions of this
+// tool took such a name for a quoted one and the rule is kept; a name with a newline is misread without -z), and so is
+// a path that usable refuses, before anything looks at that path; if that is the main worktree's record the whole
+// listing is dropped (nil), since every index and the project name depend on it. Paths are made real as far as they
+// exist.
 func parseWorktreeList(out string, usable func(string) bool) []worktreeInfo {
 	var list []worktreeInfo
-	var cur *worktreeInfo
-	skip, first, bad := false, true, false
-	flush := func() {
-		if cur != nil {
-			if skip && first {
-				bad = true
-			} else if !skip {
-				list = append(list, *cur)
+	for i, w := range parseWorktreeRecords(out, runtime.GOOS == "windows") {
+		// The raw text is checked first: filepath.Clean would turn "" into ".".
+		ok := w.Path != "" && !strings.HasPrefix(w.Path, `"`)
+		if ok {
+			w.Path = filepath.Clean(w.Path)
+			ok = usable(w.Path)
+		}
+		if !ok {
+			if i == 0 {
+				return nil
 			}
-			first = false
-		}
-		cur, skip = nil, false
-	}
-	for _, line := range strings.Split(out, "\n") {
-		if runtime.GOOS == "windows" {
-			line = strings.TrimSuffix(line, "\r")
-		}
-		if line == "" {
-			flush()
 			continue
 		}
-		key, val, _ := strings.Cut(line, " ")
-		switch key {
-		case "worktree":
-			flush()
-			cur = &worktreeInfo{}
-			p := filepath.Clean(val)
-			if val == "" || strings.HasPrefix(val, `"`) || !usable(p) {
-				skip = true
-				continue
-			}
-			cur.Path = looseRealPath(p)
-		case "branch":
-			if cur != nil {
-				cur.Branch = strings.TrimPrefix(val, "refs/heads/")
-			}
-		case "detached":
-			if cur != nil {
-				cur.Detached = true
-			}
-		case "bare":
-			if cur != nil {
-				cur.Bare = true
-			}
-		case "prunable":
-			if cur != nil {
-				cur.Prunable = true
-			}
-		}
-	}
-	flush()
-	if bad {
-		return nil
+		w.Path = looseRealPath(w.Path)
+		list = append(list, w)
 	}
 	return list
 }
