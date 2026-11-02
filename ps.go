@@ -52,9 +52,10 @@ type worktreeInfo struct {
 
 // parseWorktreeList parses the porcelain output: records are separated by a blank line and start with "worktree
 // <path>". The main worktree is first. A record whose path git C-quoted (it starts with a double quote) is skipped,
-// because the path cannot be recovered without -z; if that is the main worktree's record the whole listing is
-// dropped (nil), since every index and the project name depend on it. Paths are made real as far as they exist.
-func parseWorktreeList(out string) []worktreeInfo {
+// because the path cannot be recovered without -z, and so is a record whose path usable refuses, before anything
+// looks at that path; if that is the main worktree's record the whole listing is dropped (nil), since every index and
+// the project name depend on it. Paths are made real as far as they exist.
+func parseWorktreeList(out string, usable func(string) bool) []worktreeInfo {
 	var list []worktreeInfo
 	var cur *worktreeInfo
 	skip, first, bad := false, true, false
@@ -82,11 +83,12 @@ func parseWorktreeList(out string) []worktreeInfo {
 		case "worktree":
 			flush()
 			cur = &worktreeInfo{}
-			if val == "" || strings.HasPrefix(val, `"`) {
+			p := filepath.Clean(val)
+			if val == "" || strings.HasPrefix(val, `"`) || !usable(p) {
 				skip = true
 				continue
 			}
-			cur.Path = looseRealPath(filepath.Clean(val))
+			cur.Path = looseRealPath(p)
 		case "branch":
 			if cur != nil {
 				cur.Branch = strings.TrimPrefix(val, "refs/heads/")
@@ -140,15 +142,23 @@ func gitListEnv() []string {
 	return out
 }
 
-// listWorktrees lists the worktrees of the repository that contains dir (the first one is the main worktree). Only
-// `worktree list` is used, with fsmonitor off, so that a repository's own configuration cannot start a program.
-func listWorktrees(dir string) ([]worktreeInfo, error) {
+// anyPath accepts every worktree path: those of the repository the user runs in are the user's own.
+func anyPath(string) bool { return true }
+
+// registryPathOK decides which worktree paths of a repository found through the registry may be used as paths: they
+// come from that repository's metadata, as untrusted as the registry (replaceable in tests).
+var registryPathOK = validKey
+
+// listWorktrees lists the worktrees of the repository that contains dir (the first one is the main worktree), keeping
+// only the paths usable accepts. Only `worktree list` is used, with fsmonitor off, so that a repository's own
+// configuration cannot start a program.
+func listWorktrees(dir string, usable func(string) bool) ([]worktreeInfo, error) {
 	out, err := runOutput(dir, gitListEnv(), 10*time.Second, "git",
 		"-c", "core.fsmonitor=false", "worktree", "list", "--porcelain")
 	if err != nil {
 		return nil, fmt.Errorf("git worktree list: %w", err)
 	}
-	list := parseWorktreeList(string(out))
+	list := parseWorktreeList(string(out), usable)
 	if len(list) == 0 {
 		return nil, fmt.Errorf("git worktree list: cannot read the main worktree's path")
 	}
@@ -242,7 +252,7 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 		repoErr = err
 	} else if top, _, err := worktreeRootAndPrefix(dir); err != nil {
 		repoErr = err
-	} else if l, err := listWorktrees(top); err != nil {
+	} else if l, err := listWorktrees(top, anyPath); err != nil {
 		repoErr = err
 	} else {
 		repos = append(repos, l)
@@ -265,7 +275,7 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 		if !ok && all && validKey(key) {
 			// Another repository: ask git in the entry's own directory (only if it still exists).
 			if fi, err := os.Stat(key); err == nil && fi.IsDir() {
-				if l, err := listWorktrees(key); err == nil && len(l) > 0 {
+				if l, err := listWorktrees(key, registryPathOK); err == nil && len(l) > 0 {
 					repos = append(repos, l)
 					ri, wi, ok = attribute(key, repos)
 				}

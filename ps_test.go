@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -83,7 +84,7 @@ func TestParseWorktreeList(t *testing.T) {
 		"worktree " + slash(gone) + "\nHEAD 4444\nbranch refs/heads/old\nprunable gitdir file points to non-existent location\n\n" +
 		"worktree \"" + slash(base) + "/caf\\303\\251\"\nHEAD 5555\nbranch refs/heads/q\n\n" +
 		"worktree " + slash(filepath.Join(base, "bare")) + "\nbare\n"
-	got := parseWorktreeList(out)
+	got := parseWorktreeList(out, anyPath)
 	want := []worktreeInfo{
 		{Path: a, Branch: "main"},
 		{Path: b, Branch: "feature/x"},
@@ -101,14 +102,14 @@ func TestParseWorktreeList(t *testing.T) {
 	}
 	// A skipped main record would shift every index, so the listing is dropped as a whole.
 	quotedMain := "worktree \"" + slash(base) + "/caf\\303\\251\"\nHEAD 1\nbranch refs/heads/main\n\nworktree " + slash(b) + "\nHEAD 2\nbranch refs/heads/x\n"
-	if l := parseWorktreeList(quotedMain); l != nil {
+	if l := parseWorktreeList(quotedMain, anyPath); l != nil {
 		t.Errorf("listing with a skipped main record = %+v", l)
 	}
 	// A listing without any prunable line (git before 2.31) still parses.
-	if l := parseWorktreeList("worktree " + slash(a) + "\nHEAD 1\nbranch refs/heads/main\n"); len(l) != 1 || l[0].Prunable {
+	if l := parseWorktreeList("worktree "+slash(a)+"\nHEAD 1\nbranch refs/heads/main\n", anyPath); len(l) != 1 || l[0].Prunable {
 		t.Errorf("old git listing = %+v", l)
 	}
-	if l := parseWorktreeList(""); len(l) != 0 {
+	if l := parseWorktreeList("", anyPath); len(l) != 0 {
 		t.Errorf("empty listing = %+v", l)
 	}
 }
@@ -190,7 +191,7 @@ func TestListWorktreesIgnoresGitDirVariables(t *testing.T) {
 	otherMain, _ := newRepoWithWorktree(t, other, "other", "x")
 	t.Setenv("GIT_DIR", filepath.Join(otherMain, ".git"))
 	t.Setenv("GIT_WORK_TREE", otherMain)
-	l, err := listWorktrees(wt)
+	l, err := listWorktrees(wt, anyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -810,5 +811,68 @@ func TestPsDockerKeepsStaleStatesInAMixedList(t *testing.T) {
 	got := statesByBranch(t)
 	if got["feat"] != stateRunning || got["gone"] != stateStale || len(*calls) != 1 {
 		t.Errorf("states = %v, docker calls = %d", got, len(*calls))
+	}
+}
+
+func TestParseWorktreeListSkipsRefusedPaths(t *testing.T) {
+	base := realTempDir(t)
+	a, b, c := filepath.Join(base, "a"), filepath.Join(base, "b"), filepath.Join(base, "c")
+	slash := filepath.ToSlash
+	out := "worktree " + slash(a) + "\nbranch refs/heads/main\n\nworktree " + slash(b) + "\nbranch refs/heads/x\n\n" +
+		"worktree " + slash(c) + "\nbranch refs/heads/y\n"
+	var seen []string
+	refuseB := func(p string) bool {
+		seen = append(seen, p)
+		return p != b
+	}
+	l := parseWorktreeList(out, refuseB)
+	if len(l) != 2 || l[0].Path != a || l[1].Path != c {
+		t.Errorf("a refused linked worktree is kept: %+v", l)
+	}
+	// The filter sees the cleaned path as git printed it, before anything resolves it.
+	if len(seen) != 3 || seen[1] != b {
+		t.Errorf("filter saw %q", seen)
+	}
+	if l := parseWorktreeList(out, func(p string) bool { return p != a }); l != nil {
+		t.Errorf("a refused main worktree does not drop the listing: %+v", l)
+	}
+}
+
+func TestPsAllFiltersWorktreePathsOfOtherRepositories(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	otherMain, otherWt := newRepoWithWorktree(t, realTempDir(t), "other", "x")
+	writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}, otherWt: {"APP_PORT": 82}})
+	var asked []string
+	old := registryPathOK
+	registryPathOK = func(p string) bool {
+		asked = append(asked, p)
+		return validKey(p) && p != otherMain
+	}
+	t.Cleanup(func() { registryPathOK = old })
+	other := func() entry {
+		t.Helper()
+		var found []entry
+		for _, e := range psJSON(t, "--all") {
+			if e.Dir == otherWt {
+				found = append(found, e)
+			}
+		}
+		if len(found) != 1 {
+			t.Fatalf("entries for the other repository: %+v", found)
+		}
+		return found[0]
+	}
+	if e := other(); e.State != stateUnattributed || e.Worktree != "" {
+		t.Errorf("another repository whose main path is refused is still attributed: %+v", e)
+	}
+	// Only the other repository's listing goes through the filter; the current one is the user's own.
+	if len(asked) == 0 || slices.Contains(asked, wt) || slices.Contains(asked, main) {
+		t.Errorf("filter asked about %q", asked)
+	}
+
+	// A refused linked worktree next to the main one (the usual layout): its entry belongs to no listed worktree.
+	registryPathOK = func(p string) bool { return validKey(p) && p != otherWt }
+	if e := other(); e.State != stateUnattributed || e.Worktree != "" {
+		t.Errorf("an entry of a refused linked worktree is attributed: %+v", e)
 	}
 }

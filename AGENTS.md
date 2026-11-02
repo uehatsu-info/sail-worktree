@@ -110,8 +110,12 @@ These come from deliberate decisions; change them only on purpose and update the
   path such as `\\host\share`, `\\?\` or `\??\` can open a network connection) is never used as a directory, by any
   command (`migrate` in `up` and `rm` included); git runs in registry directories only through
   `listWorktrees` (`worktree list` with `core.fsmonitor=false`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and
-  `GIT_COMMON_DIR` removed). External queries go through `runOutput` (explicit env, timeout, no stdin, stdout capped
-  while read). docker is asked once (`dockerProjects`, through the replaceable `output`, with `cleanEnv(nil)` in the
+  `GIT_COMMON_DIR` removed), and the worktree paths such a listing prints come from that repository's metadata, so
+  `parseWorktreeList` drops a record whose path fails `registryPathOK` (`validKey`) before anything looks at it (a
+  refused main record drops the listing). git itself still checks those paths while it lists them; only this tool's
+  own use is prevented. The listing of the repository the user runs in passes `anyPath`. External queries go through
+  `runOutput` (explicit env, timeout, no stdin, stdout capped while read). docker is asked once (`dockerProjects`,
+  through the replaceable `output`, with `cleanEnv(nil)` in the
   system temp directory); a failure is the state `unknown`, never an error, and a test that does not fake `output`
   must pass `--no-docker`. Every untrusted string is printed through `cell`/`escapeControl`. The JSON field names of
   `ps` are a public contract (`--json` goes through `jsonEscape`). Output goes to the package `stdout`, never
