@@ -59,6 +59,7 @@ sail-worktree up -d
 
 - The compose file and the port variables come from `.sail-worktree.json` if there is one; otherwise they are detected from the compose file on every run (only `- ...` list lines with a host port mapping such as `'${APP_PORT:-80}:80'` count, so a usual `environment:` entry such as `- DB_PORT=${DB_PORT:-3306}` is not rewritten). Without the file, a branch whose compose file adds or removes a port variable gets its ports assigned on the next `up`, or released from the registry (the old line in `.env` stays).
 - If `.env` does not exist, it is copied from the main worktree's `.env` (or `.env.example` if that is missing).
+- In a bare repository with linked worktrees (`git clone --bare`, then `git worktree add`), there is no main worktree checkout: every worktree is a linked one, `.env` is copied from the worktree's own `.env.example` (a regular file only, not a link; without one, create `.env` first), and nothing is recorded as a main worktree (so no worktree uses the default ports).
 - Nothing is written when `vendor/bin/sail` is missing.
 - Each port variable gets a free port. The search starts at the default value + 1, leaving the default value to the main worktree.
 - Ports already assigned to other worktrees and ports in use on the host are skipped.
@@ -150,7 +151,7 @@ PORT  VARIABLE         WORKTREE  SUBDIR  STATE    HOST                       CON
 
 ### `sail-worktree check`
 
-Records the main worktree of the repository you are in, then reports ports that more than one main worktree or worktree uses, across every repository in the registry. Run it anywhere inside the repository, in the main worktree or in a linked one: this is how a repository that you use only in its main worktree becomes known. Outside a repository it records no main worktree of its own (a warning says why), but still updates the recorded ones as described below.
+Records the main worktree of the repository you are in, then reports ports that more than one main worktree or worktree uses, across every repository in the registry. Run it anywhere inside the repository, in the main worktree or in a linked one: this is how a repository that you use only in its main worktree becomes known. Outside a repository it records no main worktree of its own (a warning says why), but still updates the recorded ones as described below. In a bare repository it records none either, since there is no main worktree checkout (a warning says so).
 
 ```
 recorded main worktree: "/work/shop"
@@ -222,7 +223,7 @@ sail-worktree up -d
 - A project directory that resolves outside the worktree is an error. As with the compose check, a link swapped in after these checks is not caught.
 - When you run `up`, `stop` or `rm` below the project directory (for example in `laravel/app`), it prints `project directory: "<path>"` to stderr.
 - When no project directory is found, the error names the subdirectories that would be found, and the directories on the way up that have only `artisan` or only a compose file, so running a command at the worktree root tells you where to go.
-- The project name is `<main worktree name>-<worktree name>-<hash of the project directory>`, where the two names are lower-cased, each run of characters other than `a-z`, `0-9`, `_` and `-` becomes one `-`, and `-` and `_` are trimmed at both ends. When nothing is left (worktree names without an ASCII letter or digit), `wt` is used instead. For a project at the worktree root this is the same name as before.
+- The project name is `<main worktree name>-<worktree name>-<hash of the project directory>`, where the two names are lower-cased, each run of characters other than `a-z`, `0-9`, `_` and `-` becomes one `-`, and `-` and `_` are trimmed at both ends. When nothing is left (worktree names without an ASCII letter or digit), `wt` is used instead. For a project at the worktree root this is the same name as before. In a bare repository the main worktree name is the bare directory's (`myapp.git` gives `myapp-git`).
 
 ## Notes
 

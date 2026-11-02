@@ -66,20 +66,51 @@ func realPath(p string) (string, error) {
 	return filepath.Clean(r), nil
 }
 
-// mainWorktree returns the path of the first listed worktree (the main one).
-func mainWorktree(dir string) (string, error) {
-	out, err := gitOut(dir, "worktree", "list", "--porcelain")
+// mainWorktree returns the path of the first listed worktree (the main one), and whether that entry is a bare
+// repository. In a bare layout every checkout is a linked worktree, so there is no main worktree checkout: the bare
+// directory still names the repository (the project name's slug), but must never be read as a project directory.
+func mainWorktree(dir string) (path string, bare bool, err error) {
+	out, err := gitRaw(dir, "worktree", "list", "--porcelain")
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
+	p, bare, err := parseMainWorktree(out, runtime.GOOS == "windows")
+	if err != nil {
+		return "", false, err
+	}
+	// If the real path cannot be resolved (e.g. the main directory is gone and prunable), continue with the cleaned path.
+	if r, err := realPath(p); err == nil {
+		return r, bare, nil
+	}
+	return filepath.Clean(p), bare, nil
+}
+
+// parseMainWorktree reads the first record of `git worktree list --porcelain` (records end at a blank line), as
+// parseWorktreeList in ps.go reads every record; \r is removed only on Windows, as there.
+func parseMainWorktree(out string, windows bool) (path string, bare bool, err error) {
 	for _, line := range strings.Split(out, "\n") {
-		if p, ok := strings.CutPrefix(line, "worktree "); ok {
-			// If the real path cannot be resolved (e.g. the main directory is gone and prunable), continue with the cleaned path.
-			if r, err := realPath(p); err == nil {
-				return r, nil
+		if windows {
+			line = strings.TrimSuffix(line, "\r")
+		}
+		if line == "" {
+			if path != "" {
+				break
 			}
-			return filepath.Clean(p), nil
+			continue
+		}
+		key, val, _ := strings.Cut(line, " ")
+		switch {
+		case key == "worktree" && path == "":
+			if val == "" {
+				return "", false, fmt.Errorf("cannot determine the main worktree")
+			}
+			path = val
+		case key == "bare" && path != "":
+			bare = true
 		}
 	}
-	return "", fmt.Errorf("cannot determine the main worktree")
+	if path == "" {
+		return "", false, fmt.Errorf("cannot determine the main worktree")
+	}
+	return path, bare, nil
 }

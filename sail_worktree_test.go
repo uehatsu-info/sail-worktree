@@ -1514,3 +1514,161 @@ func TestEveryCommandAcceptsHelp(t *testing.T) {
 		t.Errorf("rm -y --help: err = %v, calls = %v", err, *calls)
 	}
 }
+
+// setupBareWorktreeRepo creates a bare repository (app.git) with two linked worktrees, app-main on main and app-feat
+// on feat, and chdirs into app-feat. There is no main worktree checkout (#69).
+func setupBareWorktreeRepo(t *testing.T) (bare, mainWt, wt string) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AppData", t.TempDir())
+	base := realTempDir(t)
+	src := filepath.Join(base, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, src, "init", "-q", "-b", "main")
+	writeFile(t, filepath.Join(src, configName), `{"compose":"compose.yaml","port_vars":[{"name":"APP_PORT","default":80}]}`)
+	runGit(t, src, "add", ".")
+	runGit(t, src, "commit", "-q", "-m", "init")
+	bare = filepath.Join(base, "app.git")
+	runGit(t, base, "clone", "-q", "--bare", src, bare)
+	mainWt = filepath.Join(base, "app-main")
+	wt = filepath.Join(base, "app-feat")
+	runGit(t, bare, "worktree", "add", "-q", mainWt, "main")
+	runGit(t, bare, "worktree", "add", "-q", "-b", "feat", wt)
+	t.Chdir(wt)
+	return bare, mainWt, wt
+}
+
+func TestParseMainWorktree(t *testing.T) {
+	bareOut := "worktree /r/app.git\nbare\n\nworktree /r/app-feat\nHEAD abc\nbranch refs/heads/feat\n"
+	if p, bare, err := parseMainWorktree(bareOut, false); err != nil || p != "/r/app.git" || !bare {
+		t.Errorf("bare listing: %q %v %v", p, bare, err)
+	}
+	normal := "worktree /r/app\nHEAD abc\nbranch refs/heads/main\n\nworktree /r/app-feat\nbare\n"
+	if p, bare, err := parseMainWorktree(normal, false); err != nil || p != "/r/app" || bare {
+		t.Errorf("a bare line of a later record counts: %q %v %v", p, bare, err)
+	}
+	crlf := strings.ReplaceAll(bareOut, "\n", "\r\n")
+	if p, bare, err := parseMainWorktree(crlf, true); err != nil || p != "/r/app.git" || !bare {
+		t.Errorf("CRLF listing on Windows: %q %v %v", p, bare, err)
+	}
+	for _, bad := range []string{"", "worktree \nbare\n\nworktree /r/app-feat\n"} {
+		if _, _, err := parseMainWorktree(bad, false); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+}
+
+func TestUpInABareLayoutCopiesOwnEnvExampleAndRecordsNoMain(t *testing.T) {
+	bare, mainWt, wt := setupBareWorktreeRepo(t)
+	writeFile(t, filepath.Join(mainWt, ".env"), "FROM=main\n")
+	writeFile(t, filepath.Join(wt, ".env.example"), "FROM=example\nAPP_URL=http://localhost\n")
+	writeFakeSail(t, wt)
+	captureRunner(t)
+	out := captureStdout(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	e, err := readEnv(filepath.Join(wt, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := e.Get("FROM"); v != "example" {
+		t.Errorf("FROM=%q, want the worktree's own .env.example", v)
+	}
+	if v, _ := e.Get("COMPOSE_PROJECT_NAME"); v != projectName(bare, wt, wt) {
+		t.Errorf("COMPOSE_PROJECT_NAME=%q, want %q", v, projectName(bare, wt, wt))
+	}
+	if !strings.Contains(out.String(), "copied from .env.example") {
+		t.Errorf("output:\n%s", out)
+	}
+	reg, _ := loadRegistry()
+	if len(reg.Mains) != 0 {
+		t.Errorf("a main was recorded in a bare layout: %v", reg.Mains)
+	}
+	if reg.Worktrees[wt]["APP_PORT"] == 0 {
+		t.Errorf("no ports recorded: %v", reg.Worktrees)
+	}
+}
+
+func TestUpInABareLayoutWithoutEnvExampleFails(t *testing.T) {
+	_, _, wt := setupBareWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	calls := captureRunner(t)
+	err := cmdUp(nil)
+	if err == nil || !strings.Contains(err.Error(), "the repository is bare") || !strings.Contains(err.Error(), "create .env first") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
+		t.Error(".env was written")
+	}
+	if len(*calls) != 0 {
+		t.Errorf("sail ran: %v", *calls)
+	}
+}
+
+func TestUpInABareLayoutRefusesALinkedEnvExample(t *testing.T) {
+	_, _, wt := setupBareWorktreeRepo(t)
+	target := filepath.Join(t.TempDir(), "secret")
+	writeFile(t, target, "SECRET=1\n")
+	symlinkOrSkip(t, target, filepath.Join(wt, ".env.example"))
+	writeFakeSail(t, wt)
+	captureRunner(t)
+	err := cmdUp(nil)
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
+		t.Error(".env was written")
+	}
+}
+
+func TestRmInABareLayout(t *testing.T) {
+	bare, _, wt := setupBareWorktreeRepo(t)
+	writeRmFixtures(t, bare, wt)
+	saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 81}}})
+	calls := captureRunner(t)
+	if err := cmdRm([]string{"-y"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 || (*calls)[0].name != "docker" {
+		t.Fatalf("calls = %v", *calls)
+	}
+	reg, _ := loadRegistry()
+	if _, ok := reg.Worktrees[wt]; ok || len(reg.Mains) != 0 {
+		t.Errorf("registry = %+v", reg)
+	}
+}
+
+func TestUpInABareLayoutRefusesOverridesInEnvExample(t *testing.T) {
+	_, _, wt := setupBareWorktreeRepo(t)
+	writeFile(t, filepath.Join(wt, ".env.example"), "COMPOSE_FILE=other.yaml\n")
+	writeFakeSail(t, wt)
+	calls := captureRunner(t)
+	err := cmdUp(nil)
+	if err == nil || !strings.HasPrefix(err.Error(), ".env.example has COMPOSE_FILE") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(wt, ".env")); !os.IsNotExist(err) || len(*calls) != 0 {
+		t.Errorf(".env was written or sail ran: %v", *calls)
+	}
+}
+
+// The worktree on the main branch is a linked worktree like any other in a bare layout.
+func TestUpInABareLayoutRunsInTheMainBranchWorktree(t *testing.T) {
+	_, mainWt, _ := setupBareWorktreeRepo(t)
+	t.Chdir(mainWt)
+	writeFile(t, filepath.Join(mainWt, ".env"), "APP_PORT=80\n")
+	writeFakeSail(t, mainWt)
+	captureRunner(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := readEnv(filepath.Join(mainWt, ".env")); e == nil {
+		t.Fatal("no .env")
+	} else if v, _ := e.Get("APP_PORT"); v == "" || v == "80" {
+		t.Errorf("APP_PORT=%q, want a port above the default", v)
+	}
+}
