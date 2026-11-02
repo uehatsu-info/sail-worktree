@@ -488,16 +488,46 @@ func TestProjectNameIsStableAcrossSymlinkedPaths(t *testing.T) {
 	}
 }
 
+// oldProjectName is the formula of older versions for a project at the worktree root. It is valid only for a non-empty
+// slug: an empty one gave "-<hash>".
+func oldProjectName(main, root string) string {
+	sum := sha1.Sum([]byte(root))
+	slug := regexp.MustCompile(`[^a-z0-9_-]+`).ReplaceAllString(strings.ToLower(filepath.Base(main)+"-"+filepath.Base(root)), "-")
+	return strings.Trim(slug, "-_") + "-" + hex.EncodeToString(sum[:])[:6]
+}
+
 // A project at the worktree root must keep the name older versions wrote to .env, or rm refuses existing worktrees.
 func TestProjectNameOfRootProjectIsUnchanged(t *testing.T) {
-	old := func(main, root string) string {
-		sum := sha1.Sum([]byte(root))
-		slug := regexp.MustCompile(`[^a-z0-9_-]+`).ReplaceAllString(strings.ToLower(filepath.Base(main)+"-"+filepath.Base(root)), "-")
-		return strings.Trim(slug, "-_") + "-" + hex.EncodeToString(sum[:])[:6]
-	}
 	main := filepath.Join(t.TempDir(), "My App")
 	wt := filepath.Join(t.TempDir(), "my-app_feat.x")
-	if got, want := projectName(main, wt, wt), old(main, wt); got != want {
+	if got, want := projectName(main, wt, wt), oldProjectName(main, wt); got != want {
+		t.Errorf("projectName = %q, the old name was %q", got, want)
+	}
+}
+
+// compose refuses a project name that does not match its rule, so sail up and rm would fail (#35).
+func TestProjectNameIsValidForComposeWithoutASCIINames(t *testing.T) {
+	compose := regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	for _, tc := range []struct{ main, wt string }{
+		{"\u30a2\u30d7\u30ea", "\u30a2\u30d7\u30ea-\u65b0\u6a5f\u80fd"},
+		{"\u00e9\u00e8", "\u00e0"},
+		{"__", "-_."},
+	} {
+		mainTop := filepath.Join(t.TempDir(), tc.main)
+		wtTop := filepath.Join(t.TempDir(), tc.wt)
+		got := projectName(mainTop, wtTop, wtTop)
+		sum := sha1.Sum([]byte(wtTop))
+		if want := "wt-" + hex.EncodeToString(sum[:])[:6]; got != want {
+			t.Errorf("%q, %q: projectName = %q, want %q", tc.main, tc.wt, got, want)
+		}
+		if !compose.MatchString(got) || !safeProjectName.MatchString(got) {
+			t.Errorf("%q, %q: %q does not match the compose rule", tc.main, tc.wt, got)
+		}
+	}
+	// A name with an ASCII letter or digit keeps the old formula, even next to non-ASCII characters.
+	mainTop := filepath.Join(t.TempDir(), "\u30a2\u30d7\u30ea")
+	wtTop := filepath.Join(t.TempDir(), "\u30a2-feat_")
+	if got, want := projectName(mainTop, wtTop, wtTop), oldProjectName(mainTop, wtTop); got != want || !compose.MatchString(got) {
 		t.Errorf("projectName = %q, the old name was %q", got, want)
 	}
 }
