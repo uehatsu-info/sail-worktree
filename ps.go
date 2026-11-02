@@ -413,7 +413,7 @@ func mainEntries(reg *Registry, v *registryView) (entries []entry, hidden int) {
 			ports = map[string]int{}
 		}
 		// Lstat, as check does: a main key that is a link is not followed (worktree keys keep their older os.Stat).
-		usable := validKey(key) && isDir(key)
+		usable := usableDir(key)
 		isUsable := func() bool { return usable }
 		ri, _, p := v.place(key, isUsable, isUsable, func(k string, repos [][]worktreeInfo) (int, int, bool) {
 			ri, ok := attributeMain(k, repos)

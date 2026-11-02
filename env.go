@@ -36,7 +36,7 @@ func detectPortVars(composeYAML string) []PortVar {
 				continue
 			}
 			d, err := strconv.Atoi(m[2])
-			if err != nil || d < 1 || d > 65535 {
+			if err != nil || !validPort(d) {
 				continue
 			}
 			seen[m[1]] = true

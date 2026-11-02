@@ -129,7 +129,7 @@ type mainRefresh struct {
 func readMains(reg *Registry) map[string]mainRefresh {
 	out := map[string]mainRefresh{}
 	for k, rec := range reg.Mains {
-		if !validKey(k) || !isDir(k) {
+		if !usableDir(k) {
 			continue
 		}
 		env, ok := readMainEnv(k)
@@ -191,7 +191,7 @@ func checkConflicts(r *report, reg *Registry) {
 	mains := slices.Sorted(maps.Keys(reg.Mains))
 	for _, k := range mains {
 		rec := reg.Mains[k]
-		if !validKey(k) || !isDir(k) {
+		if !usableDir(k) {
 			r.warn("the record of main worktree %q keeps ports free, but it is not a usable local directory: %s", k, cell(portsCell(rec.Ports)))
 			continue
 		}
@@ -208,7 +208,7 @@ func checkConflicts(r *report, reg *Registry) {
 	view := foldRegistry(reg)
 	wts := slices.Sorted(maps.Keys(view))
 	for _, k := range wts {
-		if !validKey(k) || !isDir(k) {
+		if !usableDir(k) {
 			r.warn("the record of worktree %q keeps ports free, but it is not a usable local directory: %s", k, cell(portsCell(view[k])))
 			continue
 		}
@@ -229,7 +229,7 @@ func checkConflicts(r *report, reg *Registry) {
 	byPort := map[int][]holder{}
 	var ports []int
 	for _, h := range holders {
-		if h.port < 1 || h.port > 65535 {
+		if !validPort(h.port) {
 			continue
 		}
 		if len(byPort[h.port]) == 0 {

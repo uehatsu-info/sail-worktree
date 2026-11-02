@@ -103,7 +103,7 @@ func staleWorktreeKey(k string) bool {
 		return true
 	}
 	if rp, err := realPath(k); err == nil {
-		return !validKey(rp) || !isDir(rp)
+		return !usableDir(rp)
 	}
 	return !isDir(k)
 }

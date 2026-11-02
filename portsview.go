@@ -220,7 +220,7 @@ func parsePortArg(s string) (int, error) {
 		}
 	}
 	p, err := strconv.Atoi(s)
-	if err != nil || p < 1 || p > 65535 {
+	if err != nil || !validPort(p) {
 		return 0, fmt.Errorf("not a port number: %q", s)
 	}
 	return p, nil
