@@ -118,7 +118,14 @@ These come from deliberate decisions; change them only on purpose and update the
   a `..` after a name in a link target refuses the key (a target is walked element by element like `EvalSymlinks` does,
   never cleaned first, so no link in it is skipped). The walk may run several times for one key in a command. Limits: a
   link swapped after the walk is not caught, a drive letter mapped to a network share is the user's own setup, and a
-  folder where a volume without a drive letter is mounted (`\\?\Volume{...}`) is refused as well. On Windows git never
+  folder where a volume without a drive letter is mounted (`\\?\Volume{...}`) is refused as well. On Unix `validKey`
+  checks only the string (#97, the counterpart of the Windows link rule from #62): a key under an automounted location
+  (`/net/host/x`, an autofs map), or one that goes through a symbolic link to one, is followed by `realPath`, `isDir`
+  and git, which can trigger a mount, and a key on a network share mounted already reaches the network; so can a path
+  git reads from another repository's metadata. It is not checked because a Unix path carries no marker of a network
+  location, and comparing the device of each element would see the mount only after following the link (the automount
+  has happened by then) while refusing usual setups (macOS `/tmp` to `/private/tmp`, a separate `/home`, a project on
+  an external disk). On Windows git never
   runs in the registry directories of other repositories (`gitInRegistryDirs` is off), because git itself looks at paths
   from that repository's metadata (`gitdir` targets, a `.git` file's `gitdir:`), and a UNC or device path there can open
   a network connection; those entries are `unattributed`. Elsewhere git runs there only through `listWorktrees`
