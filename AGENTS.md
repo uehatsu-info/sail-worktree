@@ -30,7 +30,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 |---|---|
 | `main.go` | Command dispatch, usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, `mainPorts`/`readMainEnv`/`portsFromEnv` (a main worktree's ports), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
-| `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
+| `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
@@ -166,14 +166,16 @@ These come from deliberate decisions; change them only on purpose and update the
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
   `check` record it again. Ports follow one rule (`portsFromEnv`): a valid value in the main's `.env`, the default when
-  the key is absent or there is no `.env`, nothing for an invalid value. A default counts only if it is 1 to 65535
-  (`validPort`), so a hand-edited recorded default outside that reserves nothing (`loadConfig` already refuses one in
-  the configuration; the check stays for the registry). A main directory that does not exist is never recorded
-  (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file is not read for the record,
-  although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves nothing.
-  `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias paths in a record's
-  `worktrees` list are folded like the top-level `worktrees` keys: by `migrate` (saved by `up` and `rm`), and by `check`
-  in memory only (`foldKey`, the key `ofMain` looks a worktree up by); an entry that fails `validKey` is never resolved.
+  the key is absent or empty or there is no `.env`, nothing for an invalid value. The value is read with `portValue`
+  (quotes, inline comments), as compose and Sail's bash do; `Get` keeps comments, because `up` writes its result back. A
+  default counts only if it is 1 to 65535 (`validPort`), so a hand-edited recorded default outside that reserves nothing
+  (`loadConfig` already refuses one in the configuration; the check stays for the registry). A main directory that does
+  not exist is never recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file
+  is not read for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record
+  reserves nothing. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias
+  paths in a record's `worktrees` list are folded like the top-level `worktrees` keys: by `migrate` (saved by `up` and
+  `rm`), and by `check` in memory only (`foldKey`, the key `ofMain` looks a worktree up by); an entry that fails
+  `validKey` is never resolved.
 - **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once,
   so nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`,
   fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the process
