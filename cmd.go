@@ -230,10 +230,18 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
-	base, baseHad := pre.Mains[c.main]
-	mainP, mainDefaults, mainEnvOK, mainFound := mainPorts(c.main, cfg.PortVars)
-	if mainFound && !mainEnvOK {
-		warnMainEnv(c.main)
+	var (
+		base                 MainRecord
+		baseHad              bool
+		mainP, mainDefaults  map[string]int
+		mainEnvOK, mainFound bool
+	)
+	if !c.bare { // a bare layout has no main worktree checkout to read or record (c.main is empty there)
+		base, baseHad = pre.Mains[c.main]
+		mainP, mainDefaults, mainEnvOK, mainFound = mainPorts(c.main, cfg.PortVars)
+		if mainFound && !mainEnvOK {
+			warnMainEnv(c.main)
+		}
 	}
 	// Reading the registry, choosing ports, writing .env and saving are one step: another up that read the registry
 	// meanwhile would choose the same ports. The lock is released before sail runs, which can take minutes.
@@ -246,9 +254,11 @@ func cmdUp(args []string) error {
 	if err != nil {
 		return err
 	}
-	reg.migrate(c.root, c.main) // before allocatePorts, adopt the keys an older version recorded under an alias path (saved when up succeeds)
-	// Keep the main worktree's ports free as well: it uses them without a port record of its own. A bare layout has
-	// no main worktree checkout to record (c.main is empty there, so mainFound is false).
+	// Before allocatePorts, adopt the keys an older version recorded under an alias path (saved when up succeeds). In a
+	// bare layout c.main is empty, so only the worktrees keys are folded.
+	reg.migrate(c.root, c.main)
+	// Keep the main worktree's ports free as well: it uses them without a port record of its own (never in a bare
+	// layout: mainFound stays false there).
 	if mainFound {
 		reg.recordMainRead(c.main, c.root, mainRead{ports: mainP, defaults: mainDefaults, envOK: mainEnvOK,
 			basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad})
@@ -634,7 +644,9 @@ func cmdRm(args []string) error {
 	}
 	reg.migrate(c.root, c.main)
 	delete(reg.Worktrees, c.root)
-	reg.forgetWorktree(c.main, c.root)
+	if !c.bare { // a bare layout records no main worktree
+		reg.forgetWorktree(c.main, c.root)
+	}
 	if err := reg.save(); err != nil {
 		return err
 	}
