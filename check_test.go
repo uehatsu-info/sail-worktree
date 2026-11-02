@@ -326,3 +326,30 @@ func TestCheckDropsInvalidRecordedDefaults(t *testing.T) {
 		t.Errorf("defaults after check = %v", rec.Defaults)
 	}
 }
+
+func TestCheckFindsTheMainOfAWorktreeListedUnderAnAlias(t *testing.T) {
+	real, links := newLinkedDir(t, "alias")
+	main, wt2 := realTempDir(t), realTempDir(t)
+	unclean := wt2 + string(filepath.Separator) + "." // fails validKey: must not be resolved to wt2
+	reg := &Registry{
+		Worktrees: map[string]map[string]int{real: {"APP_PORT": 8123}, wt2: {"APP_PORT": 8123}},
+		Mains: map[string]MainRecord{main: {Ports: map[string]int{"APP_PORT": 8123}, Defaults: map[string]int{},
+			Worktrees: []string{links[0], unclean}}},
+	}
+	b := captureStdout(t)
+	checkConflicts(&report{w: stdout}, reg)
+	out := b.String()
+	if want := fmt.Sprintf("worktree %q APP_PORT (of %q)", real, main); !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
+	}
+	if want := fmt.Sprintf("worktree %q APP_PORT", wt2); !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
+	}
+	if bad := fmt.Sprintf("worktree %q APP_PORT (of", wt2); strings.Contains(out, bad) {
+		t.Errorf("an invalid list entry was resolved:\n%s", out)
+	}
+	// The fold is a view: the record itself is not changed.
+	if got := reg.Mains[main].Worktrees; len(got) != 2 || got[0] != links[0] || got[1] != unclean {
+		t.Errorf("the record was changed: %q", got)
+	}
+}
