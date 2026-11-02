@@ -683,3 +683,35 @@ func TestDriveTargetOnWindows(t *testing.T) {
 		}
 	}
 }
+
+// migrateAliases resolves only the paths aliasesOf found before the lock (#93), and each of them again after validKey.
+func TestMigrateAliasesResolvesOnlyTheFoundPaths(t *testing.T) {
+	real, links := newLinkedDir(t, "a-link", "b-link")
+	a, b := links[0], links[1]
+	gone := filepath.Join(filepath.Dir(real), "gone")
+	reg := func() *Registry {
+		return &Registry{Worktrees: map[string]map[string]int{a: {"APP_PORT": 81}, b: {"APP_PORT": 82}},
+			Mains: map[string]MainRecord{"/m": {Worktrees: []string{a, b}}}}
+	}
+	if got := reg().aliasesOf(real, "/m"); !slices.Equal(got, []string{a, b}) {
+		t.Fatalf("aliasesOf = %q", got)
+	}
+
+	// b was not found (recorded after the scan): it stays for a later run. gone cannot be resolved: no alias.
+	r := reg()
+	r.migrateAliases(real, "/m", []string{a, gone})
+	if len(r.Worktrees) != 2 || r.Worktrees[real]["APP_PORT"] != 81 || r.Worktrees[b]["APP_PORT"] != 82 {
+		t.Errorf("worktrees = %v", r.Worktrees)
+	}
+	if got := r.Mains["/m"].Worktrees; !slices.Equal(got, []string{b, real}) {
+		t.Errorf("list = %q", got)
+	}
+
+	// A found path that fails validKey under the lock is not resolved, and so not folded.
+	refuseKeyLinks(t, a)
+	r = reg()
+	r.migrateAliases(real, "/m", []string{a})
+	if _, ok := r.Worktrees[a]; !ok || len(r.Worktrees) != 2 || !slices.Equal(r.Mains["/m"].Worktrees, []string{a, b}) {
+		t.Errorf("a refused key was folded: %v %q", r.Worktrees, r.Mains["/m"].Worktrees)
+	}
+}

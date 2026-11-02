@@ -947,6 +947,121 @@ func TestUpReusesPortsRecordedUnderSymlinkedPath(t *testing.T) {
 	}
 }
 
+// up finds alias keys before the lock and resolves only those under it (#93): one recorded meanwhile is left for a
+// later run.
+func TestUpResolvesOnlyAliasesFoundBeforeTheLock(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(main, ".env"), "APP_NAME=x\n")
+	dir := t.TempDir()
+	early, late := filepath.Join(dir, "early"), filepath.Join(dir, "late")
+	symlinkOrSkip(t, wt, early)
+	symlinkOrSkip(t, wt, late)
+	saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{early: {"APP_PORT": 8123}}})
+	betweenUpReadAndLock(t, func() {
+		saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{early: {"APP_PORT": 8123}, late: {"APP_PORT": 8124}}})
+	})
+	captureRunner(t)
+	captureStdout(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := loadRegistry()
+	if _, ok := reg.Worktrees[early]; ok || reg.Worktrees[wt]["APP_PORT"] != 8123 || reg.Worktrees[late]["APP_PORT"] != 8124 {
+		t.Errorf("worktrees = %v, want early folded into the root and late left alone", reg.Worktrees)
+	}
+}
+
+// The source of a new .env is read before the lock (#93): a change after the read is not copied.
+func TestUpReadsTheCopySourceBeforeTheLock(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(main, ".env"), "APP_NAME=before\n")
+	betweenUpReadAndLock(t, func() { writeFile(t, filepath.Join(main, ".env"), "APP_NAME=after\n") })
+	captureRunner(t)
+	out := captureStdout(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := readEnv(filepath.Join(wt, ".env"))
+	if v, _ := e.Get("APP_NAME"); v != "before" {
+		t.Errorf("APP_NAME = %q, want the source as read before the lock", v)
+	}
+	if !strings.Contains(out.String(), "created .env (copied from the main worktree)") {
+		t.Errorf("output:\n%s", out)
+	}
+}
+
+// A source that cannot be read fails before the lock is taken.
+func TestUpFailsOnTheCopySourceBeforeTheLock(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	old := upLock
+	upLock = func() (func(), error) {
+		t.Error("the lock was taken")
+		return lockRegistry()
+	}
+	t.Cleanup(func() { upLock = old })
+	captureRunner(t)
+	captureStdout(t)
+	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "cannot read the source .env") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// A .env that appeared while up waited for the lock (another up in this worktree) is used, not overwritten by the copy;
+// one that is gone by then is copied after all.
+func TestUpRereadsTheOwnEnvUnderTheLock(t *testing.T) {
+	for _, tc := range []struct {
+		name, before, want string // before: this worktree's .env before up; "" means none
+		wait               func(wt string)
+	}{
+		{"appeared", "", "own", func(wt string) { writeFile(t, filepath.Join(wt, ".env"), "APP_NAME=own\n") }},
+		{"gone", "APP_NAME=own\n", "main", func(wt string) {
+			if err := os.Remove(filepath.Join(wt, ".env")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			main, wt := setupWorktreeRepo(t)
+			writeFakeSail(t, wt)
+			writeFile(t, filepath.Join(main, ".env"), "APP_NAME=main\n")
+			if tc.before != "" {
+				writeFile(t, filepath.Join(wt, ".env"), tc.before)
+			}
+			betweenUpReadAndLock(t, func() { tc.wait(wt) })
+			captureRunner(t)
+			out := captureStdout(t)
+			if err := cmdUp(nil); err != nil {
+				t.Fatal(err)
+			}
+			e, _ := readEnv(filepath.Join(wt, ".env"))
+			copied := strings.Contains(out.String(), "created .env")
+			if v, _ := e.Get("APP_NAME"); v != tc.want || copied != (tc.want == "main") {
+				t.Errorf("APP_NAME = %q, output:\n%s", v, out)
+			}
+		})
+	}
+}
+
+// A refusal of the copy names the source read before the lock, not what is there by the time up locks.
+func TestUpRefusalNamesTheSourceReadBeforeTheLock(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(main, ".env"), "COMPOSE_FILE=x.yaml\n")
+	betweenUpReadAndLock(t, func() {
+		if err := os.Remove(filepath.Join(main, ".env")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	captureRunner(t)
+	captureStdout(t)
+	if err := cmdUp(nil); err == nil || err.Error() != upOverrideError("COMPOSE_FILE", envFromMain).Error() {
+		t.Errorf("err = %v", err)
+	}
+}
+
 func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	proj := projectName(main, wt, wt)

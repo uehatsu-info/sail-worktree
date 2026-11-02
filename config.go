@@ -623,25 +623,55 @@ func isASCIILetter(b byte) bool { return 'a' <= b && b <= 'z' || 'A' <= b && b <
 func usableDir(k string) bool { return validKey(k) && isDir(k) }
 
 // migrate merges keys that are aliases of root (recorded by an older version under a symlinked path) into root.
-// It only changes memory; the caller saves on success. An existing entry for root wins; otherwise the entry of the
-// alias with the smallest key (lexicographically) is adopted. The ports of dropped aliases are not left in used.
-// Keys whose path cannot be resolved (it no longer exists) and keys that fail validKey are left alone. Aliases of root
-// in the worktree list of main, the only record root can be listed in, are replaced by root as well (a list that holds
-// none is left as it is); other mains' lists are not looked at, since each entry may be resolved under the lock.
-func (r *Registry) migrate(root, main string) {
-	var aliases []string
+// It only changes memory; the caller saves on success. It resolves every key, so it is not for use under the lock: up
+// and rm find the aliases before they take it (aliasesOf) and resolve only those under it (migrateAliases).
+func (r *Registry) migrate(root, main string) { r.migrateAliases(root, main, r.aliasesOf(root, main)) }
+
+// aliasesOf returns the paths whose real path is root: worktrees keys, and entries of the worktree list of main, the
+// only record root can be listed in (other mains' lists are not looked at). Keys that fail validKey are never resolved,
+// and keys whose path cannot be resolved (it no longer exists) are not aliases. It reads the filesystem, so up and rm
+// call it before they take the lock.
+func (r *Registry) aliasesOf(root, main string) []string {
+	found := map[string]bool{}
 	for k := range r.Worktrees {
-		if k == root || !validKey(k) {
-			continue
-		}
-		if rp, err := realPath(k); err == nil && rp == root {
-			aliases = append(aliases, k)
+		if aliasOf(k, root) {
+			found[k] = true
 		}
 	}
-	sort.Strings(aliases)
-	for _, k := range aliases {
+	for _, w := range r.Mains[main].Worktrees {
+		if !found[w] && aliasOf(w, root) {
+			found[w] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(found))
+}
+
+// aliasOf reports whether k is another path of root. foldKey resolves k only after validKey.
+func aliasOf(k, root string) bool { return k != root && foldKey(k) == root }
+
+// migrateAliases is migrate for the paths in found (from aliasesOf, possibly on an older read of the registry): each
+// one that is still recorded is resolved again, after validKey, so that only these few are resolved under the lock;
+// an alias that an older version records after found was made is folded by a later up. An existing entry for root
+// wins; otherwise the entry of the alias with the smallest key (lexicographically) is adopted. The ports of dropped
+// aliases are not left in used. Aliases of root in the worktree list of main are replaced by root as well (a list that
+// holds none is left as it is).
+func (r *Registry) migrateAliases(root, main string, found []string) {
+	alias := map[string]bool{}
+	for _, k := range found {
+		if aliasOf(k, root) {
+			alias[k] = true
+		}
+	}
+	if len(alias) == 0 {
+		return
+	}
+	for _, k := range slices.Sorted(maps.Keys(alias)) {
+		ports, ok := r.Worktrees[k]
+		if !ok {
+			continue
+		}
 		if _, ok := r.Worktrees[root]; !ok {
-			r.Worktrees[root] = r.Worktrees[k]
+			r.Worktrees[root] = ports
 		}
 		delete(r.Worktrees, k)
 	}
@@ -649,7 +679,7 @@ func (r *Registry) migrate(root, main string) {
 		ws := make([]string, 0, len(rec.Worktrees))
 		changed, seen := false, false
 		for _, w := range rec.Worktrees {
-			if w != root && foldKey(w) == root {
+			if alias[w] {
 				w, changed = root, true
 			}
 			if w == root {

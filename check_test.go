@@ -452,7 +452,8 @@ func betweenReadAndLock(t *testing.T, fn func()) {
 	t.Cleanup(func() { checkLock = old })
 }
 
-// betweenUpReadAndLock is betweenReadAndLock for up: fn runs after up has read the main's .env and before it locks.
+// betweenUpReadAndLock is betweenReadAndLock for up: fn runs after up has read the main's .env, found alias keys and
+// read the source of a new .env, and before it locks.
 func betweenUpReadAndLock(t *testing.T, fn func()) {
 	t.Helper()
 	old := upLock

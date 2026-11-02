@@ -29,9 +29,9 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | File | Role |
 |---|---|
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
-| `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv` (a main worktree's ports), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
+| `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv` (a main worktree's ports), `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
-| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate`, `replacedMain`/`projectMarkers` (main records a move left behind) |
+| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart (`counterpart`, `isProjectDir`) |
@@ -109,7 +109,7 @@ These come from deliberate decisions; change them only on purpose and update the
   aliases in a copy), never write `.env` or `.sail-worktree.json`, and never source `.env`. Registry keys are untrusted:
   a key that fails `validKey` (absolute and clean, and on Windows a drive-letter path, an allow-list, because a UNC or
   device path such as `\\host\share`, `\\?\` or `\??\` can open a network connection) is never used as a directory, by
-  any command (`migrate` in `up` and `rm` included). On Windows `validKey` also walks the key from its drive root with
+  any command (`migrateAliases` in `up` and `rm` included). On Windows `validKey` also walks the key from its drive root with
   `Lstat` and `Readlink` (`linksStayLocal`, through the replaceable `keyLinksOK`) and refuses it when a symbolic link or
   junction on the way, or in what it leads to, has a target that is not a drive-letter path, because Windows follows a
   link in the middle of a path whenever the path is used (`realPath`, `isDir`, git); a junction is checked although
@@ -261,9 +261,11 @@ These come from deliberate decisions; change them only on purpose and update the
 - **Paths are real paths.** The worktree root, the main worktree and the project directory are resolved through
   symlinks, because the project name contains a hash of the project directory. `Registry.migrate` merges keys an older
   version recorded under a symlinked path, and replaces aliases of root in the current main's `worktrees` list (the only
-  one root can be listed in; other lists are not resolved under the lock; a changed list is sorted); it only changes
-  memory and the caller saves on success. A registry key is resolved only after `validKey` (on
-  Windows that includes the link walk).
+  one root can be listed in; other lists are not resolved; a changed list is sorted); it only changes memory and the
+  caller saves on success. `up` and `rm` split it: `aliasesOf` finds the aliases on a registry read before the lock, and
+  `migrateAliases` resolves only those again under it (an alias that an older version records in between is folded by a
+  later `up`; `rm` leaves it). A registry key is resolved only after `validKey` (on Windows that includes the link
+  walk), the re-check included.
 - **Project directory.** `up`, `stop` and `rm` (`lookupProject`) take the nearest directory with `.sail-worktree.json`
   anywhere up to the worktree root; only when there is none, the nearest directory where `isLaravelProject` holds
   (`artisan` is a regular file and a compose file exists), and then the configuration is detected (`ctx.detected`).
@@ -317,7 +319,7 @@ These come from deliberate decisions; change them only on purpose and update the
     variables are required only for `up` and only when detected (a file with `port_vars: []` still works).
   - `up`'s order: main refusal, configuration, detected port variables, the existing `.env` checks and port
     allocation, then `sailPath` right before the first write, so nothing is written without Sail and the order of the
-    existing refusals stays the same.
+    existing refusals stays the same. A copy source that cannot be read fails before the lock is taken.
   - `rm` passes only the one compose file to `-f`, so `compose.override.yaml` is not read (volumes defined only there
     are left behind). A broken link named `compose.yaml` is skipped by `findMarker`, so a `docker-compose.yml` next to
     it is used.
@@ -334,18 +336,21 @@ These come from deliberate decisions; change them only on purpose and update the
   and the directory is not synced (atomicity, not durability). Do not go back to `os.WriteFile`: its
   truncate-then-write window is what a race smoke test covers. This is the registry only; `.env` and
   `.sail-worktree.json` keep `writeFileNoFollow`.
-- **Registry handling in `rm`.** Read the registry once before the prompt (to fail early on a broken file) and again
-  after `docker` (so an update made meanwhile by another `up` is not lost); release the worktree only after docker
-  succeeds. The lock is taken after docker and before the second read (never while docker runs); if it cannot be taken
-  the error says that docker finished and that rm can be run again (`down` is idempotent). The main worktree's record
-  stays; only the worktree leaves its `worktrees` list (`forgetWorktree`).
+- **Registry handling in `rm`.** Read the registry once before the prompt (to fail early on a broken file, and to find
+  the alias keys to release, `aliasesOf`; this never refuses) and again after `docker` (so an update made meanwhile by
+  another `up` is not lost); release the worktree only after docker succeeds. The lock is taken after docker and before
+  the second read (never while docker runs); if it cannot be taken the error says that docker finished and that rm can
+  be run again (`down` is idempotent). The main worktree's record stays; only the worktree leaves its `worktrees` list
+  (`forgetWorktree`).
 - **The registry lock.** `up`, `rm`, `check` and `prune` update the registry under `lockRegistry` (`registry.json.lock`
   next to it, `O_EXCL`, mode 0600, pid inside; the file is closed at once because Windows cannot remove an open file).
   `up` reads the main's `.env` (`mainPorts`) before it, after a registry read that is used only as the base of that
   main's record (`recordMainRead`, the rule of `check`; the ports it read are also avoided by this allocation, since a
-  record kept as newer may come from an older read), and takes it after the `.env` checks and before `loadRegistry`, so
-  reading, `allocatePorts`, writing `.env` and `save` are one step, and releases it right after `save` and before
-  `runSail`; `rm` takes it after docker; `check`
+  record kept as newer may come from an older read) and to find alias keys (`aliasesOf`); it also reads the source of a
+  new `.env` before it (`readCopySource`; the worktree's own `.env` is still read under it, and if that is gone by then
+  the source is read there), and takes it after the `.env` checks and before `loadRegistry`, so reading,
+  `allocatePorts`, writing `.env` and `save` are one step, and releases it right after `save` and before `runSail`;
+  `rm` takes it after docker; `check`
   reads the mains' `.env` before it and holds it to read the registry again, record, refresh and save (what it read
   before locking only decides which records may be refreshed; the registry it saves is the one read after locking). If
   `check` times out on a lock that another run holds (`errLockHeld`), it warns and reports on the registry read without
