@@ -35,7 +35,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart (`counterpart`, `isProjectDir`) |
-| `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
+| `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey`/`foldMains` (aliases folded in memory, replaced mains marked), `psPortsCell`, `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
 | `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `staleWorktreeKey`, `recheckReplaced` |
@@ -140,15 +140,21 @@ These come from deliberate decisions; change them only on purpose and update the
   through `jsonEscape`). Output goes to the package `stdout`, never `fmt.Println`. Main worktree records (`mains`) are
   shown too (`kind` `main`, before the worktree rows; `mainEntries`) with their recorded `Ports`, never a read of the
   main's `.env`; a main key is used as a directory (`isDir`, git) only after `validKey`, docker is never asked about it
-  (its compose project name depends on that `.env`, so `name` is empty and `state` is `-`, `stale` or `unattributed`),
-  and `status` counts every main record as another holder (`otherHolders`), as `used` does. The `kind` field was added
-  to both JSON outputs; existing fields keep their names and meanings. `status` reuses `checkOwnEnv`, `upOverrideKeys`,
-  `projectName` and `addStatefulDomain` (on a copy of `.env`) instead of re-implementing them, prints only an allow-list
-  of facts (never other `.env` values, and not even an invalid port value, because a port variable name may be any key;
-  `APP_URL` without credentials, query and fragment), never reads a symlinked `.env`, and exits 1 after the report when
-  it found a problem (warnings do not). A port variable that the worktree's `.env` sets on more than one line is a
-  warning (`statusDuplicates`, through `duplicateKeys`; the name, never a value; none when the configuration is broken,
-  as there are no names then; the multi-line limit of the `check` bullet applies).
+  (its compose project name depends on that `.env`, so `name` is empty and `state` is `-`, `stale`, `unattributed` or
+  `replaced`), and `status` counts every main record as another holder (`otherHolders`, labelled by `check`'s
+  `holder.String`), as `used` does. Main keys are folded in memory by `foldMains`, which `ps`, `ports` and `status`
+  share, so that they agree with `check`'s warnings: a record that `replacedMain` finds replaced keeps its key and is
+  marked (state `replaced`, `(replaced by ...)` in `status`); otherwise a usable alias key whose real path has no record
+  is shown under that path, but only one per path, since `check` counts every other record as a holder. The `kind`
+  field was added to both JSON outputs; existing fields keep their names and meanings. `status` reuses `checkOwnEnv`,
+  `upOverrideKeys`, `projectName` and `addStatefulDomain` (on a copy of `.env`) instead of re-implementing them, prints
+  only an allow-list of facts (never other `.env` values, and not even an invalid port value, because a port variable
+  name may be any key; `APP_URL` without credentials, query and fragment), never reads a symlinked `.env`, and exits 1
+  after the report when it found a problem (warnings do not). A port variable that the worktree's `.env` sets on more
+  than one line is a warning (`statusDuplicates`, through `duplicateKeys`; the name, never a value; none when the
+  configuration is broken, as there are no names then; the multi-line limit of the `check` bullet applies). A recorded
+  value that fails `validPort` holds no port, as in `check` and `ports`: `otherHolders` ignores it and `ps` marks it
+  `(invalid)` in its `PORTS` column (`psPortsCell`; `--json` and `check`'s `portsCell` keep the value as it is).
 - **`check` writes only the registry.** It records the current repository's main worktree, if it runs in its project
   directory or below it (`currentMain`, `checkRecord`; the `loadCtx` lookup, as for `up`; elsewhere a warning says where
   to run it), refreshes every recorded main from its `.env` (`refreshMains`, also outside a repository) and then reports
@@ -243,9 +249,10 @@ These come from deliberate decisions; change them only on purpose and update the
   fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the process
   called itself: it is printed through `cell`/`jsonEscape`. The port argument is digits only, 1 to 65535. Main worktree
   rows are probed like any row that is not `running`, and count in `CONFLICT` (`portsOf`), so `ports --all` agrees with
-  `check` on conflicts, except that stale or unattributed rows, and main records that `check` finds replaced
-  (`replacedMain`; `status` counts them as other holders too), count here and only give a warning in `check`. The JSON
-  fields of `ports`, `process` and `pid` included, are a public contract too.
+  `check` on conflicts, except that stale or unattributed rows count here and only give a warning in `check`. A main
+  record that `check` finds replaced (`replacedMain`, state `replaced`) is probed but never in `CONFLICT`, as `check`
+  leaves it out (`status` still counts it as another holder). The JSON fields of `ports`, `process` and `pid` included,
+  are a public contract too.
   A recorded value that fails `validPort` (a hand-edited registry) is `host` `invalid` (`hostInvalid`, decided before
   `running` and the probe cache): never probed (binding 0 picks a random port) nor given to `lsof`, and left out of
   `CONFLICT`, as `check` ignores it. `invalid` is a value added to `host`; the existing values keep their meanings.

@@ -91,20 +91,21 @@ func parseLsof(out string) (name string, pid int, ok bool) {
 
 // portsOf lists the rows of the entries, sorted by port. A port recorded more than once (by two entries, a main
 // worktree's included, or by two variables of one) marks all its rows as a conflict. A value that is not a port number
-// is never a conflict, as in check: no two projects can collide on it.
+// is never a conflict, as in check: no two projects can collide on it. Neither is a replaced main record, which check
+// only warns about.
 func portsOf(entries []entry) []portRow {
 	var rows []portRow
 	count := map[int]int{}
 	for _, e := range entries {
 		for name, p := range e.Ports {
 			rows = append(rows, portRow{Kind: e.Kind, Port: p, Variable: name, Worktree: e.Worktree, Subdir: e.Subdir, State: e.State})
-			if validPort(p) {
+			if validPort(p) && e.State != stateReplaced {
 				count[p]++
 			}
 		}
 	}
 	for i := range rows {
-		rows[i].Conflict = count[rows[i].Port] > 1
+		rows[i].Conflict = rows[i].State != stateReplaced && count[rows[i].Port] > 1
 	}
 	sort.SliceStable(rows, func(i, j int) bool { // equal rows (two mains named alike) keep the entries' order
 		a, b := rows[i], rows[j]

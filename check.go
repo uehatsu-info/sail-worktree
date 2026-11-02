@@ -208,6 +208,9 @@ type holder struct {
 	name string
 	port int
 	of   string // the main worktree of a worktree, if the registry knows it
+	// replacedBy is the record that replaces a main's (replacedMain). Only status sets it: check leaves such records
+	// out of the holders.
+	replacedBy string
 }
 
 func (h holder) String() string {
@@ -218,6 +221,9 @@ func (h holder) String() string {
 	s := fmt.Sprintf("%s %q %s", kind, h.dir, cell(h.name))
 	if h.of != "" {
 		s += fmt.Sprintf(" (of %q)", h.of)
+	}
+	if h.replacedBy != "" {
+		s += fmt.Sprintf(" (replaced by %q)", h.replacedBy)
 	}
 	return s
 }

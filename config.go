@@ -716,10 +716,10 @@ func (r *Registry) used(except string) map[int]bool {
 }
 
 // replacedMain returns the record that replaces the record of main worktree k, and why, or "" when none does. Main
-// keys are never folded, so a record that a move left behind would otherwise conflict with the new one for ever. Only
-// a live record replaces one (an alias whose real path has its own record, or a directory that is no longer a project
-// with a project's record below it), so a main without a second record keeps its ports. usableDir comes first, so
-// validKey does too.
+// keys are never folded in the registry (only in memory by the read-only views, foldMains), so a record that a move
+// left behind would otherwise conflict with the new one for ever. Only a live record replaces one (an alias whose real
+// path has its own record, or a directory that is no longer a project with a project's record below it), so a main
+// without a second record keeps its ports. usableDir comes first, so validKey does too.
 func (r *Registry) replacedMain(k string) (by, why string) {
 	if !usableDir(k) {
 		return "", ""
