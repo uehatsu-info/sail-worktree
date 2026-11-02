@@ -304,3 +304,25 @@ func TestCheckReportsTwoVariablesOfOneMain(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckDropsInvalidRecordedDefaults(t *testing.T) {
+	isolatedRegistry(t)
+	m := realTempDir(t) // no .env: the defaults decide
+	both := func() map[string]int { return map[string]int{"FORWARD_DB_PORT": 3306, "X_PORT": 70000} }
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: {Ports: both(), Defaults: both()}}})
+	if out, err := runCheck(t); err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, err := loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := reg.Mains[m]
+	if len(rec.Ports) != 1 || rec.Ports["FORWARD_DB_PORT"] != 3306 || reg.used("")[70000] {
+		t.Errorf("ports after check = %v, 70000 used = %v", rec.Ports, reg.used("")[70000])
+	}
+	// The recorded defaults themselves are left as they are; only their use is checked.
+	if rec.Defaults["X_PORT"] != 70000 {
+		t.Errorf("defaults after check = %v", rec.Defaults)
+	}
+}

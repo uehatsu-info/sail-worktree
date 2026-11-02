@@ -308,3 +308,18 @@ func TestMigrateLeavesInvalidKeysAlone(t *testing.T) {
 		t.Errorf("an invalid key was migrated: %v", r.Worktrees)
 	}
 }
+
+func TestPortsFromEnvIgnoresInvalidDefaults(t *testing.T) {
+	defaults := map[string]int{"A_PORT": 0, "B_PORT": 70000, "C_PORT": -1, "D_PORT": 70000}
+	e, err := parseEnv(strings.NewReader("D_PORT=8080\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An invalid default is no fallback; a valid value in .env is still used.
+	if got := portsFromEnv(e, defaults); len(got) != 1 || got["D_PORT"] != 8080 {
+		t.Errorf("with .env: %v", got)
+	}
+	if got := portsFromEnv(nil, defaults); len(got) != 0 {
+		t.Errorf("without .env: %v", got)
+	}
+}

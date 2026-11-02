@@ -142,9 +142,10 @@ These come from deliberate decisions; change them only on purpose and update the
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
   `check` record it again. Ports follow one rule (`portsFromEnv`): a valid value in the main's `.env`, the default when
-  the key is absent or there is no `.env`, nothing for an invalid value. A main directory that does not exist is never
-  recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file is not read for
-  the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves
+  the key is absent or there is no `.env`, nothing for an invalid value. A default counts only if it is 1 to 65535
+  (`validPort`), so a hand-edited recorded default outside that reserves nothing. A main directory that does not exist
+  is never recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file is not read
+  for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves
   nothing. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference.
 - **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once,
   so nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`,
