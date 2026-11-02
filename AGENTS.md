@@ -30,15 +30,15 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 |---|---|
 | `main.go` | Command dispatch, usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv` (a main worktree's ports), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
-| `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
-| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
+| `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
+| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
-| `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `usableDir`, `staleWorktreeKey` |
+| `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `staleWorktreeKey` |
 | `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `readMains`, `refreshMains`, `checkConflicts`, `holder`, `suggestion` |
 | `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `claimStale`/`claimPath`, `releaser`, `lockTiming` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |

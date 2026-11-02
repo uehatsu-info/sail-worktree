@@ -80,10 +80,6 @@ func (l pruneList) empty() bool {
 	return len(l.worktrees) == 0 && len(l.mains) == 0 && len(l.linked) == 0
 }
 
-// usableDir reports whether a registry key can be used as a local directory: validKey first, so that an invalid key
-// (on Windows a UNC or device path) is never looked at, then isDir (a link as its last element is not followed).
-func usableDir(k string) bool { return validKey(k) && isDir(k) }
-
 // staleWorktreeKey reports whether a worktrees key is unusable. An alias that an older version recorded under a
 // symlinked path counts as the directory it resolves to, as in foldRegistry and checkConflicts (so prune removes
 // what check warns about): it still holds the ports of a live worktree, and the next up there folds it into the real path.

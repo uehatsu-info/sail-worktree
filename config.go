@@ -464,6 +464,10 @@ func windowsDriveKey(k, goos string) bool {
 
 func isASCIILetter(b byte) bool { return 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' }
 
+// usableDir reports whether a registry key can be used as a local directory: validKey first, so that an invalid key
+// (on Windows a UNC or device path) is never looked at, then isDir (a link as its last element is not followed).
+func usableDir(k string) bool { return validKey(k) && isDir(k) }
+
 // migrate merges keys that are aliases of root (recorded by an older version under a symlinked path) into root.
 // It only changes memory; the caller saves on success. An existing entry for root wins; otherwise the entry of the
 // alias with the smallest key (lexicographically) is adopted. The ports of dropped aliases are not left in used.
