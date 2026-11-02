@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -417,5 +418,217 @@ func TestPortsFromEnvReadsTheLastLineOfAKey(t *testing.T) {
 	}
 	if v, _ := e.Get("APP_PORT"); v != "8080" {
 		t.Errorf("Get = %q", v)
+	}
+}
+
+// fakeLink is one entry of a fake filesystem for linksStayLocal.
+type fakeLink struct {
+	mode   os.FileMode
+	target string
+	err    error
+}
+
+type fakeLinkInfo struct{ mode os.FileMode }
+
+func (f fakeLinkInfo) Name() string       { return "" }
+func (f fakeLinkInfo) Size() int64        { return 0 }
+func (f fakeLinkInfo) Mode() os.FileMode  { return f.mode }
+func (f fakeLinkInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeLinkInfo) IsDir() bool        { return f.mode.IsDir() }
+func (f fakeLinkInfo) Sys() any           { return nil }
+
+func TestLinksStayLocal(t *testing.T) {
+	root := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
+	p := func(parts ...string) string { return filepath.Join(append([]string{root}, parts...)...) }
+	remote := p("remote")
+	ok := func(s string) bool {
+		return filepath.IsAbs(s) && s != remote && !strings.HasPrefix(s, remote+string(filepath.Separator))
+	}
+	link, junction := os.ModeSymlink, os.ModeIrregular
+	entries := map[string]fakeLink{
+		p("a"):           {mode: os.ModeDir},
+		p("a", "b"):      {mode: os.ModeDir},
+		p("a", "good"):   {mode: link, target: p("a", "b")},
+		p("a", "bad"):    {mode: link, target: p("remote", "s")},
+		p("a", "rel"):    {mode: link, target: "b"},
+		p("a", "relbad"): {mode: link, target: filepath.Join("..", "a", "bad")},
+		p("a", "up"):     {mode: link, target: filepath.Join("..", "a") + string(filepath.Separator) + "." + string(filepath.Separator) + "b"},
+		// Cleaned, hop2\..\b would be a\b, but EvalSymlinks goes through hop2 (a link to a refused path) first.
+		p("a", "dd"):      {mode: link, target: "hop2" + string(filepath.Separator) + ".." + string(filepath.Separator) + "b"},
+		p("a", "ddDir"):   {mode: link, target: "b" + string(filepath.Separator) + ".." + string(filepath.Separator) + "b"},
+		p("a", "absUp"):   {mode: link, target: p("a") + string(filepath.Separator) + ".." + string(filepath.Separator) + "a"},
+		p("a", "hop"):     {mode: link, target: p("a", "hop2")},
+		p("a", "hop2"):    {mode: link, target: remote},
+		p("a", "toBad"):   {mode: link, target: p("a", "bad", "x")},
+		p("a", "j"):       {mode: junction, target: p("a", "b")},
+		p("a", "jbad"):    {mode: junction, target: remote},
+		p("a", "reparse"): {mode: junction, err: os.ErrInvalid},
+		p("a", "cloud"):   {mode: os.ModeDir | os.ModeIrregular, err: os.ErrInvalid},
+		p("a", "loop"):    {mode: link, target: p("a", "loop")},
+		p("a", "denied"):  {err: os.ErrPermission},
+		p("a", "empty"):   {mode: link},
+		// Names whose runes end in the byte of a separator: one element each, not two.
+		p("a", "b\u012fz"): {mode: link, target: remote},
+		p("a", "b\u015cz"): {mode: link, target: remote},
+	}
+	fs := linkFS{
+		lstat: func(s string) (os.FileInfo, error) {
+			e, found := entries[s]
+			if !found {
+				return nil, os.ErrNotExist
+			}
+			if e.err != nil && e.mode == 0 {
+				return nil, e.err
+			}
+			return fakeLinkInfo{e.mode}, nil
+		},
+		readlink: func(s string) (string, error) {
+			e := entries[s]
+			if e.mode&(os.ModeSymlink|os.ModeIrregular) == 0 {
+				return "", os.ErrInvalid
+			}
+			return e.target, e.err
+		},
+	}
+	for k, want := range map[string]bool{
+		p("a", "b", "c"):        true,  // no link; c does not exist
+		p("missing", "x"):       true,  // nothing exists to be followed
+		p("a", "good", "x"):     true,  // a link to an accepted target
+		p("a", "rel", "x"):      true,  // a relative target is joined to the link's directory
+		p("a", "j", "x"):        true,  // a junction to an accepted target
+		p("a", "cloud", "x"):    true,  // a reparse point that does not redirect: a plain directory
+		p("a", "bad"):           false, // the key itself is a refused link
+		p("a", "bad", "x"):      false,
+		p("a", "relbad", "x"):   false, // relative, but it leads to a refused link
+		p("a", "up", "x"):       true,  // ".." before any name, and "."
+		p("a", "dd", "x"):       false, // ".." after a name: never cleaned away
+		p("a", "ddDir", "x"):    false, // the same, refused even when the name is a plain directory
+		p("a", "absUp", "x"):    false,
+		p("a", "hop", "x"):      false, // the second link is refused
+		p("a", "toBad"):         false, // the target goes through a refused link
+		p("a", "jbad", "x"):     false, // a junction to a refused target
+		p("a", "reparse", "x"):  false, // a redirecting reparse point that cannot be read
+		p("a", "loop"):          false,
+		p("a", "denied", "x"):   false, // cannot be looked at
+		p("a", "empty"):         false, // an empty target
+		p("a", "b\u012fz", "x"): false,
+		p("a", "b\u015cz", "x"): false,
+	} {
+		if got := linksStayLocal(k, fs, ok); got != want {
+			t.Errorf("linksStayLocal(%q) = %v, want %v", k, got, want)
+		}
+	}
+}
+
+// refuseKeyLinks makes keyLinksOK refuse every key below one of dirs, as the Windows walk does for a link to a UNC path.
+func refuseKeyLinks(t *testing.T, dirs ...string) {
+	t.Helper()
+	orig := keyLinksOK
+	t.Cleanup(func() { keyLinksOK = orig })
+	keyLinksOK = func(k string) bool {
+		for _, d := range dirs {
+			if k == d || strings.HasPrefix(k, d+string(filepath.Separator)) {
+				return false
+			}
+		}
+		return orig(k)
+	}
+}
+
+func TestRefusedKeyLinksAreUnusable(t *testing.T) {
+	real, links := newLinkedDir(t, "alias")
+	alias := links[0]
+	refuseKeyLinks(t, alias)
+	if validKey(alias) || !validKey(real) {
+		t.Fatalf("validKey(alias) = %v, validKey(real) = %v", validKey(alias), validKey(real))
+	}
+	if !staleWorktreeKey(alias) {
+		t.Error("staleWorktreeKey keeps a key whose links are refused")
+	}
+	if staleWorktreeKey(real) {
+		t.Error("staleWorktreeKey refuses a live key")
+	}
+	if got := foldKey(alias); got != alias {
+		t.Errorf("foldKey(%q) = %q, want the key unresolved", alias, got)
+	}
+	folded := foldRegistry(&Registry{Worktrees: map[string]map[string]int{alias: {"APP_PORT": 8123}}})
+	if _, ok := folded[alias]; !ok || len(folded) != 1 {
+		t.Errorf("foldRegistry resolved a refused key: %v", folded)
+	}
+	r := &Registry{
+		Worktrees: map[string]map[string]int{alias: {"APP_PORT": 8123}},
+		Mains:     map[string]MainRecord{"/m": {Worktrees: []string{alias}}},
+	}
+	r.migrate(real)
+	if _, ok := r.Worktrees[alias]; !ok || len(r.Worktrees) != 1 {
+		t.Errorf("migrate folded a refused key: %v", r.Worktrees)
+	}
+	if got := r.Mains["/m"].Worktrees; !slices.Equal(got, []string{alias}) {
+		t.Errorf("migrate folded a refused key in a main's list: %q", got)
+	}
+}
+
+// mklinkJunction creates a Windows junction (no privilege needed, unlike a symbolic link).
+func mklinkJunction(t *testing.T, target, link string) {
+	t.Helper()
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		t.Fatalf("mklink /J: %v: %s", err, out)
+	}
+}
+
+func TestValidKeyRefusesLinksOffTheDriveOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the link walk runs only on Windows")
+	}
+	real := realTempDir(t)
+	sub := filepath.Join(real, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	junction := filepath.Join(real, "junction")
+	mklinkJunction(t, sub, junction)
+	if !validKey(filepath.Join(junction, "x")) {
+		t.Error("validKey refuses a key through a junction to a local directory")
+	}
+	good := filepath.Join(real, "good")
+	symlinkOrSkip(t, sub, good)
+	if !validKey(filepath.Join(good, "x")) {
+		t.Error("validKey refuses a key through a link to a drive-letter path")
+	}
+	// A device path: creating the link stats its target, and this one is local.
+	bad := filepath.Join(real, "bad")
+	symlinkOrSkip(t, `\\?\GLOBALROOT\Device\Null`, bad)
+	underJunction := filepath.Join(sub, "bad")
+	symlinkOrSkip(t, `\\?\GLOBALROOT\Device\Null`, underJunction)
+	for _, k := range []string{bad, filepath.Join(bad, "x"), filepath.Join(junction, "bad", "x")} {
+		if validKey(k) {
+			t.Errorf("validKey accepts %q, which goes through a link to a device path", k)
+		}
+	}
+	indirect := filepath.Join(real, "indirect")
+	symlinkOrSkip(t, filepath.Join(bad, "x"), indirect)
+	if validKey(indirect) {
+		t.Errorf("validKey accepts %q, whose target goes through a link to a device path", indirect)
+	}
+	k := filepath.Join(bad, "x")
+	if !staleWorktreeKey(k) || foldKey(k) != k {
+		t.Errorf("staleWorktreeKey = %v, foldKey = %q", staleWorktreeKey(k), foldKey(k))
+	}
+	r := &Registry{Worktrees: map[string]map[string]int{k: {"APP_PORT": 8123}}}
+	r.migrate(real)
+	if _, ok := r.Worktrees[k]; !ok {
+		t.Errorf("migrate dropped %q: %v", k, r.Worktrees)
+	}
+}
+
+func TestDriveTargetOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("filepath.IsAbs reads Windows paths only on Windows")
+	}
+	for k, want := range map[string]bool{`C:\x`: true, `c:/x`: true, `\\h\s\x`: false, `\\?\C:\x`: false,
+		`\??\C:\x`: false, `\\?\Volume{0}\x`: false, `\x`: false, `C:x`: false, `x`: false} {
+		if got := driveTarget(k); got != want {
+			t.Errorf("driveTarget(%q) = %v, want %v", k, got, want)
+		}
 	}
 }
