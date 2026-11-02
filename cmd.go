@@ -688,8 +688,9 @@ func runSail(root string, cfg *Config, args []string) error {
 }
 
 // cleanEnv returns the current environment without every variable that starts with COMPOSE_, SAIL_FILES and the
-// variables in drop (they can point at another compose file or project). DOCKER_HOST etc. are kept because some
-// users set them on purpose. This removes environment variables; it is separate from upOverrideKeys and
+// variables in drop (they can point at another compose file or project). DOCKER_HOST, the proxy variables,
+// SSH_AUTH_SOCK etc. are kept because users set them on purpose (reservedNames keeps them from being port variables,
+// which drop would remove). This removes environment variables; it is separate from upOverrideKeys and
 // rmOverrideKeys, which refuse keys in .env.
 func cleanEnv(drop []string) []string { return filterEnv(os.Environ(), drop) }
 

@@ -42,7 +42,7 @@ Laravel プロジェクトのディレクトリ（`artisan` と compose ファ�
 ```
 
 - `compose`: compose ファイル。プロジェクトディレクトリ内の相対パスで書きます（`rm` が `docker compose -f` に渡します）。
-- `port_vars`: `up` がポートを割り当てる変数。`name` は compose ファイルが使う変数名にしてください。`up` は `.env` のそのキーを書き換えるので、ほかのキーを挙げないでください。名前はシェルの変数名（英字、数字、`_` で、数字で始まらない）で、それ自体に意味のある名前（大文字小文字を問いません）以外にしてください。そのような名前とは、`up` 自身が書くキー（`COMPOSE_PROJECT_NAME`、`SESSION_COOKIE`、`APP_URL`、`SANCTUM_STATEFUL_DOMAINS`）、docker compose や docker CLI が読む設定（`COMPOSE_FILE`、`COMPOSE_PROFILES`、`DOCKER_HOST`、`DOCKER_CONTEXT` など。`DOCKER_WEB_PORT` や `COMPOSE_WEB_PORT` のようなほかの名前は使えます）、`SAIL_FILES`、`PATH`、`HOME`、`SHELL`、`USER`、`PWD`、`IFS`、Sail の `APP_SERVICE`、`WWWUSER`、`WWWGROUP`、`APP_ENV` です。どれも `PORT` で終わらないので、検出で compose ファイルから見つかることはありません。`default`（1〜65535）は、変数が未設定のときに compose ファイルが使うポートです。空きポートは `default` + 1 から探します。各変数は 1 回だけ挙げてください（名前は大文字小文字を区別せずに比べます）。そうでない名前や `default` を持つファイル、名前が重複するファイルは拒否されます。
+- `port_vars`: `up` がポートを割り当てる変数。`name` は compose ファイルが使う変数名にしてください。`up` は `.env` のそのキーを書き換えるので、ほかのキーを挙げないでください。名前はシェルの変数名（英字、数字、`_` で、数字で始まらない）で、それ自体に意味のある名前（大文字小文字を問いません）以外にしてください。そのような名前とは、`up` 自身が書くキー（`COMPOSE_PROJECT_NAME`、`SESSION_COOKIE`、`APP_URL`、`SANCTUM_STATEFUL_DOMAINS`）、docker compose や docker CLI が読む設定（`COMPOSE_FILE`、`COMPOSE_PROFILES`、`DOCKER_HOST`、`DOCKER_CONTEXT` など。`DOCKER_WEB_PORT` や `COMPOSE_WEB_PORT` のようなほかの名前は使えます）、BuildKit や buildx のビルド設定（`BUILDKIT_PROGRESS`、`BUILDX_BUILDER` など）、プロキシの設定（`HTTP_PROXY`、`HTTPS_PROXY`、`FTP_PROXY`、`NO_PROXY`、`ALL_PROXY`）、`SSH_AUTH_SOCK`、`SAIL_FILES`、`PATH`、`HOME`、`SHELL`、`USER`、`PWD`、`IFS`、`UID`、Sail のスクリプトが読む設定（`APP_SERVICE`、`APP_USER`、`WWWUSER`、`WWWGROUP`、`APP_ENV`、`SAIL_DOCKER_BINARY`、`SAIL_SKIP_CHECKS`、`sail share` の `SAIL_SHARE_*` の設定）です。`PORT` で終わるのは `SAIL_SHARE_SERVER_PORT` だけなので、検出で compose ファイルから見つかりうるのはこの名前だけです。見つかると `up` と `init` は実行を拒否します（compose ファイルの変数名を変えてください）。`stop` と `rm` はそのまま使えます。`default`（1〜65535）は、変数が未設定のときに compose ファイルが使うポートです。空きポートは `default` + 1 から探します。各変数は 1 回だけ挙げてください（名前は大文字小文字を区別せずに比べます）。そうでない名前や `default` を持つファイル、名前が重複するファイルは拒否されます。
 
 このファイルは手で書いても構いません（たとえば検出で拾えないポートを足すため）。あとで `init` を実行すると、検出した内容で置き換わります。
 
@@ -69,7 +69,7 @@ sail-worktree up -d
   - Sanctum の照合規則で一致するエントリが既にあるとき（ワイルドカードや `__SANCTUM_CURRENT_REQUEST_HOST__` も含む）、変数がないとき、値がステートフルドメインを無効にするとき（空、`null`・`false`・`true`・`empty`、`(null)` のように括弧で囲んだ同じ語、カンマだけ）は追加しません。
   - 単純なリストでない値（`${APP_URL}` のような変数、コメント、内側の引用符、引用符の外の空白など）や、単純なホスト名・IP アドレスでない `APP_URL` のホスト（ほかの文字、IPv6 のゾーン、IPv4 射影 IPv6 アドレス）は変更せず、追加すべき値を示す警告を出します。警告は `up` のたびに出ます。値が原因の警告は、値にそのエントリが独立した要素として入れば止まります（引用符の後ろにコメントのない引用符付きの値なら引用符の内側に、引用符のない値なら空白・タブ・`#`・引用符がまったくない形で、手で追加してください）。ホストが原因の警告は `APP_URL` を変えるまで続きます。
   - 既存のエントリは削除しません。古いポートのエントリは残り、ほかのポートのエントリ（Vite のポートなど）は更新しません。
-- ポート変数と同名のシェル変数・`COMPOSE_*` の全て・`SAIL_FILES` は、`.env` より優先されてしまうので、`sail` に渡す環境（`stop` も同じ）と、`rm` の `docker compose` に渡す環境から外します。`DOCKER_HOST`・`DOCKER_CONTEXT` は意図して使う人がいるので外しません。
+- ポート変数と同名のシェル変数・`COMPOSE_*` の全て・`SAIL_FILES` は、`.env` より優先されてしまうので、`sail` に渡す環境（`stop` も同じ）から外します。`rm` の `docker compose` に渡す環境からは `COMPOSE_*` の全てと `SAIL_FILES` を外します。`DOCKER_HOST`・`DOCKER_CONTEXT`・プロキシの変数・`SSH_AUTH_SOCK` は意図して使う人がいるので外しません。
 - 割り当て済みのポートは、次回以降も同じ値を再利用します。ポート番号（1〜65535）でない記録値（手で編集したレジストリ）は、新しいポートに置き換えます。
 - 最後に `vendor/bin/sail up <args>` を実行します。
 
@@ -268,9 +268,9 @@ sail-worktree up -d
 - **拒否されるようになった `.sail-worktree.json`。** `port_vars` に次の項目があると、`up`、`stop`、`rm` は失敗し、`status` は問題として報告し、`check` は警告します。
   - `name` がシェルの変数名でない項目、または `default` がないか 1〜65535 の範囲外である項目（これまでは `up` が `.env` にほかの行を書いたり、ポート 1 を割り当てたりすることがありました）
   - 2 回挙げた `name`（大文字小文字を問いません）
-  - `PATH`、`COMPOSE_FILE`、`DOCKER_HOST` のように、それ自体に意味のある `name`（[ファイルの説明](#sail-worktreejson-ファイル)を参照）
+  - `PATH`、`COMPOSE_FILE`、`DOCKER_HOST`、`HTTP_PROXY`、`SSH_AUTH_SOCK`、`BUILDKIT_PROGRESS`、`SAIL_SHARE_TOKEN` のように、それ自体に意味のある `name`（[ファイルの説明](#sail-worktreejson-ファイル)を参照）
 
-  そのような名前を挙げられるのは手で書いたファイルだけです。検出では見つからず、`DOCKER_WEB_PORT` のようなほかの `DOCKER_*`・`COMPOSE_*` の変数は v0.8.1 と同じように使えます。項目を手で直すか、検出した内容でファイルを置き換える `init` を実行してください。予約された名前のときは、compose ファイルの変数名を変えてください。
+  そのような名前を挙げられるのは手で書いたファイルだけです。例外は、compose ファイルが `${SAIL_SHARE_SERVER_PORT:-...}` をホストのポートに割り当てているときの `SAIL_SHARE_SERVER_PORT` です。v0.8.1 以前の `init` はこの名前をファイルに書きました（そのファイルでは `up`、`stop`、`rm` が失敗します）。ファイルがなければ、`up` と `init` が実行を拒否するようになりました（`stop` と `rm` はそのまま使えます）。`DOCKER_WEB_PORT` のようなほかの `DOCKER_*`・`COMPOSE_*` の変数は v0.8.1 と同じように使えます。項目を手で直すか、検出した内容でファイルを置き換える `init` を実行してください。予約された名前のときは、compose ファイルの変数名を変えてください。
 - **`ps --json` や `ports --json` を読むスクリプト。** メインワークツリーの記録が同じ配列に入るようになりました（`ps` では先頭）。ワークツリーだけを想定するスクリプトは、`"kind": "worktree"` のオブジェクトだけを使ってください。`ports PORT --json` で、どこにも記録されていないポートの行は `"kind": "none"`、`"state": "-"` になります（これまでは `state` が空でした）。`ports --json` の `host` は `"invalid"` にもなります。ほかのフィールドの名前と意味は変わりません。
 - **v0.8.1 以前をこの版と同時に実行しないでください。** v0.8.0 と v0.8.1 は古くなったロックを名前の変更で壊し、ロックをパスで消します。それより前の版はロックを取りません。そのため 2 つの実行が同時にレジストリを更新することがあり、新しいロックの保護はこの版どうしの実行の間でしか効きません。古い版には、下の Windows のパスの規則もありません。[補足](#補足)のロックの項も参照してください。
 - **古い版は `mains` を消します。** `registry.json` に、メインワークツリーのポートを持つ `mains` が増えました（`worktrees` は変わりません）。古い版がレジストリを保存すると（その `up` や `rm`）、`mains` は消え、次の `up` か `check` で記録し直されるまで、メインワークツリーのポートは予約されません。
