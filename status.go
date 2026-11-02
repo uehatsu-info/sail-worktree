@@ -202,7 +202,7 @@ func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) 
 			}
 		}
 		regPort, haveReg := mine[v.Name]
-		if haveReg && (regPort < 1 || regPort > 65535) {
+		if haveReg && !validPort(regPort) {
 			r.problem("%s is recorded as %d in the registry, which is not a port number", v.Name, regPort)
 			regPort, haveReg = 0, false
 		} else if !haveReg {
