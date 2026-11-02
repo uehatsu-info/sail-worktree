@@ -297,7 +297,8 @@ func isASCIILetter(b byte) bool { return 'a' <= b && b <= 'z' || 'A' <= b && b <
 // migrate merges keys that are aliases of root (recorded by an older version under a symlinked path) into root.
 // It only changes memory; the caller saves on success. An existing entry for root wins; otherwise the entry of the
 // alias with the smallest key (lexicographically) is adopted. The ports of dropped aliases are not left in used.
-// Keys whose path cannot be resolved (it no longer exists) and keys that fail validKey are left alone.
+// Keys whose path cannot be resolved (it no longer exists) and keys that fail validKey are left alone. Aliases of root
+// in the worktree lists of main records are replaced by root as well (a list that holds none is left as it is).
 func (r *Registry) migrate(root string) {
 	var aliases []string
 	for k := range r.Worktrees {
@@ -314,6 +315,27 @@ func (r *Registry) migrate(root string) {
 			r.Worktrees[root] = r.Worktrees[k]
 		}
 		delete(r.Worktrees, k)
+	}
+	for m, rec := range r.Mains {
+		ws := make([]string, 0, len(rec.Worktrees))
+		changed, seen := false, false
+		for _, w := range rec.Worktrees {
+			if w != root && foldKey(w) == root {
+				w, changed = root, true
+			}
+			if w == root {
+				if seen {
+					continue
+				}
+				seen = true
+			}
+			ws = append(ws, w)
+		}
+		if changed {
+			sort.Strings(ws)
+			rec.Worktrees = ws
+			r.Mains[m] = rec
+		}
 	}
 }
 

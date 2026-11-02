@@ -107,7 +107,7 @@ myapp-x   .       feat-x  APP_PORT=81 FORWARD_DB_PORT=3307  running  /work/myapp
 
 ### `sail-worktree status [--no-docker]`
 
-Shows how the current worktree is set up and reports what is wrong with it. Run it in the project directory (or below it), like `up`; it works in the main worktree too, where it only says that `up`, `stop` and `rm` do not run there and that `check` records its ports.
+Shows how the current worktree is set up and reports what is wrong with it. Run it in the project directory (or below it), like `up`; it works in the main worktree too, where it only says that `up` and `rm` do not run there and that `check` records its ports.
 
 ```
 project directory: "/work/myapp-x"

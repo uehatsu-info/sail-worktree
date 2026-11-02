@@ -35,7 +35,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
-| `ps.go` | `ps` and its registry view: `entry`, `collectEntries` (`gitInRegistryDirs`, `registryPathOK`), `foldRegistry` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
+| `ps.go` | `ps` and its registry view: `entry`, `collectEntries` (`gitInRegistryDirs`, `registryPathOK`), `foldRegistry`/`foldKey` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
 | `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `readMains`, `refreshMains`, `checkConflicts`, `holder`, `suggestion` |
@@ -152,7 +152,10 @@ These come from deliberate decisions; change them only on purpose and update the
   (`validPort`), so a hand-edited recorded default outside that reserves nothing. A main directory that does not exist
   is never recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file is not read
   for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves
-  nothing. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference.
+  nothing. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias paths in a
+  record's `worktrees` list are folded like the top-level `worktrees` keys: by `migrate` (saved by `up` and `rm`), and
+  by `check` in memory only (`foldKey`, the key `ofMain` looks a worktree up by); an entry that fails `validKey` is
+  never resolved.
 - **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once,
   so nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`,
   fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the
@@ -166,7 +169,8 @@ These come from deliberate decisions; change them only on purpose and update the
   `exec.Cmd.Env` inherits the whole parent environment.
 - **Paths are real paths.** The worktree root, the main worktree and the project directory are resolved through
   symlinks, because the project name contains a hash of the project directory. `Registry.migrate` merges keys an older
-  version recorded under a symlinked path; it only changes memory and the caller saves on success.
+  version recorded under a symlinked path, and replaces aliases of root in the `mains` worktree lists (a changed list
+  is sorted); it only changes memory and the caller saves on success.
 - **Project directory.** `up`, `stop` and `rm` (`lookupProject`) take the nearest directory with `.sail-worktree.json`
   anywhere up to the worktree root; only when there is none, the nearest directory where `isLaravelProject` holds
   (`artisan` is a regular file and a compose file exists), and then the configuration is detected (`ctx.detected`).

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -306,6 +307,31 @@ func TestMigrateLeavesInvalidKeysAlone(t *testing.T) {
 	r.migrate(root)
 	if _, ok := r.Worktrees[unclean]; !ok || len(r.Worktrees) != 1 {
 		t.Errorf("an invalid key was migrated: %v", r.Worktrees)
+	}
+}
+
+func TestRegistryMigrateFoldsMainsWorktrees(t *testing.T) {
+	real, links := newLinkedDir(t, "b-link", "a-link")
+	base := filepath.Dir(real)
+	other, z := filepath.Join(base, "other"), filepath.Join(base, "z")
+	// Resolves to real, but fails validKey, so it must not be resolved.
+	unclean := real + string(filepath.Separator) + ".." + string(filepath.Separator) + filepath.Base(real)
+	r := &Registry{Worktrees: map[string]map[string]int{}, Mains: map[string]MainRecord{
+		"/a": {Worktrees: []string{links[0], other}},
+		"/b": {Worktrees: []string{real, links[1], links[0]}},
+		"/c": {Worktrees: []string{z, other}},
+		"/d": {Worktrees: []string{unclean}},
+	}}
+	r.migrate(real)
+	for m, want := range map[string][]string{
+		"/a": {other, real},
+		"/b": {real},
+		"/c": {z, other}, // no alias: left as it is, order included
+		"/d": {unclean},
+	} {
+		if got := r.Mains[m].Worktrees; !slices.Equal(got, want) {
+			t.Errorf("mains[%s].worktrees = %q, want %q", m, got, want)
+		}
 	}
 }
 
