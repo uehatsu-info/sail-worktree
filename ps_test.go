@@ -1173,8 +1173,9 @@ func TestFoldMains(t *testing.T) {
 	alias, real := aliasMain(t)
 	root, sub := movedRoot(t)
 	base := filepath.Dir(filepath.Dir(real)) // real is base/data/app, alias base/work/app
-	symlinkOrSkip(t, filepath.Join(base, "data"), filepath.Join(base, "work2"))
-	alias2 := filepath.Join(base, "work2", "app")
+	// "zwork" sorts after "work" whatever the separator ("work2" would not on Windows: '\' > '2' > '/').
+	symlinkOrSkip(t, filepath.Join(base, "data"), filepath.Join(base, "zwork"))
+	alias2 := filepath.Join(base, "zwork", "app")
 	other := projectDir(t, mustMkdir(t, filepath.Join(realTempDir(t), "x", "app")))
 	otherAlias := filepath.Join(filepath.Dir(filepath.Dir(other)), "y", "app")
 	symlinkOrSkip(t, filepath.Dir(other), filepath.Dir(otherAlias))
