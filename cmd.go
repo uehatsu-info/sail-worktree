@@ -268,7 +268,7 @@ func cmdUp(args []string) error {
 	sort.Strings(names)
 	for _, n := range names {
 		if p, ok := previous[n]; ok && p != ports[n] {
-			fmt.Fprintf(stdout, "  %s=%d (was %d, which another worktree or a main worktree uses)\n", n, ports[n], p)
+			fmt.Fprintf(stdout, "  %s=%d (was %d, which is used elsewhere)\n", n, ports[n], p)
 		} else {
 			fmt.Fprintf(stdout, "  %s=%d\n", n, ports[n])
 		}
@@ -288,7 +288,7 @@ func cmdUp(args []string) error {
 // followed); found is false when dir is not a directory (the main worktree may lack the project), and then nothing
 // is recorded.
 func mainPorts(dir string, vars []PortVar) (ports, defaults map[string]int, envOK, found bool) {
-	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
+	if !isDir(dir) {
 		return nil, nil, false, false
 	}
 	defaults = map[string]int{}
@@ -297,18 +297,23 @@ func mainPorts(dir string, vars []PortVar) (ports, defaults map[string]int, envO
 			defaults[v.Name] = v.Default
 		}
 	}
-	envPath := filepath.Join(dir, ".env")
-	var env *envFile
-	if _, err := os.Lstat(envPath); err == nil {
-		e, ok := readEnvIfRegular(envPath)
-		if !ok {
-			return nil, defaults, false, true
-		}
-		env = e
-	} else if !os.IsNotExist(err) {
+	env, ok := readMainEnv(dir)
+	if !ok {
 		return nil, defaults, false, true
 	}
 	return portsFromEnv(env, defaults), defaults, true, true
+}
+
+// readMainEnv reads the .env of a main worktree's project directory without following a link. env is nil when there
+// is no .env (compose then uses the defaults); ok is false when it exists but cannot be read as a regular file.
+func readMainEnv(dir string) (env *envFile, ok bool) {
+	envPath := filepath.Join(dir, ".env")
+	if _, err := os.Lstat(envPath); os.IsNotExist(err) {
+		return nil, true
+	} else if err != nil {
+		return nil, false
+	}
+	return readEnvIfRegular(envPath)
 }
 
 // portsFromEnv applies the rule of mainPorts to the variables of defaults; env may be nil (no .env).

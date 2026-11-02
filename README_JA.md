@@ -156,7 +156,7 @@ conflicts:
     keeps it: main worktree "/work/blog" APP_PORT
     fix: set APP_PORT=82 in the .env of "/work/shop"
 problems:
-  - port 80 is used by 2 holders
+  - port 80 is used 2 times
 error: found 1 problem(s)
 ```
 

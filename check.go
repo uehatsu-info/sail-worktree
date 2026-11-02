@@ -2,9 +2,10 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"os"
-	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -54,7 +55,7 @@ func checkRecord(r *report) error {
 	if !envOK {
 		r.warn("%s", mainEnvUnreadable(c.main))
 	}
-	// Read the main's .env before locking, then read the registry after locking, as up does.
+	// The main's .env was read above, outside the lock; the registry is read only after locking.
 	unlock, err := lockRegistry()
 	if err != nil {
 		return err
@@ -105,14 +106,14 @@ func (h holder) String() string {
 func checkConflicts(r *report, reg *Registry) {
 	reserved := map[int]bool{} // every recorded port, stale records included, as up's used() sees them
 	var holders []holder
-	mains := sortedKeys(reg.Mains)
+	mains := slices.Sorted(maps.Keys(reg.Mains))
 	for _, k := range mains {
 		rec := reg.Mains[k]
 		for _, p := range rec.Ports {
 			reserved[p] = true
 		}
-		if fi, err := os.Stat(k); !validKey(k) || err != nil || !fi.IsDir() {
-			r.warn("the record of main worktree %q keeps ports free, but the directory no longer exists: %s", k, cell(portsCell(rec.Ports)))
+		if !validKey(k) || !isDir(k) {
+			r.warn("the record of main worktree %q keeps ports free, but it is not an existing directory: %s", k, cell(portsCell(rec.Ports)))
 			continue
 		}
 		for name, p := range mainPortsNow(k, rec) {
@@ -127,13 +128,13 @@ func checkConflicts(r *report, reg *Registry) {
 		}
 	}
 	view := foldRegistry(reg)
-	wts := sortedKeys(view)
+	wts := slices.Sorted(maps.Keys(view))
 	for _, k := range wts {
 		for _, p := range view[k] {
 			reserved[p] = true
 		}
 		if !validKey(k) || !pathExists(k) {
-			r.warn("the record of worktree %q keeps ports free, but the directory no longer exists: %s", k, cell(portsCell(view[k])))
+			r.warn("the record of worktree %q keeps ports free, but it is not an existing directory: %s", k, cell(portsCell(view[k])))
 			continue
 		}
 		for name, p := range view[k] {
@@ -182,25 +183,26 @@ func checkConflicts(r *report, reg *Registry) {
 		for _, h := range hs[1:] {
 			r.line("    fix: %s", suggestion(h, reserved))
 		}
-		r.problem("port %d is used by %d holders", p, len(hs))
+		r.problem("port %d is used %d times", p, len(hs))
 	}
 	if conflicts == 0 {
 		r.line("no port is used more than once")
 	}
 }
 
-// mainPortsNow re-reads the ports of a recorded main worktree from its .env with the rule of mainPorts, so a change
-// made since it was recorded is seen. A .env that is not a regular file is not read; the record is used then.
+// mainPortsNow re-reads the ports of a recorded main worktree with the rule of mainPorts, so a change made since it
+// was recorded is seen. When its .env cannot be read, the record is used.
 func mainPortsNow(dir string, rec MainRecord) map[string]int {
-	envPath := filepath.Join(dir, ".env")
-	if _, err := os.Lstat(envPath); os.IsNotExist(err) {
-		return portsFromEnv(nil, rec.Defaults)
-	} else if err == nil {
-		if e, ok := readEnvIfRegular(envPath); ok {
-			return portsFromEnv(e, rec.Defaults)
-		}
+	if env, ok := readMainEnv(dir); ok {
+		return portsFromEnv(env, rec.Defaults)
 	}
 	return rec.Ports
+}
+
+// isDir reports whether p is a directory itself, not a link to one: a registry key is untrusted.
+func isDir(p string) bool {
+	fi, err := os.Lstat(p)
+	return err == nil && fi.IsDir()
 }
 
 // suggestion tells how to move h off its port. A worktree is moved by up (the other holder's port counts as used); a
@@ -211,7 +213,7 @@ func suggestion(h holder, reserved map[int]bool) string {
 	}
 	got, err := allocatePorts([]PortVar{{Name: h.name, Default: h.port}}, nil, reserved, probePort)
 	if err != nil {
-		return fmt.Sprintf("set %s in the .env of %q to a free port (none found above %d)", cell(h.name), h.dir, h.port)
+		return fmt.Sprintf("set %+q in the .env of %q to a free port (none found above %d)", h.name, h.dir, h.port)
 	}
 	p := got[h.name]
 	reserved[p] = true
@@ -219,13 +221,4 @@ func suggestion(h holder, reserved map[int]bool) string {
 		return fmt.Sprintf("set %s=%d in the .env of %q", h.name, p, h.dir)
 	}
 	return fmt.Sprintf("set %+q to %d in the .env of %q", h.name, p, h.dir)
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

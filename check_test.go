@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // runCheck runs check with the port probe faked (every port is free unless listed in busy).
@@ -24,6 +25,15 @@ func runCheck(t *testing.T, busy ...int) (out string, err error) {
 	b := captureStdout(t)
 	err = cmdCheck(nil)
 	return b.String(), err
+}
+
+// isolatedRegistry points the registry at a temporary directory and leaves any repository.
+func isolatedRegistry(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AppData", t.TempDir())
+	t.Chdir(realTempDir(t))
 }
 
 func saveRegistry(t *testing.T, reg *Registry) {
@@ -62,7 +72,7 @@ func TestCheckRecordsAMainOnlyRepository(t *testing.T) {
 	// Nothing changed: the registry file is not rewritten.
 	p, _ := registryPath()
 	fi1, _ := os.Stat(p)
-	if err := os.Chtimes(p, fi1.ModTime().Add(-3600e9), fi1.ModTime().Add(-3600e9)); err != nil {
+	if err := os.Chtimes(p, fi1.ModTime().Add(-time.Hour), fi1.ModTime().Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	fi1, _ = os.Stat(p)
@@ -87,10 +97,7 @@ func TestCheckInALinkedWorktreeListsIt(t *testing.T) {
 }
 
 func TestCheckOutsideARepositoryStillReports(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("AppData", t.TempDir())
-	t.Chdir(realTempDir(t))
+	isolatedRegistry(t)
 	a, b := realTempDir(t), realTempDir(t)
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{a: mainRec(80), b: mainRec(80)}})
 	out, err := runCheck(t)
@@ -114,10 +121,7 @@ func TestCheckOutsideARepositoryStillReports(t *testing.T) {
 }
 
 func TestCheckSuggestionSkipsUsedPorts(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("AppData", t.TempDir())
-	t.Chdir(realTempDir(t))
+	isolatedRegistry(t)
 	a, b, c := realTempDir(t), realTempDir(t), realTempDir(t)
 	wt := realTempDir(t)
 	saveRegistry(t, &Registry{
@@ -159,10 +163,7 @@ func TestCheckTellsAWorktreeToRunUp(t *testing.T) {
 }
 
 func TestCheckIgnoresMissingDirectoriesAndRemovedKeys(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("AppData", t.TempDir())
-	t.Chdir(realTempDir(t))
+	isolatedRegistry(t)
 	gone := filepath.Join(realTempDir(t), "gone")
 	a := realTempDir(t)
 	// a's .env no longer sets APP_PORT (the record still says 3307): the default is used, so no conflict with b.
@@ -183,7 +184,7 @@ func TestCheckIgnoresMissingDirectoriesAndRemovedKeys(t *testing.T) {
 		t.Fatalf("err = %v\n%s", err, out)
 	}
 	for _, want := range []string{
-		fmt.Sprintf("the record of main worktree %q keeps ports free, but the directory no longer exists: APP_PORT=80", gone),
+		fmt.Sprintf("the record of main worktree %q keeps ports free, but it is not an existing directory: APP_PORT=80", gone),
 		fmt.Sprintf("the record of main worktree %q keeps ports free", "relative/key"),
 		fmt.Sprintf("the record of worktree %q keeps ports free", filepath.Join(gone, "wt")),
 		"no port is used more than once",
@@ -195,10 +196,7 @@ func TestCheckIgnoresMissingDirectoriesAndRemovedKeys(t *testing.T) {
 }
 
 func TestCheckDoesNotReadASymlinkedMainEnv(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("AppData", t.TempDir())
-	t.Chdir(realTempDir(t))
+	isolatedRegistry(t)
 	a, b := realTempDir(t), realTempDir(t)
 	target := filepath.Join(t.TempDir(), "env")
 	writeFile(t, target, "APP_PORT=9000\n")
@@ -212,10 +210,7 @@ func TestCheckDoesNotReadASymlinkedMainEnv(t *testing.T) {
 }
 
 func TestCheckEscapesUntrustedNames(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("AppData", t.TempDir())
-	t.Chdir(realTempDir(t))
+	isolatedRegistry(t)
 	a, b := realTempDir(t), realTempDir(t)
 	evil := "X\x1b[2J;rm -rf ~\nY"
 	rec := MainRecord{Ports: map[string]int{evil: 80}, Defaults: map[string]int{evil: 80}}
