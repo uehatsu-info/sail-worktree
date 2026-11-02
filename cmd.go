@@ -103,11 +103,14 @@ func initCompose(root, marker string) (compose string, existed bool) {
 
 // ctx is the information shared by the commands that run inside a worktree.
 // root and main are the project directories of this worktree and of the main worktree; wtTop and mainTop are the
-// roots of the two worktrees. All of them are real paths. The configuration is read through config() (stop and rm:
-// teardownConfig()), because a configuration error is reported only after the main-worktree refusal.
+// roots of the two worktrees. All of them are real paths. In a bare layout (bare) mainTop is the bare repository and
+// main is empty, because there is no main worktree checkout: check bare before using main. The configuration is read
+// through config() (stop and rm: teardownConfig()), because a configuration error is reported only after the
+// main-worktree refusal.
 type ctx struct {
 	root, main     string
 	wtTop, mainTop string
+	bare           bool // the first listed worktree is a bare repository: no main worktree to record or copy from
 	detected       bool // no .sail-worktree.json: compose file and port variables were detected
 	cfg            *Config
 	cfgErr         error
@@ -136,7 +139,7 @@ func loadCtx() (*ctx, error) {
 	if err != nil {
 		return nil, fmt.Errorf("run this inside a git repository: %w", err)
 	}
-	mainTop, err := mainWorktree(wtTop)
+	mainTop, bare, err := mainWorktree(wtTop)
 	if err != nil {
 		return nil, err
 	}
@@ -144,11 +147,13 @@ func loadCtx() (*ctx, error) {
 	if err != nil {
 		return nil, err
 	}
-	main, err := counterpart(mainTop, cand.rel)
-	if err != nil {
-		return nil, err
+	main := ""
+	if !bare {
+		if main, err = counterpart(mainTop, cand.rel); err != nil {
+			return nil, err
+		}
 	}
-	c := &ctx{root: root, main: main, wtTop: wtTop, mainTop: mainTop, detected: detected}
+	c := &ctx{root: root, main: main, wtTop: wtTop, mainTop: mainTop, bare: bare, detected: detected}
 	if detected {
 		c.cfg, c.cfgErr = detectConfig(root, cand.marker)
 		var re *reservedPortVarError
@@ -165,7 +170,8 @@ func loadCtx() (*ctx, error) {
 }
 
 // isMain reports whether the command runs in the main worktree. The worktree roots decide; comparing the project
-// directories as well is defense in depth, because up and rm must never touch the main worktree.
+// directories as well is defense in depth, because up and rm must never touch the main worktree. In a bare layout
+// neither holds (git has no worktree root in a bare repository, and main is empty), so every worktree is a linked one.
 func (c *ctx) isMain() bool { return c.wtTop == c.mainTop || c.root == c.main }
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9_-]+`)
@@ -227,16 +233,24 @@ func cmdUp(args []string) error {
 		return err
 	}
 	reg.migrate(c.root) // before allocatePorts, adopt the keys an older version recorded under an alias path (saved when up succeeds)
-	// Keep the main worktree's ports free as well: it uses them without a port record of its own.
-	if ports, defaults, envOK, found := mainPorts(c.main, cfg.PortVars); found {
-		reg.recordMain(c.main, c.root, ports, defaults, envOK)
-		if !envOK {
-			warnMainEnv(c.main)
+	// Keep the main worktree's ports free as well: it uses them without a port record of its own. A bare layout has
+	// no main worktree checkout to record.
+	if !c.bare {
+		if ports, defaults, envOK, found := mainPorts(c.main, cfg.PortVars); found {
+			reg.recordMain(c.main, c.root, ports, defaults, envOK)
+			if !envOK {
+				warnMainEnv(c.main)
+			}
 		}
 	}
 	src := envOwn
 	env, err := readEnv(envPath)
-	if os.IsNotExist(err) {
+	if os.IsNotExist(err) && c.bare { // first: the branches below read c.main, which is empty here
+		src = envFromOwnExample
+		if env, err = readOwnEnvExample(c.root); err != nil {
+			return err
+		}
+	} else if os.IsNotExist(err) {
 		src = envFromMain
 		env, err = readEnv(filepath.Join(c.main, ".env"))
 		if os.IsNotExist(err) {
@@ -281,8 +295,11 @@ func cmdUp(args []string) error {
 	if err := env.Write(envPath); err != nil {
 		return err
 	}
-	if src != envOwn {
+	switch src {
+	case envFromMain, envFromMainExample:
 		fmt.Fprintln(stdout, "created .env (copied from the main worktree)")
+	case envFromOwnExample:
+		fmt.Fprintln(stdout, "created .env (copied from .env.example)")
 	}
 	previous := reg.Worktrees[c.root]
 	reg.Worktrees[c.root] = ports
@@ -383,7 +400,25 @@ const (
 	envOwn             envSource = iota // the worktree's own .env
 	envFromMain                         // the main worktree's .env (copied)
 	envFromMainExample                  // the main worktree's .env.example (copied)
+	envFromOwnExample                   // the worktree's own .env.example (copied; bare layout only)
 )
+
+// readOwnEnvExample reads .env.example of the project directory root, the source of .env in a bare layout. Unlike the
+// main worktree's files, it comes from the branch checked out here, so only a regular file is read: a link committed
+// on a branch must not copy a file from elsewhere on the host into a .env that Sail sources.
+func readOwnEnvExample(root string) (*envFile, error) {
+	p := filepath.Join(root, ".env.example")
+	if _, err := os.Lstat(p); os.IsNotExist(err) {
+		return nil, fmt.Errorf("the repository is bare, so there is no main worktree to copy .env from, and %q does not exist; create .env first", p)
+	} else if err != nil {
+		return nil, err
+	}
+	env, ok := readEnvIfRegular(p)
+	if !ok {
+		return nil, fmt.Errorf("cannot copy .env from %q: it is not a regular file or cannot be read; create .env first", p)
+	}
+	return env, nil
+}
 
 func upOverrideError(key string, src envSource) error {
 	switch src {
@@ -394,6 +429,9 @@ func upOverrideError(key string, src envSource) error {
 			"Remove it from the main .env (this also affects the source of other worktrees), or create .env in this worktree first without that line and run up again", key)
 	case envFromMainExample:
 		return fmt.Errorf("the main worktree's .env.example has %s, which would be copied into this .env, so up cannot continue (it could point at another compose file). "+
+			"Remove it from .env.example, or create .env in this worktree first without that line and run up again", key)
+	case envFromOwnExample:
+		return fmt.Errorf(".env.example has %s, which would be copied into this .env, so up cannot continue (it could point at another compose file). "+
 			"Remove it from .env.example, or create .env in this worktree first without that line and run up again", key)
 	}
 	return fmt.Errorf("unknown .env source: %d", src)

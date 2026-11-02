@@ -208,7 +208,7 @@ func TestPortsRunningProjectsAreNotProbed(t *testing.T) {
 	main := filepath.Dir(wt)
 	_ = main
 	probes, _ := portsFakes(t, map[int]bool{81: true}, nil)
-	mainTop, _ := mainWorktree(wt)
+	mainTop, _, _ := mainWorktree(wt)
 	useDocker(t, `[{"Name":"`+projectName(mainTop, wt, wt)+`","Status":"running(2)"}]`, nil)
 	rows := portsJSON(t)
 	for _, r := range rows {
@@ -402,7 +402,7 @@ func TestPortsMixedStatesOnOnePort(t *testing.T) {
 	_, wt, other := portsSetup(t)
 	writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}, other: {"APP_PORT": 81}})
 	probes, _ := portsFakes(t, map[int]bool{81: true}, map[int]owner{81: {"docker-proxy", 9}})
-	mainTop, _ := mainWorktree(wt)
+	mainTop, _, _ := mainWorktree(wt)
 	useDocker(t, `[{"Name":"`+projectName(mainTop, wt, wt)+`","Status":"running(1)"}]`, nil)
 	byWorktree := map[string]portRow{}
 	for _, r := range portsJSON(t) {
