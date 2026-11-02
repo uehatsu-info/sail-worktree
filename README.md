@@ -165,7 +165,7 @@ error: found 1 problem(s)
 - The first holder keeps the port: main worktrees before worktrees, each in path order. For a worktree, the fix is to run `sail-worktree up` in it (it assigns another port). For a main worktree, `check` proposes a port that no record uses and that this host can bind (bound for an instant and closed again); set it in that `.env` yourself and restart its containers. A variable name that is not a plain shell name is only quoted.
 - On every run `check` also updates every recorded main worktree from its `.env` (links are not followed), so a port changed there since is seen, and `up` avoids it from then on. A port variable added to the configuration is seen after the next `up` or `check` in that repository.
 - Two repositories whose main worktrees both use the compose defaults (`APP_PORT` 80, `FORWARD_DB_PORT` 3306 and so on) conflict: they cannot run at the same time. Give one of them other ports if you run them together; if you never do, the report is expected.
-- A record whose directory no longer exists (or whose key is not an absolute path) is listed under `warnings:` and is not a conflict; `up` still keeps its ports free. There is no command to drop such a record yet; edit the registry.
+- A record whose directory no longer exists (or whose key is not a path this tool uses; see the Notes on Windows network paths) is listed under `warnings:` and is not a conflict; `up` still keeps its ports free. There is no command to drop such a record yet; edit the registry.
 - The exit status is 1 when there is a conflict (`error: found N problem(s)`); warnings do not change it.
 
 ## Project directory
@@ -215,6 +215,7 @@ sail-worktree up -d
 - Port assignments are stored in `os.UserConfigDir()/sail-worktree/registry.json` (macOS: `~/Library/Application Support/sail-worktree/registry.json`). The file is replaced atomically, so a reader never sees half of it.
 - Several `up` commands (and `rm` and `check`) can run at the same time: while one reads the registry, chooses ports, writes `.env` and saves, the others wait on a lock file, `registry.json.lock` next to the registry (they print `waiting for another sail-worktree run ...` after a second). The lock is released before `sail up` starts and is not held while `rm` runs docker. `ps`, `ports` and `status` never take it. If a run was killed and left the lock behind, the next run removes it once it is 60 seconds old; before that, and only if no sail-worktree is running, you can delete the file yourself (the error message names it). A run that is suspended for over a minute while it holds the lock (a sleeping laptop, for example) can lose it to the next run. What remains is a short window between saving the ports and the containers binding them, in which another program can still take a port.
 - `vendor/bin/sail` must exist in the project directory (run `composer install` first).
+- On Windows, a path in the registry is only used if it starts with a drive letter (`C:\...`; a mapped network drive such as `Z:\...` is fine). A UNC or device path (`\\server\share\...`, `\\?\...`) is never looked at, because looking at it can make Windows connect to that server and send your credentials. So if you run a project from a UNC path (possible from PowerShell), `up`, `rm` and `status` work there (`status` finds its own record), but `ps` and `ports` treat its record as invalid (only counted in a note, or `stale` with `--all`) and `check` warns about it; map a drive letter instead. Paths git reports for the directory you run in are your own and are used as they are.
 - Error messages show control characters (except newlines, which they use for layout), format characters (such as bidirectional overrides) and invalid bytes escaped, so a crafted directory name cannot send escape sequences to your terminal (a newline in a path can still start a line of its own).
 
 ### Replacing a linked `compose` file
@@ -242,6 +243,7 @@ Your checks and the copy are not one step, so a process writing in the worktree 
 - New command `check` (see [`check`](#sail-worktree-check)). It records the main worktree of the repository you run it in and reports ports used more than once across all repositories.
 - `registry.json` has a new `mains` section with the main worktrees' ports. `worktrees` is unchanged. An older version that saves the registry (its `up` or `rm`) drops `mains`; the next `up` or `check` records it again.
 - `up` records the main worktree's ports and no longer assigns them to a worktree. A worktree whose port a recorded main worktree (of any repository) uses gets another port on its next `up`, which prints `APP_PORT=82 (was 81, ...)`.
+- On Windows, a registry entry whose path is not a drive-letter path (a UNC or device path) is no longer looked at, so `ps` and `ports` treat it as invalid; see the [Notes](#notes).
 
 ### v0.8.0
 
