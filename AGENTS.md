@@ -306,7 +306,10 @@ These come from deliberate decisions; change them only on purpose and update the
   including on Windows forms such as `C:x`, `\\srv\x` and `/x`. That check only reads the string; `rm` also checks the
   real path with `composeInsideProject` (see "`rm` is guarded"). Each `port_vars` entry must have a `shellName` name
   and a `validPort` default (`validatePortVars`), because `up` writes `NAME=port` into `.env`; the names are not held
-  to the detection rule, so a hand-added variable may use any name compose does (detected entries always pass).
+  to the detection rule, so a hand-added variable may use any name compose does. A name `reservedPortVar` lists (keys
+  `up` writes, `COMPOSE_*`, `SAIL_FILES`, `DOCKER_*`, a few shell and Sail names; case-insensitive, as `cleanEnv`
+  drops them) is refused, by `detectConfig` too, so `init` never writes a file that `loadConfig` refuses. Keep the
+  list short, and add a key there when `up` starts to write it.
 
 ## Testing notes
 

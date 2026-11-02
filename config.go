@@ -47,17 +47,46 @@ func loadConfig(root string) (*Config, error) {
 // validatePortVars refuses entries that up cannot write as NAME=port: a name with "=", a newline or a space would add
 // or change other lines of .env, which Sail sources as shell code, and a default outside 1-65535 would start the port
 // search at 1 or bind :0. Names are held to shellName, not to the detection rule, because a hand-added variable may be
-// any name the compose file uses. Detected variables always pass.
+// any name the compose file uses. Detected variables always pass, except a reserved name, which detectConfig refuses
+// too.
 func validatePortVars(vars []PortVar) error {
 	for i, v := range vars {
 		if !shellName.MatchString(v.Name) {
 			return fmt.Errorf("port_vars[%d] (%q): name in %s must be a shell variable name (letters, digits and _, not starting with a digit)", i, v.Name, configName)
+		}
+		// %+q for an untrusted name; after shellName it prints as %q would.
+		if why, ok := reservedPortVar(v.Name); ok {
+			return fmt.Errorf("port_vars[%d] (%+q): name in %s is reserved: %s; rename the variable in the compose file and here", i, v.Name, configName, why)
 		}
 		if !validPort(v.Default) {
 			return fmt.Errorf("port_vars[%d] (%q): default (%d) in %s must be 1 to 65535 (a missing default is 0)", i, v.Name, v.Default, configName)
 		}
 	}
 	return nil
+}
+
+// reservedPortVar reports why name cannot be a port variable: up writes NAME=port into .env, Sail sources it, and
+// cleanEnv drops every port variable name from the environment of sail and docker. Names are compared
+// case-insensitively, as cleanEnv drops them. The list is short on purpose, not complete: it holds the names that up
+// writes itself (keep it in step with up), the override keys, and the environment names whose loss breaks Sail or
+// sends docker elsewhere (rm runs "down -v").
+func reservedPortVar(name string) (string, bool) {
+	n := strings.ToUpper(name)
+	switch {
+	case n == "COMPOSE_PROJECT_NAME" || n == "SESSION_COOKIE" || n == "APP_URL" || n == sanctumKey:
+		return "up writes it", true
+	case strings.HasPrefix(n, "COMPOSE_") || n == "SAIL_FILES":
+		return "it would override the compose files or project that up uses", true
+	case strings.HasPrefix(n, "DOCKER_"):
+		// DOCKER_HOST, DOCKER_CONTEXT, DOCKER_CONFIG, ... choose the daemon and settings docker uses.
+		return "docker reads it from the environment", true
+	case n == "PATH" || n == "HOME" || n == "SHELL" || n == "USER" || n == "PWD" || n == "IFS":
+		return "the shell and sail need it", true
+	case n == "APP_SERVICE" || n == "WWWUSER" || n == "WWWGROUP" || n == "APP_ENV":
+		// Sail's script reads these; APP_ENV also chooses the .env file it sources.
+		return "Sail's script uses it", true
+	}
+	return "", false
 }
 
 // maxSmallFile bounds what readSmallFile reads from a compose file or .sail-worktree.json.
@@ -94,7 +123,15 @@ func detectConfig(root, compose string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Config{Compose: compose, PortVars: detectPortVars(string(b))}, nil
+	vars := detectPortVars(string(b))
+	for _, v := range vars {
+		// The detection rule lets COMPOSE_*PORT and DOCKER_*PORT through; refusing them here too keeps init from
+		// writing a file that loadConfig refuses.
+		if why, ok := reservedPortVar(v.Name); ok {
+			return nil, fmt.Errorf("port variable %+q in %q cannot be used: %s; rename it in the compose file", v.Name, compose, why)
+		}
+	}
+	return &Config{Compose: compose, PortVars: vars}, nil
 }
 
 // unsafeComposePath reports whether the compose value is not a relative path inside the project directory. It is
