@@ -78,9 +78,9 @@ func lockRegistry() (unlock func(), err error) {
 		}
 		if time.Now().After(deadline) {
 			if errors.Is(err, os.ErrExist) {
-				return nil, fmt.Errorf("the registry is locked by another sail-worktree run (%s); lock file %q; "+
+				return nil, fmt.Errorf("%w (%s); lock file %q; "+
 					"if none is running, delete it and retry (a lock older than %d seconds is removed automatically)",
-					lockHolder(lock), lock, int(lockTiming.stale.Seconds()))
+					errLockHeld, lockHolder(lock), lock, int(lockTiming.stale.Seconds()))
 			}
 			return nil, fmt.Errorf("cannot create the registry lock %q: %w", lock, err)
 		}
@@ -211,3 +211,7 @@ func releaser(lock string, ours os.FileInfo) func() {
 		})
 	}
 }
+
+// errLockHeld is wrapped by the error of a wait for a lock that another run kept. check reports without the lock only
+// then: any other failure (no permission, a read-only file system) is not a busy registry and stays an error.
+var errLockHeld = errors.New("the registry is locked by another sail-worktree run")

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -18,7 +19,7 @@ var shellName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // is known too, updates every recorded main worktree from its .env, and reports ports that more than one main
 // worktree or worktree in the registry uses. It writes only the registry (under the lock, atomically) and never .env:
 // a conflict is fixed by the user, check only suggests how. Like status it exits with an error after the report when
-// it finds a conflict; warnings (a lock that cannot be taken included) do not change it.
+// it finds a conflict; warnings (a lock that another run holds included) do not change it.
 func cmdCheck(args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("unknown argument: %s", args[0])
@@ -74,9 +75,10 @@ var checkLock = lockRegistry
 // only the records, so a port changed in a main's .env is avoided only once a record holds it; without the refresh,
 // check could tell a worktree to run up and up would keep the port. The mains' .env are read before the lock, so that a
 // slow drive does not keep other runs waiting; under the lock the registry is read again and only that copy is saved.
-// When the lock cannot be taken (for example, another run holds it too long) the report is still worth having, so
-// nothing is recorded and the registry is read without the lock, which is safe because it is replaced atomically; a
-// broken registry stays an error.
+// When another run holds the lock for longer than the wait, the report is still worth having, so nothing is recorded
+// and the registry is read without the lock, which is safe because it is replaced atomically; a broken registry stays
+// an error. Any other lock failure (no permission, a read-only file system) is an error too: the report would hide a
+// setup in which no run can record anything.
 func checkRecord(r *report) (*Registry, error) {
 	pre, err := loadRegistry() // only for the keys and the records the refresh is based on
 	if err != nil {
@@ -87,6 +89,9 @@ func checkRecord(r *report) (*Registry, error) {
 	cur := currentMain(r) // read last, so the current main's record comes from the newest read of its .env
 	unlock, err := checkLock()
 	if err != nil {
+		if !errors.Is(err, errLockHeld) {
+			return nil, err
+		}
 		r.warn("nothing was recorded or refreshed, so this report may be based on records that refreshing would have "+
 			"changed: %v", err)
 		return loadRegistry() // again: pre may be as old as the wait for the lock

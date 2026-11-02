@@ -559,7 +559,8 @@ func TestInitArgumentsWriteNothing(t *testing.T) {
 	}{
 		{[]string{"--help"}, ""},
 		{[]string{"-h"}, ""},
-		{[]string{"--help", "--bogus"}, ""},
+		{[]string{"--help", "--bogus"}, "--help cannot be combined with other arguments"},
+		{[]string{"--bogus", "-h"}, "-h cannot be combined with other arguments"},
 		{[]string{"--bogus"}, "unknown argument: --bogus"},
 		{[]string{"compose.yaml"}, "unknown argument: compose.yaml"},
 	} {
@@ -570,7 +571,7 @@ func TestInitArgumentsWriteNothing(t *testing.T) {
 			}
 			top := initRepo(t, files, ".")
 			out := captureStdout(t)
-			err := cmdInit(tc.args)
+			err := run("init", tc.args)
 			if tc.wantErr == "" {
 				if err != nil || !strings.Contains(out.String(), "Usage:") || !strings.Contains(out.String(), "sail-worktree init") {
 					t.Errorf("%q: err = %v, output = %q; want the usage", tc.args, err, out.String())

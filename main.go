@@ -49,41 +49,67 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
-	var err error
-	args := os.Args[2:]
 	switch os.Args[1] {
-	case "init":
-		err = cmdInit(args)
-	case "up":
-		err = cmdUp(args)
-	case "stop":
-		err = cmdStop(args)
-	case "rm":
-		err = cmdRm(args)
-	case "ports":
-		err = cmdPorts(args)
-	case "status":
-		err = cmdStatus(args)
-	case "ps":
-		err = cmdPs(args)
-	case "check":
-		err = cmdCheck(args)
-	case "prune":
-		err = cmdPrune(args)
 	case "version", "--version":
 		fmt.Println(version())
 		return
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
-	default:
+	}
+	if _, ok := commands[os.Args[1]]; !ok {
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n%s", os.Args[1], usage)
 		os.Exit(2)
 	}
-	if err != nil {
+	if err := run(os.Args[1], os.Args[2:]); err != nil {
 		printErr(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// commands are the commands that run dispatches to; version and the top-level help are answered in main, which also
+// refuses an unknown name with exit status 2 before calling run.
+var commands = map[string]func([]string) error{
+	"init": cmdInit, "up": cmdUp, "stop": cmdStop, "rm": cmdRm, "ports": cmdPorts, "status": cmdStatus,
+	"ps": cmdPs, "check": cmdCheck, "prune": cmdPrune,
+}
+
+// run runs a command of commands, or prints the usage when helpRequested says so, before the command looks at
+// anything.
+func run(name string, args []string) error {
+	cmd, ok := commands[name]
+	if !ok { // main has refused it already; kept for callers such as tests
+		return fmt.Errorf("unknown command: %s", name)
+	}
+	help, err := helpRequested(name, args)
+	if err != nil {
+		return err
+	}
+	if help {
+		fmt.Fprint(stdout, usage)
+		return nil
+	}
+	return cmd(args)
+}
+
+// helpRequested decides whether args ask for help. up and stop pass their arguments to sail, so only a first -h or
+// --help is theirs, and "up -d --help" still reaches sail. The other commands take help only on its own: with other
+// arguments it is an error, so that "init --help --bogus" or "rm -y --help" does nothing instead of guessing which was
+// meant (init replaces .sail-worktree.json, rm removes volumes).
+func helpRequested(name string, args []string) (bool, error) {
+	isHelp := func(a string) bool { return a == "-h" || a == "--help" }
+	if name == "up" || name == "stop" {
+		return len(args) > 0 && isHelp(args[0]), nil
+	}
+	for _, a := range args {
+		if isHelp(a) {
+			if len(args) == 1 {
+				return true, nil
+			}
+			return false, fmt.Errorf("%s cannot be combined with other arguments", a)
+		}
+	}
+	return false, nil
 }
 
 // printErr prints the final error. Messages carry paths and names from the repository (directory names may hold any

@@ -131,16 +131,29 @@ func detectConfig(root, compose string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	vars := detectPortVars(string(b))
-	for _, v := range vars {
+	cfg := &Config{Compose: compose, PortVars: detectPortVars(string(b))}
+	for _, v := range cfg.PortVars {
 		// The detection rule lets COMPOSE_*PORT and DOCKER_*PORT through; refusing them here too keeps init from
 		// writing a file that loadConfig refuses.
 		if why, ok := reservedPortVar(v.Name); ok {
-			return nil, fmt.Errorf("port variable %+q in %q cannot be used: %s; rename it in the compose file", v.Name, compose, why)
+			return nil, &reservedPortVarError{
+				msg:      fmt.Sprintf("port variable %+q in %q cannot be used: %s; rename it in the compose file", v.Name, compose, why),
+				detected: cfg,
+			}
 		}
 	}
-	return &Config{Compose: compose, PortVars: vars}, nil
+	return cfg, nil
 }
+
+// reservedPortVarError is detectConfig's refusal of a reserved name. It carries the detected configuration for stop
+// and rm (ctx.teardownConfig), which do not write port variables. That is safe only because detection yields names
+// ending in PORT, so a reserved one is a COMPOSE_*PORT or DOCKER_*PORT and never a name such as DOCKER_HOST or PATH.
+type reservedPortVarError struct {
+	msg      string
+	detected *Config
+}
+
+func (e *reservedPortVarError) Error() string { return e.msg }
 
 // unsafeComposePath reports whether the compose value is not a relative path inside the project directory. It is
 // passed to rm's -f, so besides empty, absolute and ".." paths it also rejects forms that point at a drive or a server

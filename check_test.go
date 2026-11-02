@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -367,6 +368,35 @@ func TestCheckReportsWithoutTheLock(t *testing.T) {
 	betweenReadAndLock(t, func() { writeFile(t, p, "{") })
 	if out, err := runCheck(t); err == nil || strings.Contains(err.Error(), "problem") {
 		t.Errorf("a broken registry is accepted without the lock: %v\n%s", err, out)
+	}
+}
+
+// Only a lock that another run holds is reported around; a lock that cannot be created at all (no permission, a
+// read-only file system) would keep every run from recording, so check fails instead of passing with a warning (#63).
+func TestCheckFailsWhenTheLockCannotBeCreated(t *testing.T) {
+	isolatedRegistry(t)
+	captureStderr(t)
+	a := realTempDir(t)
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{a: mainRec(80)}})
+	p := mustRegistryPath(t)
+	before, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Through the real lockRegistry, so that the error it returns for a create that fails is checked too.
+	oldOpen, oldWin := openLockFile, lockOnWindows
+	t.Cleanup(func() { openLockFile, lockOnWindows = oldOpen, oldWin })
+	openLockFile = func(string) (*os.File, error) { return nil, os.ErrPermission }
+	lockOnWindows = false // a Windows run would retry it until the wait ends
+	out, err := runCheck(t)
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("err = %v, want the lock error\n%s", err, out)
+	}
+	if strings.Contains(out, "registry:") || strings.Contains(out, "nothing was recorded") {
+		t.Errorf("check reported as if the lock were only busy:\n%s", out)
+	}
+	if after, _ := os.ReadFile(p); string(after) != string(before) {
+		t.Error("the registry was written without the lock")
 	}
 }
 

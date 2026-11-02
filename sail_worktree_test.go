@@ -322,8 +322,24 @@ func TestNameMismatchErrorGuidance(t *testing.T) {
 	}
 }
 
+// A long worktree name makes a long project name; it is still a name projectName made, so the recovery command is
+// shown for it, up to the longest name projectName can make (#63). Only strings are used: such directories would not
+// fit in a Windows path.
+func TestNameMismatchErrorGuidesLongNames(t *testing.T) {
+	got := projectName(filepath.Join("base", strings.Repeat("m", 255)), filepath.Join("base", strings.Repeat("w", 255)), "/p")
+	if len(got) != 518 || !safeProjectName.MatchString(got) {
+		t.Fatalf("projectName = %q (%d bytes), want a long name the hint accepts", got, len(got))
+	}
+	short := projectName(filepath.Join("base", "app"), filepath.Join("base", "app-"+strings.Repeat("feature-", 10)), "/p")
+	for _, name := range []string{got, short, strings.Repeat("a", 600)} {
+		if msg := nameMismatchError(name, "app-feat-abc123").Error(); !strings.Contains(msg, "docker compose -p "+name+" down") {
+			t.Errorf("no recovery command for %q (%d bytes): %s", name, len(name), msg)
+		}
+	}
+}
+
 func TestNameMismatchErrorEscapesUntrustedNames(t *testing.T) {
-	for _, bad := range []string{"x; rm -rf ~", "$(id)", "a`id`", "line1\nline2", "esc\x1b[31m", "-rf", "UPPER", "\u540d\u524d", "", strings.Repeat("a", 65)} {
+	for _, bad := range []string{"x; rm -rf ~", "$(id)", "a`id`", "line1\nline2", "esc\x1b[31m", "-rf", "UPPER", "\u540d\u524d", "", strings.Repeat("a", 601)} {
 		msg := nameMismatchError(bad, "app-feat-abc123").Error()
 		if strings.Contains(msg, "docker compose -p") {
 			t.Errorf("%q produced a command: %s", bad, msg)
@@ -1441,5 +1457,60 @@ func TestRmArgumentsAndConfirmation(t *testing.T) {
 	if s := out.String(); !strings.Contains(s, "[y/N] ") || strings.Contains(s, "aborted") ||
 		!strings.HasSuffix(s, "released the port assignments\n") {
 		t.Errorf("yes: output = %q", s)
+	}
+}
+
+func TestHelpRequested(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		help    bool
+		wantErr string
+	}{
+		{"up", []string{"--help"}, true, ""},
+		{"up", []string{"-h", "-d"}, true, ""},
+		{"up", []string{"-d", "--help"}, false, ""}, // for sail
+		{"stop", []string{"-h"}, true, ""},
+		{"stop", nil, false, ""},
+		{"rm", []string{"-h"}, true, ""},
+		{"rm", []string{"-y", "--help"}, false, "--help cannot be combined with other arguments"},
+		{"ps", []string{"--json", "-h"}, false, "-h cannot be combined with other arguments"},
+		{"ps", []string{"--json"}, false, ""},
+		{"init", []string{"--help", "--bogus"}, false, "--help cannot be combined with other arguments"},
+		{"prune", []string{"--help"}, true, ""},
+	} {
+		help, err := helpRequested(tc.name, tc.args)
+		if help != tc.help || (err == nil) != (tc.wantErr == "") || err != nil && err.Error() != tc.wantErr {
+			t.Errorf("%s %q: help = %v, err = %v; want %v, %q", tc.name, tc.args, help, err, tc.help, tc.wantErr)
+		}
+	}
+}
+
+// -h and --help print the usage before a command looks at anything: no prompt is read, nothing runs and the registry
+// is not written (#63).
+func TestEveryCommandAcceptsHelp(t *testing.T) {
+	setupWorktreeRepo(t)
+	captureStderr(t)
+	calls := captureRunner(t)
+	in := strings.NewReader("y\n")
+	old := stdin
+	stdin = in
+	t.Cleanup(func() { stdin = old })
+	for name := range commands {
+		for _, h := range []string{"-h", "--help"} {
+			out := captureStdout(t)
+			if err := run(name, []string{h}); err != nil || !strings.Contains(out.String(), "Usage:") {
+				t.Errorf("%s %s: err = %v, output = %q", name, h, err, out.String())
+			}
+		}
+	}
+	if in.Len() != 2 || len(*calls) != 0 {
+		t.Errorf("help read stdin or ran a command: remaining=%d calls=%v", in.Len(), *calls)
+	}
+	if _, err := os.Stat(mustRegistryPath(t)); !os.IsNotExist(err) {
+		t.Errorf("help wrote the registry: %v", err)
+	}
+	if err := run("rm", []string{"-y", "--help"}); err == nil || len(*calls) != 0 {
+		t.Errorf("rm -y --help: err = %v, calls = %v", err, *calls)
 	}
 }

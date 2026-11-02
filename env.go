@@ -129,6 +129,9 @@ func (e *envFile) lastRaw(key string) (string, bool) {
 }
 
 // duplicateKeys returns, sorted, the names that keyOf finds on more than one line, as lastRaw and portValue see keys.
+// Like them it reads line by line: a line inside a multi-line quoted value that looks like KEY=... counts as a line of
+// that key. Only this warning could skip such lines, which would make it disagree with the port portValue reads, and
+// making every reader quote-aware would let one unclosed quote hide every later key from Set.
 func (e *envFile) duplicateKeys(names []string) []string {
 	count := map[string]int{}
 	for _, l := range e.lines {

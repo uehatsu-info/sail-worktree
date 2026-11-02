@@ -430,3 +430,19 @@ func TestStatusFromASubdirectoryNamesTheProjectDirectoryOnBothStreams(t *testing
 		t.Errorf("stdout:\n%s\nstderr: %q", out, errOut)
 	}
 }
+
+// A port variable set on two lines of the worktree's own .env is a warning: status shows the first line, Sail and
+// compose use the last (#63). Values are not shown, and other keys set twice are not mentioned.
+func TestStatusWarnsAboutAPortKeySetTwice(t *testing.T) {
+	statusSetup(t, "APP_PORT=8123\nAPP_NAME=a\nAPP_NAME=b\n")
+	out, _, err := runStatus(t)
+	if err != nil {
+		t.Fatalf("a duplicate changed the exit status: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "  - APP_PORT is set on more than one line in .env; status shows the first line") {
+		t.Errorf("no warning about APP_PORT:\n%s", out)
+	}
+	if strings.Contains(out, "8123") || strings.Contains(out, "APP_NAME") {
+		t.Errorf("a value or another key is shown:\n%s", out)
+	}
+}

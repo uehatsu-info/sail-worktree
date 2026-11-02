@@ -25,12 +25,8 @@ import (
 func cwd() (string, error) { return os.Getwd() }
 
 func cmdInit(args []string) error {
-	// init replaces .sail-worktree.json, so a request for help or a mistyped option must not run it.
+	// init replaces .sail-worktree.json, so a mistyped option must not run it (run answers -h and --help).
 	if len(args) > 0 {
-		if args[0] == "-h" || args[0] == "--help" {
-			fmt.Fprint(stdout, usage)
-			return nil
-		}
 		return fmt.Errorf("unknown argument: %s", args[0])
 	}
 	dir, err := cwd()
@@ -107,17 +103,29 @@ func initCompose(root, marker string) (compose string, existed bool) {
 
 // ctx is the information shared by the commands that run inside a worktree.
 // root and main are the project directories of this worktree and of the main worktree; wtTop and mainTop are the
-// roots of the two worktrees. All of them are real paths. The configuration is read through config(), because a
-// configuration error is reported only after the main-worktree refusal.
+// roots of the two worktrees. All of them are real paths. The configuration is read through config() (stop and rm:
+// teardownConfig()), because a configuration error is reported only after the main-worktree refusal.
 type ctx struct {
 	root, main     string
 	wtTop, mainTop string
 	detected       bool // no .sail-worktree.json: compose file and port variables were detected
 	cfg            *Config
 	cfgErr         error
+	teardown       *Config // the detected configuration despite a reserved name, for stop and rm only
 }
 
 func (c *ctx) config() (*Config, error) { return c.cfg, c.cfgErr }
+
+// teardownConfig is config() for stop and rm. A reserved name found by detection does not block them: they write no
+// port variable, so the name cannot reach .env, and stopping or removing what runs should not wait for the compose
+// file to be fixed. stop still drops every detected name from sail's environment. A .sail-worktree.json that lists a
+// reserved name stays an error for them too, as a broken file always was.
+func (c *ctx) teardownConfig() (*Config, error) {
+	if c.teardown != nil {
+		return c.teardown, nil
+	}
+	return c.config()
+}
 
 func loadCtx() (*ctx, error) {
 	dir, err := cwd()
@@ -143,6 +151,10 @@ func loadCtx() (*ctx, error) {
 	c := &ctx{root: root, main: main, wtTop: wtTop, mainTop: mainTop, detected: detected}
 	if detected {
 		c.cfg, c.cfgErr = detectConfig(root, cand.marker)
+		var re *reservedPortVarError
+		if errors.As(c.cfgErr, &re) {
+			c.teardown = re.detected
+		}
 	} else {
 		c.cfg, c.cfgErr = loadConfig(root)
 	}
@@ -392,7 +404,7 @@ func cmdStop(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := c.config()
+	cfg, err := c.teardownConfig()
 	if err != nil {
 		return err
 	}
@@ -412,8 +424,11 @@ var (
 )
 
 // safeProjectName is a name that may be embedded in a recovery command. Values in .env are untrusted, so only
-// characters that the shell or docker cannot interpret as options are allowed (alphanumeric first, length limit).
-var safeProjectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+// characters that the shell cannot interpret are allowed, with an alphanumeric first one so that docker does not take
+// the name for an option. The length limit only bounds what is printed. It leaves room above the longest name
+// projectName makes, 255 + "-" + 255 + "-" + 6 hex digits = 518 bytes (base names of at most 255 bytes; non-ASCII runs
+// become one "-"), so every legitimate name gets the hint.
+var safeProjectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,599}$`)
 
 // nameMismatchError is the error when rm refuses. The first line gives the main remedy (set .env back to the
 // worktree's own name). The name in .env (got) is untrusted, so it is shown with %+q and only a got made of safe
@@ -490,7 +505,7 @@ func cmdRm(args []string) error {
 	if c.isMain() {
 		return fmt.Errorf("cannot run in the main worktree")
 	}
-	cfg, err := c.config()
+	cfg, err := c.teardownConfig()
 	if err != nil {
 		return err
 	}

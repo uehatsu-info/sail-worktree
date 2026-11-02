@@ -28,7 +28,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 
 | File | Role |
 |---|---|
-| `main.go` | Command dispatch, usage text, `version`, `printErr`/`escapeControl` |
+| `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv` (a main worktree's ports), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
@@ -139,7 +139,9 @@ These come from deliberate decisions; change them only on purpose and update the
   `projectName` and `addStatefulDomain` (on a copy of `.env`) instead of re-implementing them, prints only an allow-list
   of facts (never other `.env` values, and not even an invalid port value, because a port variable name may be any key;
   `APP_URL` without credentials, query and fragment), never reads a symlinked `.env`, and exits 1 after the report when
-  it found a problem (warnings do not).
+  it found a problem (warnings do not). A port variable that the worktree's `.env` sets on more than one line is a
+  warning (`statusDuplicates`, through `duplicateKeys`; the name, never a value; none when the configuration is broken,
+  as there are no names then; the multi-line limit of the `check` bullet applies).
 - **`check` writes only the registry.** It records the current repository's main worktree, if it runs in one
   (`currentMain`, `checkRecord`), refreshes every recorded main from its `.env` (`refreshMains`, also outside a
   repository) and then reports conflicts over the whole registry. The refresh exists because `up` avoids only recorded
@@ -151,17 +153,21 @@ These come from deliberate decisions; change them only on purpose and update the
   current main, `refreshMains` applies a pre-read result only to a record whose `ports` and `defaults` are still the
   ones it was based on (a record changed meanwhile is newer; the next `check` refreshes it), and the registry is saved
   only when `recordMain` or `refreshMains` reports a change. A `loadCtx` or configuration error is a warning, so `check`
-  works outside a repository. So is a lock that cannot be taken: nothing is recorded or refreshed, the registry is read
-  without the lock (safe, it is replaced atomically) and reported, and the warning says the report may rest on records
-  that refreshing would have changed; a broken registry stays an error. A `mains` key is used as a directory only after
-  `validKey` (see the read-only rule above) and `isDir` (`Lstat` on the key; a link as its last element is not
-  followed), its `.env` only through `readMainEnv`. Conflict lines print only valid port numbers. Records of missing
-  directories or invalid keys are warnings (their recorded ports printed as they are), never conflicts, so a deleted
-  clone cannot make `check` fail for ever. A conflict is fixed by the user: a worktree by `up`, a main worktree by hand
-  (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`). Exit 1 only for a conflict
-  (`report.finish`, shared with `status`). A variable of a record's `defaults` that the main's `.env` sets on more than
-  one line is a warning (`warnDuplicates`, from the `.env` that `readMains` already read, so a main recorded by this
-  run is checked from the next one; the name through `cell`, never a value).
+  works outside a repository. So is a lock that another run holds for longer than the wait (`errLockHeld`; any other
+  lock error, such as no permission or a read-only file system, is an error): nothing is recorded or refreshed, the
+  registry is read without the lock (safe, it is replaced atomically) and reported, and the warning says the report may
+  rest on records that refreshing would have changed; a broken registry stays an error. A `mains` key is used as a
+  directory only after `validKey` (see the read-only rule above) and `isDir` (`Lstat` on the key; a link as its last
+  element is not followed), its `.env` only through `readMainEnv`. Conflict lines print only valid port numbers. Records
+  of missing directories or invalid keys are warnings (their recorded ports printed as they are), never conflicts, so a
+  deleted clone cannot make `check` fail for ever. A conflict is fixed by the user: a worktree by `up`, a main worktree
+  by hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`). Exit 1 only for a
+  conflict (`report.finish`, shared with `status`) or an error. A variable of a record's `defaults` that the main's
+  `.env` sets on more than one line is a warning (`warnDuplicates`, from the `.env` that `readMains` already read, so a
+  main recorded by this run is checked from the next one; the name through `cell`, never a value). `duplicateKeys` reads
+  line by line, as `portValue` does, so a line inside a multi-line quoted value counts: a documented limit, because only
+  the warning could skip such lines (it would then disagree with the port read) and a quote-aware `Set` would lose every
+  key after an unclosed quote.
 - **`prune` writes only the registry.** It removes what `check` warns about: a `worktrees` key that fails `validKey` or
   does not resolve to a directory (`staleWorktreeKey`, the `foldRegistry` rule, so an alias key of a live worktree is
   kept: it still holds that worktree's ports, and the next `up` there folds it with `migrate`, not `prune`), a `mains`
@@ -248,8 +254,10 @@ These come from deliberate decisions; change them only on purpose and update the
     read. The compose file and `.sail-worktree.json` are read with `readSmallFile` (non-blocking open, regular file, at
     most 1 MiB, an error rather than a cut).
   - A configuration error is kept in `ctx.cfgErr` and returned by `ctx.config()` after the main-worktree refusal; no
-    command reads `ctx.cfg` directly. `stop` fails on it too, as it did with a broken file. Port variables are required
-    only for `up` and only when detected (a file with `port_vars: []` still works).
+    command reads `ctx.cfg` directly. `stop` fails on it too, as it did with a broken file. The exception: `stop` and
+    `rm` take a reserved name found by detection (`reservedPortVarError`, through `ctx.teardownConfig()`): they write no
+    port variable, and detection yields only `*PORT` names, so the name cannot be `DOCKER_HOST` or `PATH`. Port
+    variables are required only for `up` and only when detected (a file with `port_vars: []` still works).
   - `up`'s order: main refusal, configuration, detected port variables, the existing `.env` checks and port
     allocation, then `sailPath` right before the first write, so nothing is written without Sail and the order of the
     existing refusals stays the same.
@@ -280,27 +288,29 @@ These come from deliberate decisions; change them only on purpose and update the
   `save` are one step, and releases it right after `save` and before `runSail`; `rm` takes it after docker; `check`
   reads the mains' `.env` before it and holds it to read the registry again, record, refresh and save (what it read
   before locking only decides which records may be refreshed; the registry it saves is the one read after locking). If
-  `check` cannot take it, it warns and reports on the registry read without it, writing nothing. `prune` takes it only
-  after its prompt. Never hold it while sail or docker runs, and read the registry after locking. `ps`, `ports` and
-  `status` never lock (the atomic save keeps them consistent). A lock whose mtime is older than `lockTiming.stale` or
-  more than 5 seconds in the future is abandoned. A path has no compare-and-delete, so every run that removes a lock
-  holds that lock's claim, `registry.json.lock.claim-<mtime in ns>` (`claimPath`, `O_EXCL`): `claimStale` takes it,
-  checks that the path still holds the file that was judged (same file and same mtime, since an inode can be reused) and
-  removes it; `unlock` (`releaser`) is idempotent and removes only the file it created, under its claim, and leaves its
-  lock to a run that holds the claim already. A fresh lock is therefore never removed or moved (no rename, no
-  `os.Link`). A run killed while it holds a claim leaves the claim file, and that one lock is then not broken
-  automatically (the error's hand recovery still works); nothing removes such a leftover. A lock whose write or close
-  fails after a successful `Stat` is released through `releaser` as well, never removed by path (this run may have been
-  suspended for longer than `stale` and its path taken by another run); if `Stat` failed, the file has no identity and
-  is left to the stale rule or the hand recovery. The claims protect only runs of versions that use them: v0.8.0 and
-  v0.8.1 break a stale lock by renaming it and remove locks by path, and earlier versions take no lock, so running one
-  of them at the same time as this version reopens the window claims close (a fresh lock removed, two runs updating the
-  registry at once); the README says to use one version at a time. `wait` is longer than `stale`. Only on Windows are
-  errors other than "exists" retried (a pending removal looks like access denied), always after `poll`, since only a
-  broken stale lock is retried at once; elsewhere they fail at once. The pid in the error comes through `readSmallFile`
-  and is shown only if it is a number. An `O_EXCL` file was chosen over flock/LockFileEx (no per-OS code, no
-  dependency); its cost is the stale rule and the hand recovery in the error message, and a run suspended for longer
-  than `stale` can lose its lock to the next one. Do not "improve" this into a lock held during `sail up`.
+  `check` times out on a lock that another run holds (`errLockHeld`), it warns and reports on the registry read without
+  it, writing nothing; any other lock error fails it (on Windows also an error other than "exists" left at the
+  deadline). `prune` takes it only after its prompt. Never hold it while sail or docker runs, and read the registry
+  after locking. `ps`, `ports` and `status` never lock (the atomic save keeps them consistent). A lock whose mtime is
+  older than `lockTiming.stale` or more than 5 seconds in the future is abandoned. A path has no compare-and-delete, so
+  every run that removes a lock holds that lock's claim, `registry.json.lock.claim-<mtime in ns>` (`claimPath`,
+  `O_EXCL`): `claimStale` takes it, checks that the path still holds the file that was judged (same file and same mtime,
+  since an inode can be reused) and removes it; `unlock` (`releaser`) is idempotent and removes only the file it
+  created, under its claim, and leaves its lock to a run that holds the claim already. A fresh lock is therefore never
+  removed or moved (no rename, no `os.Link`). A run killed while it holds a claim leaves the claim file, and that one
+  lock is then not broken automatically (the error's hand recovery still works); nothing removes such a leftover. A lock
+  whose write or close fails after a successful `Stat` is released through `releaser` as well, never removed by path
+  (this run may have been suspended for longer than `stale` and its path taken by another run); if `Stat` failed, the
+  file has no identity and is left to the stale rule or the hand recovery. The claims protect only runs of versions that
+  use them: v0.8.0 and v0.8.1 break a stale lock by renaming it and remove locks by path, and earlier versions take no
+  lock, so running one of them at the same time as this version reopens the window claims close (a fresh lock removed,
+  two runs updating the registry at once); the README says to use one version at a time. `wait` is longer than `stale`.
+  Only on Windows are errors other than "exists" retried (a pending removal looks like access denied), always after
+  `poll`, since only a broken stale lock is retried at once; elsewhere they fail at once. The pid in the error comes
+  through `readSmallFile` and is shown only if it is a number. An `O_EXCL` file was chosen over flock/LockFileEx (no
+  per-OS code, no dependency); its cost is the stale rule and the hand recovery in the error message, and a run
+  suspended for longer than `stale` can lose its lock to the next one. Do not "improve" this into a lock held during
+  `sail up`.
 - **Ports.** A new port is searched from default+1 upwards (the default is left to the main worktree), skipping ports
   of other worktrees, ports recorded for any main worktree (`used` includes `mains`, so `up` moves a worktree off a
   main's port and says so) and ports in use. A port counts as free only if it binds on all interfaces and on `127.0.0.1`;
@@ -324,14 +334,15 @@ These come from deliberate decisions; change them only on purpose and update the
   a space in the query) are no longer protected.
 - `compose` in `.sail-worktree.json` must be a relative path inside the project directory (`unsafeComposePath`),
   including on Windows forms such as `C:x`, `\\srv\x` and `/x`. That check only reads the string; `rm` also checks the
-  real path with `composeInsideProject` (see "`rm` is guarded"). Each `port_vars` entry must have a `shellName` name
-  and a `validPort` default (`validatePortVars`), because `up` writes `NAME=port` into `.env`; the names are not held
-  to the detection rule, so a hand-added variable may use any name compose does. A name `reservedPortVar` lists (keys
-  `up` writes, `COMPOSE_*`, `SAIL_FILES`, `DOCKER_*`, a few shell and Sail names; case-insensitive, as `cleanEnv`
-  drops them) is refused, by `detectConfig` too, so `init` never writes a file that `loadConfig` refuses. Keep the
-  list short, and add a key there when `up` starts to write it. A repeated name (also compared case-insensitively) is
-  refused, because `up` would assign two ports and `Set` keeps only the first line; `detectPortVars` yields each name
-  once (`composePortRe` matches upper-case names only), and a test pins that.
+  real path with `composeInsideProject` (see "`rm` is guarded"). Each `port_vars` entry must have a `shellName` name and
+  a `validPort` default (`validatePortVars`), because `up` writes `NAME=port` into `.env`; the names are not held to the
+  detection rule, so a hand-added variable may use any name compose does. A name `reservedPortVar` lists (keys `up`
+  writes, `COMPOSE_*`, `SAIL_FILES`, `DOCKER_*`, a few shell and Sail names; case-insensitive, as `cleanEnv` drops them)
+  is refused, by `detectConfig` too, so `init` never writes a file that `loadConfig` refuses (`up` and `init` fail on a
+  detected one; `stop` and `rm` do not, see the configuration error rule above). Keep the list short, and add a key
+  there when `up` starts to write it. A repeated name (also compared case-insensitively) is refused, because `up` would
+  assign two ports and `Set` keeps only the first line; `detectPortVars` yields each name once (`composePortRe` matches
+  upper-case names only), and a test pins that.
 
 ## Testing notes
 

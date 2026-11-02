@@ -451,6 +451,55 @@ func TestDetectionRefusesAReservedPortVariable(t *testing.T) {
 	}
 }
 
+// A reserved name that detection finds keeps up and init from running, but not stop and rm, which write no port
+// variable; a .sail-worktree.json that lists one stays an error for all of them (#63).
+func TestDetectedReservedNameDoesNotBlockStopAndRm(t *testing.T) {
+	main, wt := setupDetectedRepo(t, "")
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services:\n  app:\n    ports:\n      - '${APP_PORT:-80}:80'\n      - '${DOCKER_X_PORT:-81}:81'\n")
+	writeFile(t, filepath.Join(wt, ".env"), "COMPOSE_PROJECT_NAME="+projectName(main, wt, wt)+"\n")
+	writeFakeSail(t, wt)
+	t.Setenv("DOCKER_X_PORT", "1")
+	captureStderr(t)
+	captureStdout(t)
+	want := `port variable "DOCKER_X_PORT" in "compose.yaml" cannot be used`
+	calls := captureRunner(t)
+	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("up: error = %v", err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("up ran %v", *calls)
+	}
+	probePortFake(t, true)
+	if out, _, err := runStatus(t, "--no-docker"); err == nil || !strings.Contains(out, "configuration: "+want) {
+		t.Errorf("status does not report the reserved name: %v\n%s", err, out)
+	}
+	if err := cmdStop(nil); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if len(*calls) != 1 || strings.Contains(strings.Join((*calls)[0].env, "\n"), "DOCKER_X_PORT=") {
+		t.Errorf("stop: calls = %+v", *calls)
+	}
+	if err := cmdRm([]string{"-y"}); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+	if len(*calls) != 2 || (*calls)[1].name != "docker" || !slices.Contains((*calls)[1].args, filepath.Join(wt, "compose.yaml")) {
+		t.Errorf("rm: calls = %+v", *calls)
+	}
+
+	writeFile(t, filepath.Join(wt, configName), `{"compose":"compose.yaml","port_vars":[{"name":"APP_PORT","default":80},{"name":"DOCKER_X_PORT","default":81}]}`)
+	want = `port_vars[1] ("DOCKER_X_PORT"): name in .sail-worktree.json is reserved`
+	*calls = nil
+	if err := cmdStop(nil); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("stop with %s: error = %v", configName, err)
+	}
+	if err := cmdRm([]string{"-y"}); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("rm with %s: error = %v", configName, err)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("a refused command ran %v", *calls)
+	}
+}
+
 // A repeated port variable is a configuration error like the others: up, stop and rm fail before running anything,
 // status reports it and check only warns.
 func TestRepeatedPortVariableIsAConfigurationError(t *testing.T) {

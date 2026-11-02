@@ -110,6 +110,7 @@ func cmdStatus(args []string) error {
 	}
 	statusPorts(c, r, env, vars, state)
 	if env != nil {
+		statusDuplicates(r, env, vars)
 		statusAppURL(r, env, vars)
 	}
 	return r.finish()
@@ -224,6 +225,20 @@ func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) 
 			r.warn("port %d (%s) cannot be bound although the project is not running; another process may use it",
 				port, v.Name)
 		}
+	}
+}
+
+// statusDuplicates warns about port variables that .env sets on more than one line: status shows the first line, but
+// Sail and compose use the last, so the port shown may not be the one in use. up collapses them to the first line.
+// The values are not shown (a port variable name may be any key).
+func statusDuplicates(r *report, env *envFile, vars []PortVar) {
+	names := make([]string, 0, len(vars))
+	for _, v := range vars {
+		names = append(names, v.Name)
+	}
+	for _, name := range env.duplicateKeys(names) {
+		r.warn("%s is set on more than one line in .env; status shows the first line, but Sail and compose use the "+
+			"last (Laravel's Dotenv the first); run up, which keeps only the first", cell(name))
 	}
 }
 
