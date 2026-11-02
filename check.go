@@ -27,6 +27,7 @@ func cmdCheck(args []string) error {
 	r := &report{w: stdout}
 	reg, err := checkRecord(r)
 	if err != nil {
+		r.printWarnings() // they may explain the error, and nothing else will show them
 		return err
 	}
 	checkConflicts(r, reg)
@@ -46,7 +47,12 @@ type checkTarget struct {
 func currentMain(r *report) checkTarget {
 	c, err := loadCtx()
 	if err != nil {
-		r.warn("no main worktree was recorded: %v", err)
+		r.warn("no main worktree was recorded: %v\ncheck records the main worktree of the project it runs in: run it in "+
+			"the project directory or below it", err)
+		return checkTarget{}
+	}
+	if c.bare {
+		r.warn("no main worktree was recorded: the repository %q is bare, so there is no main worktree checkout", c.mainTop)
 		return checkTarget{}
 	}
 	cfg, err := c.config()

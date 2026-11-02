@@ -371,6 +371,15 @@ func TestCheckReportsWithoutTheLock(t *testing.T) {
 	}
 }
 
+// check prints its warnings alone when it fails (#75); without any there is no empty heading.
+func TestReportPrintWarningsWithoutWarnings(t *testing.T) {
+	var b strings.Builder
+	(&report{w: &b}).printWarnings()
+	if b.String() != "" {
+		t.Errorf("an empty list printed %q", b.String())
+	}
+}
+
 // Only a lock that another run holds is reported around; a lock that cannot be created at all (no permission, a
 // read-only file system) would keep every run from recording, so check fails instead of passing with a warning (#63).
 func TestCheckFailsWhenTheLockCannotBeCreated(t *testing.T) {
@@ -394,6 +403,10 @@ func TestCheckFailsWhenTheLockCannotBeCreated(t *testing.T) {
 	}
 	if strings.Contains(out, "registry:") || strings.Contains(out, "nothing was recorded") {
 		t.Errorf("check reported as if the lock were only busy:\n%s", out)
+	}
+	// The cwd is outside a repository, so a warning was collected before the lock failed; it is printed (#75).
+	if !strings.Contains(out, "warnings:\n  - no main worktree was recorded") {
+		t.Errorf("the collected warnings are not printed:\n%s", out)
 	}
 	if after, _ := os.ReadFile(p); string(after) != string(before) {
 		t.Error("the registry was written without the lock")
@@ -645,5 +658,44 @@ func TestCheckEscapesADuplicatedPortName(t *testing.T) {
 	}
 	if strings.Contains(out, "\x1b") || !strings.Contains(out, dupWarning(m, cell(evil))) {
 		t.Errorf("the name is not escaped or not named:\n%q", out)
+	}
+}
+
+// check records the main worktree of the project it runs in, found as up finds it: at the repository root of a
+// project in a subdirectory it records nothing and says where to run it (#76).
+func TestCheckAtTheRootOfASubdirectoryProjectSaysWhereToRun(t *testing.T) {
+	main, _ := setupSubdirWorktreeRepo(t, false)
+	t.Chdir(main)
+	captureStderr(t)
+	out, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"  - no main worktree was recorded: no Laravel project found",
+		"\n    a project found in: \"laravel\"",
+		"\n    check records the main worktree of the project it runs in: run it in the project directory or below it",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if reg, _ := loadRegistry(); len(reg.Mains) != 0 {
+		t.Errorf("mains = %+v", reg.Mains)
+	}
+}
+
+func TestCheckInABareLayoutRecordsNoMain(t *testing.T) {
+	bare, _, _ := setupBareWorktreeRepo(t)
+	out, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "is bare, so there is no main worktree checkout") || strings.Contains(out, "recorded main worktree") {
+		t.Errorf("output:\n%s", out)
+	}
+	reg, _ := loadRegistry()
+	if _, ok := reg.Mains[bare]; ok || len(reg.Mains) != 0 {
+		t.Errorf("mains = %v", reg.Mains)
 	}
 }

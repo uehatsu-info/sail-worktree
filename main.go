@@ -34,7 +34,8 @@ Usage:
 
 Run the commands in your Laravel project's directory (the one with artisan and the compose file) or below it.
 The project may be in a subdirectory of the repository. ps, ports, check and prune work anywhere inside the
-repository; check, prune, ps --all and ports --all also work outside a repository.
+repository; check, prune, ps --all and ports --all also work outside a repository. check records the main
+worktree only when run in the project directory or below it.
 `
 
 func version() string {
