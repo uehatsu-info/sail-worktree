@@ -21,6 +21,8 @@ go build -o sail-worktree .
 
 ## Usage
 
+Every command except `version` prints the usage for `-h` or `--help` and does nothing else. `up` and `stop` pass their arguments to sail, so for them only a first `-h`/`--help` counts (`up -d --help` is an ordinary `up` that passes `--help` to sail, after writing `.env`); the other commands take it only on its own (`rm -y --help` is an error).
+
 ### 1. `sail-worktree init` (optional)
 
 You do not need to run `init`: `up`, `stop` and `rm` find the compose file and its port variables by themselves (see [Project directory](#project-directory)). Run `init` only to pin that list in a file, for example when detection misses a port (a long-syntax `published:` entry, a flow-style list such as `ports: ['${APP_PORT:-80}:80']`, or ports in an `include:`d file) or when you want to edit the list.
@@ -269,7 +271,8 @@ Your checks and the copy are not one step, so a process writing in the worktree 
 - A `.sail-worktree.json` whose `port_vars` has a `name` that is not a shell variable name, or a `default` that is missing or outside 1 to 65535, is refused: `up`, `stop` and `rm` fail, `status` reports a problem and `check` warns (before, `up` could write other lines into `.env` or assign port 1). So are a `name` listed twice (in any case) and a `name` with a meaning of its own, such as `PATH` or `COMPOSE_FILE` (see [the file](#the-sail-worktreejson-file)), and without the file, detection refuses such a variable in the compose file (for example `${DOCKER_X_PORT:-81}:81`) the same way, except that `stop` and `rm` still run. Fix the entry by hand, or run `init`, which replaces the file with what it detects; for a reserved name, rename the variable in the compose file.
 - On Windows, a registry entry whose path is not a drive-letter path (a UNC or device path) is no longer looked at, so `ps` and `ports` treat it as invalid, and with `--all` they no longer run git in other repositories, whose entries now show as `unattributed`; see the [Notes](#notes).
 - A worktree whose names have no ASCII letter or digit gets the project name `wt-<hash>` instead of `-<hash>`, which compose refused. Such a worktree could not start, so nothing is lost; run `up` once before `rm` or `stop` so that `.env` gets the new name. Other names are unchanged.
-- `init` refuses arguments: `init --help` (or `-h`) prints the usage, and any other argument is an error. Before, `init` ignored them and rewrote `.sail-worktree.json`.
+- `init` refuses arguments: `init --help` (or `-h`) prints the usage, and any other argument is an error, also next to `--help` (`init --help --bogus`). Before, `init` ignored them and rewrote `.sail-worktree.json`.
+- Every command except `version` accepts `-h`/`--help` and only prints the usage (see [Usage](#usage)). For `up` and `stop` only a first `-h`/`--help` counts; before, `up --help` and `stop -h` were passed to sail. For the other commands `-h`/`--help` next to another argument is an error.
 
 ### v0.8.0
 

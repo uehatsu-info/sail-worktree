@@ -1459,3 +1459,58 @@ func TestRmArgumentsAndConfirmation(t *testing.T) {
 		t.Errorf("yes: output = %q", s)
 	}
 }
+
+func TestHelpRequested(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		help    bool
+		wantErr string
+	}{
+		{"up", []string{"--help"}, true, ""},
+		{"up", []string{"-h", "-d"}, true, ""},
+		{"up", []string{"-d", "--help"}, false, ""}, // for sail
+		{"stop", []string{"-h"}, true, ""},
+		{"stop", nil, false, ""},
+		{"rm", []string{"-h"}, true, ""},
+		{"rm", []string{"-y", "--help"}, false, "--help cannot be combined with other arguments"},
+		{"ps", []string{"--json", "-h"}, false, "-h cannot be combined with other arguments"},
+		{"ps", []string{"--json"}, false, ""},
+		{"init", []string{"--help", "--bogus"}, false, "--help cannot be combined with other arguments"},
+		{"prune", []string{"--help"}, true, ""},
+	} {
+		help, err := helpRequested(tc.name, tc.args)
+		if help != tc.help || (err == nil) != (tc.wantErr == "") || err != nil && err.Error() != tc.wantErr {
+			t.Errorf("%s %q: help = %v, err = %v; want %v, %q", tc.name, tc.args, help, err, tc.help, tc.wantErr)
+		}
+	}
+}
+
+// -h and --help print the usage before a command looks at anything: no prompt is read, nothing runs and the registry
+// is not written (#63).
+func TestEveryCommandAcceptsHelp(t *testing.T) {
+	setupWorktreeRepo(t)
+	captureStderr(t)
+	calls := captureRunner(t)
+	in := strings.NewReader("y\n")
+	old := stdin
+	stdin = in
+	t.Cleanup(func() { stdin = old })
+	for name := range commands {
+		for _, h := range []string{"-h", "--help"} {
+			out := captureStdout(t)
+			if err := run(name, []string{h}); err != nil || !strings.Contains(out.String(), "Usage:") {
+				t.Errorf("%s %s: err = %v, output = %q", name, h, err, out.String())
+			}
+		}
+	}
+	if in.Len() != 2 || len(*calls) != 0 {
+		t.Errorf("help read stdin or ran a command: remaining=%d calls=%v", in.Len(), *calls)
+	}
+	if _, err := os.Stat(mustRegistryPath(t)); !os.IsNotExist(err) {
+		t.Errorf("help wrote the registry: %v", err)
+	}
+	if err := run("rm", []string{"-y", "--help"}); err == nil || len(*calls) != 0 {
+		t.Errorf("rm -y --help: err = %v, calls = %v", err, *calls)
+	}
+}
