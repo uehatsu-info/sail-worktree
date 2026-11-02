@@ -31,7 +31,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `main.go` | Command dispatch, usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, `mainPorts`/`readMainEnv`/`portsFromEnv` (a main worktree's ports), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
-| `config.go` | `.sail-worktree.json` (project config), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
+| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
@@ -167,13 +167,13 @@ These come from deliberate decisions; change them only on purpose and update the
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
   `check` record it again. Ports follow one rule (`portsFromEnv`): a valid value in the main's `.env`, the default when
   the key is absent or there is no `.env`, nothing for an invalid value. A default counts only if it is 1 to 65535
-  (`validPort`), so a hand-edited recorded default outside that reserves nothing. A main directory that does not exist
-  is never recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file is not read
-  for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves
-  nothing. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias paths in a
-  record's `worktrees` list are folded like the top-level `worktrees` keys: by `migrate` (saved by `up` and `rm`), and
-  by `check` in memory only (`foldKey`, the key `ofMain` looks a worktree up by); an entry that fails `validKey` is
-  never resolved.
+  (`validPort`), so a hand-edited recorded default outside that reserves nothing (`loadConfig` already refuses one in
+  the configuration; the check stays for the registry). A main directory that does not exist is never recorded
+  (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file is not read for the record,
+  although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves nothing.
+  `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias paths in a record's
+  `worktrees` list are folded like the top-level `worktrees` keys: by `migrate` (saved by `up` and `rm`), and by `check`
+  in memory only (`foldKey`, the key `ofMain` looks a worktree up by); an entry that fails `validKey` is never resolved.
 - **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once,
   so nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`,
   fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the process
@@ -295,7 +295,9 @@ These come from deliberate decisions; change them only on purpose and update the
   a space in the query) are no longer protected.
 - `compose` in `.sail-worktree.json` must be a relative path inside the project directory (`unsafeComposePath`),
   including on Windows forms such as `C:x`, `\\srv\x` and `/x`. That check only reads the string; `rm` also checks the
-  real path with `composeInsideProject` (see "`rm` is guarded").
+  real path with `composeInsideProject` (see "`rm` is guarded"). Each `port_vars` entry must have a `shellName` name
+  and a `validPort` default (`validatePortVars`), because `up` writes `NAME=port` into `.env`; the names are not held
+  to the detection rule, so a hand-added variable may use any name compose does (detected entries always pass).
 
 ## Testing notes
 

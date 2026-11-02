@@ -268,9 +268,9 @@ func cmdUp(args []string) error {
 	sort.Strings(names)
 	for _, n := range names {
 		if p, ok := previous[n]; ok && p != ports[n] {
-			fmt.Fprintf(stdout, "  %s=%d (was %d, which is used elsewhere)\n", n, ports[n], p)
+			fmt.Fprintf(stdout, "  %s=%d (was %d, which is used elsewhere)\n", cell(n), ports[n], p)
 		} else {
-			fmt.Fprintf(stdout, "  %s=%d\n", n, ports[n])
+			fmt.Fprintf(stdout, "  %s=%d\n", cell(n), ports[n])
 		}
 	}
 	if statefulAdded != "" {

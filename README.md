@@ -40,7 +40,7 @@ Run it in your Laravel project's directory (where `artisan` and the compose file
 ```
 
 - `compose`: the compose file, as a relative path inside the project directory (`rm` passes it to `docker compose -f`).
-- `port_vars`: the variables `up` assigns ports to. `name` must be the variable the compose file uses: `up` writes that key in `.env`, so do not list other keys. `default` (1 to 65535) is the port the compose file uses when the variable is unset; the search for a free port starts at `default` + 1.
+- `port_vars`: the variables `up` assigns ports to. `name` must be the variable the compose file uses: `up` writes that key in `.env`, so do not list other keys. It must be a shell variable name (letters, digits and `_`, not starting with a digit). `default` (1 to 65535) is the port the compose file uses when the variable is unset; the search for a free port starts at `default` + 1. A file with any other name or default is refused.
 
 You can write the file by hand, for example to add a port that detection does not find; running `init` later replaces it with what it detects.
 
@@ -264,6 +264,7 @@ Your checks and the copy are not one step, so a process writing in the worktree 
 - `registry.json` has a new `mains` section with the main worktrees' ports. `worktrees` is unchanged. An older version that saves the registry (its `up` or `rm`) drops `mains`; the next `up` or `check` records it again.
 - `up` records the main worktree's ports and no longer assigns them to a worktree. A worktree whose port a recorded main worktree (of any repository) uses gets another port on its next `up`, which prints `APP_PORT=82 (was 81, ...)`.
 - `ps` and `ports` also list main worktree records (their rows come first in `ps`), and `ports` counts them in `CONFLICT`; `status` reports a port that a main worktree record also holds. Their `--json` objects gain a `kind` field (`worktree` or `main`); the other fields keep their names and meanings, so a script that expects only worktrees should skip `"kind": "main"`.
+- A `.sail-worktree.json` whose `port_vars` has a `name` that is not a shell variable name, or a `default` that is missing or outside 1 to 65535, is refused: `up`, `stop` and `rm` fail, `status` reports a problem and `check` warns (before, `up` could write other lines into `.env` or assign port 1). Fix the entry by hand, or run `init`, which replaces the file with what it detects.
 - On Windows, a registry entry whose path is not a drive-letter path (a UNC or device path) is no longer looked at, so `ps` and `ports` treat it as invalid, and with `--all` they no longer run git in other repositories, whose entries now show as `unattributed`; see the [Notes](#notes).
 
 ### v0.8.0
