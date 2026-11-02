@@ -47,9 +47,11 @@ func loadConfig(root string) (*Config, error) {
 // validatePortVars refuses entries that up cannot write as NAME=port: a name with "=", a newline or a space would add
 // or change other lines of .env, which Sail sources as shell code, and a default outside 1-65535 would start the port
 // search at 1 or bind :0. Names are held to shellName, not to the detection rule, because a hand-added variable may be
-// any name the compose file uses. Detected variables always pass, except a reserved name, which detectConfig refuses
-// too.
+// any name the compose file uses. A repeated name is refused too: up would assign two ports and Set would keep only
+// the first line, leaving the other port recorded but unused. Names are compared case-insensitively, as for a reserved
+// name. Detected variables always pass, except a reserved name, which detectConfig refuses too.
 func validatePortVars(vars []PortVar) error {
+	first := map[string]int{}
 	for i, v := range vars {
 		if !shellName.MatchString(v.Name) {
 			return fmt.Errorf("port_vars[%d] (%q): name in %s must be a shell variable name (letters, digits and _, not starting with a digit)", i, v.Name, configName)
@@ -58,6 +60,11 @@ func validatePortVars(vars []PortVar) error {
 		if why, ok := reservedPortVar(v.Name); ok {
 			return fmt.Errorf("port_vars[%d] (%+q): name in %s is reserved: %s; rename the variable in the compose file and here", i, v.Name, configName, why)
 		}
+		key := strings.ToUpper(v.Name)
+		if j, ok := first[key]; ok {
+			return fmt.Errorf("port_vars[%d] (%+q): name in %s repeats port_vars[%d] (%+q) (names are compared case-insensitively); list each variable once", i, v.Name, configName, j, vars[j].Name)
+		}
+		first[key] = i
 		if !validPort(v.Default) {
 			return fmt.Errorf("port_vars[%d] (%q): default (%d) in %s must be 1 to 65535 (a missing default is 0)", i, v.Name, v.Default, configName)
 		}

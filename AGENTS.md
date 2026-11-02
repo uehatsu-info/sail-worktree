@@ -310,7 +310,9 @@ These come from deliberate decisions; change them only on purpose and update the
   to the detection rule, so a hand-added variable may use any name compose does. A name `reservedPortVar` lists (keys
   `up` writes, `COMPOSE_*`, `SAIL_FILES`, `DOCKER_*`, a few shell and Sail names; case-insensitive, as `cleanEnv`
   drops them) is refused, by `detectConfig` too, so `init` never writes a file that `loadConfig` refuses. Keep the
-  list short, and add a key there when `up` starts to write it.
+  list short, and add a key there when `up` starts to write it. A repeated name (also compared case-insensitively) is
+  refused, because `up` would assign two ports and `Set` keeps only the first line; `detectPortVars` yields each name
+  once (`composePortRe` matches upper-case names only), and a test pins that.
 
 ## Testing notes
 
