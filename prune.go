@@ -6,12 +6,15 @@ import (
 	"slices"
 )
 
-// cmdPrune drops the registry records that check warns about: keys that are not usable local directories and, in a
-// main worktree's record, linked worktrees whose directory is gone. Such a record keeps its ports reserved for ever
-// (up avoids them), and nothing else removes it. It writes only the registry and runs neither docker, sail nor git, so
-// the containers, networks and volumes of a removed worktree are left alone.
-// The list is shown and confirmed without the lock (a prompt can wait for ever); after locking, the registry is read
-// again and only listed records that are still recorded and still unusable are removed.
+// cmdPrune drops the registry records that check warns about: keys that are not usable local directories, main
+// worktree records that another record replaced (replacedMain) and, in a main worktree's record, linked worktrees whose
+// directory is gone. Such a record keeps its ports reserved for ever (up avoids them), and nothing else removes it. It
+// writes only the registry and runs neither docker, sail nor git, so the containers, networks and volumes of a removed
+// worktree are left alone.
+// The list is shown and confirmed without the lock (a prompt can wait for ever). Replaced main records are tested again
+// after the prompt, still without the lock, so that a slow disk does not keep other runs waiting; after locking, the
+// registry is read again and only listed records that are still recorded and still unusable (or unchanged and still
+// replaced) are removed.
 func cmdPrune(args []string) error {
 	yes, err := parseYes(args)
 	if err != nil {
@@ -24,15 +27,15 @@ func cmdPrune(args []string) error {
 	r := &report{w: stdout}
 	list := findPrunable(reg)
 	if list.empty() {
-		r.line("nothing to remove: every record in the registry is a usable local directory")
+		r.line("nothing to remove: no record in the registry is stale")
 		return nil
 	}
-	r.line("these registry records are not usable local directories:")
+	r.line("these registry records are stale:")
 	for _, k := range list.worktrees {
 		r.line("  worktree %q (ports: %s)", k, cell(portsCell(reg.Worktrees[k])))
 	}
-	for _, k := range list.mains {
-		r.line("  main worktree %q (ports: %s)", k, cell(portsCell(reg.Mains[k].Ports)))
+	for _, m := range list.mains {
+		r.line("  main worktree %q (ports: %s): %s", m.key, cell(portsCell(m.rec.Ports)), m.reason())
 	}
 	for _, l := range list.linked {
 		r.line("  linked worktree %q in the record of main worktree %q", l.worktree, l.main)
@@ -42,7 +45,12 @@ func cmdPrune(args []string) error {
 	if !yes && !confirm("Remove these records? [y/N] ") {
 		return nil
 	}
-	unlock, err := lockRegistry()
+	var kept []string
+	list, kept, err = recheckReplaced(list)
+	if err != nil {
+		return fmt.Errorf("nothing was removed: %w", err)
+	}
+	unlock, err := pruneLock()
 	if err != nil {
 		return fmt.Errorf("the registry could not be locked, so nothing was removed (run prune again): %w", err)
 	}
@@ -52,7 +60,8 @@ func cmdPrune(args []string) error {
 	if err != nil {
 		return fmt.Errorf("nothing was removed: %w", err)
 	}
-	done, kept := reg.prune(list)
+	done, keptNow := reg.prune(list)
+	kept = append(kept, keptNow...)
 	if !done.empty() {
 		if err := reg.save(); err != nil {
 			return fmt.Errorf("nothing was removed: %w", err)
@@ -67,14 +76,56 @@ func cmdPrune(args []string) error {
 	return nil
 }
 
+// pruneLock takes the registry lock for prune; tests replace it to act between the prompt and the lock.
+var pruneLock = lockRegistry
+
+// recheckReplaced tests the listed replaced main records again on a fresh read of the registry, after the prompt and
+// before the lock, so that the lock is not held while realPath and the marker look-ups run on a slow disk: the prompt
+// can wait for ever, and meanwhile the record may have become a project again. A record no longer replaced by the same
+// record is kept; whether the record itself changed is compared under the lock (stillPrunable).
+func recheckReplaced(list pruneList) (pruneList, []string, error) {
+	reg, err := loadRegistry()
+	if err != nil {
+		return list, nil, err
+	}
+	var kept []string
+	var mains []prunedMain
+	for _, m := range list.mains {
+		if m.by != "" {
+			if by, _ := reg.replacedMain(m.key); by != m.by {
+				kept = append(kept, fmt.Sprintf("main worktree %q", m.key))
+				continue
+			}
+		}
+		mains = append(mains, m)
+	}
+	list.mains = mains
+	return list, kept, nil
+}
+
 // pruneList is what prune removes, sorted. linked are entries of a kept main worktree's list (a removed main takes
 // its list with it).
 type pruneList struct {
-	worktrees, mains []string
-	linked           []linkedEntry
+	worktrees []string
+	mains     []prunedMain
+	linked    []linkedEntry
 }
 
 type linkedEntry struct{ main, worktree string }
+
+// prunedMain is a listed main worktree record: by and why are set when another record replaced it (replacedMain), and
+// rec is the record as listed, so that one that up or check recorded again meanwhile is not removed.
+type prunedMain struct {
+	key, by, why string
+	rec          MainRecord
+}
+
+func (m prunedMain) reason() string {
+	if m.by != "" {
+		return m.why
+	}
+	return "it is not a usable local directory"
+}
 
 func (l pruneList) empty() bool {
 	return len(l.worktrees) == 0 && len(l.mains) == 0 && len(l.linked) == 0
@@ -94,7 +145,7 @@ func staleWorktreeKey(k string) bool {
 }
 
 // findPrunable lists the unusable records of reg. Main worktree keys and their lists are recorded as real paths, so
-// they are checked without following links.
+// they are checked without following links; a replaced main record takes its list with it.
 func findPrunable(reg *Registry) pruneList {
 	var l pruneList
 	for _, k := range slices.Sorted(maps.Keys(reg.Worktrees)) {
@@ -103,8 +154,13 @@ func findPrunable(reg *Registry) pruneList {
 		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(reg.Mains)) {
+		rec := reg.Mains[k]
 		if !usableDir(k) {
-			l.mains = append(l.mains, k)
+			l.mains = append(l.mains, prunedMain{key: k, rec: rec})
+			continue
+		}
+		if by, why := reg.replacedMain(k); by != "" {
+			l.mains = append(l.mains, prunedMain{key: k, by: by, why: why, rec: rec})
 			continue
 		}
 		for _, w := range slices.Sorted(slices.Values(reg.Mains[k].Worktrees)) {
@@ -118,7 +174,9 @@ func findPrunable(reg *Registry) pruneList {
 
 // prune removes the listed records that are still recorded and still unusable, with the same tests as findPrunable,
 // and returns what it removed and the listed records it kept (quoted for the report). Records that became unusable
-// after the list are left for the next prune: the user did not confirm them.
+// after the list are left for the next prune: the user did not confirm them. A replaced main record is not tested
+// again here, under the lock (recheckReplaced did it just before): it is removed only when it is unchanged since the
+// list and the record that replaces it is still there.
 func (r *Registry) prune(list pruneList) (done pruneList, kept []string) {
 	for _, k := range list.worktrees {
 		if _, ok := r.Worktrees[k]; !ok {
@@ -131,16 +189,17 @@ func (r *Registry) prune(list pruneList) (done pruneList, kept []string) {
 		delete(r.Worktrees, k)
 		done.worktrees = append(done.worktrees, k)
 	}
-	for _, k := range list.mains {
-		if _, ok := r.Mains[k]; !ok {
+	for _, m := range list.mains {
+		rec, ok := r.Mains[m.key]
+		if !ok {
 			continue
 		}
-		if usableDir(k) {
-			kept = append(kept, fmt.Sprintf("main worktree %q", k))
+		if !m.stillPrunable(r, rec) {
+			kept = append(kept, fmt.Sprintf("main worktree %q", m.key))
 			continue
 		}
-		delete(r.Mains, k)
-		done.mains = append(done.mains, k)
+		delete(r.Mains, m.key)
+		done.mains = append(done.mains, m)
 	}
 	for _, l := range list.linked {
 		rec, ok := r.Mains[l.main]
@@ -155,4 +214,15 @@ func (r *Registry) prune(list pruneList) (done pruneList, kept []string) {
 		done.linked = append(done.linked, l)
 	}
 	return done, kept
+}
+
+// stillPrunable tests a listed main record under the lock: an unusable one with usableDir again, a replaced one only in
+// the registry (rec, the record now, is the one listed, and the record that replaces it is still there).
+func (m prunedMain) stillPrunable(r *Registry, rec MainRecord) bool {
+	if m.by == "" {
+		return !usableDir(m.key)
+	}
+	_, ok := r.Mains[m.by]
+	return ok && maps.Equal(rec.Ports, m.rec.Ports) && maps.Equal(rec.Defaults, m.rec.Defaults) &&
+		slices.Equal(rec.Worktrees, m.rec.Worktrees)
 }

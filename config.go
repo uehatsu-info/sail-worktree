@@ -544,3 +544,52 @@ func (r *Registry) used(except string) map[int]bool {
 	}
 	return m
 }
+
+// replacedMain returns the record that replaces the record of main worktree k, and why, or "" when none does. Main
+// keys are never folded, so a record that a move left behind would otherwise conflict with the new one for ever. Only
+// a live record replaces one (an alias whose real path has its own record, or a directory that is no longer a project
+// with a project's record below it), so a main without a second record keeps its ports. usableDir comes first, so
+// validKey does too.
+func (r *Registry) replacedMain(k string) (by, why string) {
+	if !usableDir(k) {
+		return "", ""
+	}
+	// A failure keeps the record: keeping a stale record only reserves ports, removing a live one frees them.
+	rp, err := realPath(k)
+	if err != nil {
+		return "", ""
+	}
+	if rp != k {
+		if _, ok := r.Mains[rp]; ok && usableDir(rp) {
+			return rp, fmt.Sprintf("its real path %q has its own record", rp)
+		}
+		return "", ""
+	}
+	if projectMarkers(k) {
+		return "", ""
+	}
+	for _, m := range slices.Sorted(maps.Keys(r.Mains)) {
+		if m == k || !within(k, m) || !usableDir(m) {
+			continue
+		}
+		if mp, err := realPath(m); err == nil && mp == m && projectMarkers(m) {
+			return m, fmt.Sprintf("it is no longer a project directory and main worktree %q below it is recorded", m)
+		}
+	}
+	return "", ""
+}
+
+// projectMarkers reports whether dir holds .sail-worktree.json, or artisan and a compose file, the files that make a
+// project directory (hasConfig, isLaravelProject). Unlike those it uses Lstat: a marker that is a link counts and is
+// not followed, because validKey walks only the key and on Windows a link here could lead to a network path. An error
+// other than not-exist counts as present, so a record is kept when in doubt.
+func projectMarkers(dir string) bool {
+	present := func(name string) bool {
+		_, err := os.Lstat(filepath.Join(dir, name))
+		return !os.IsNotExist(err)
+	}
+	if present(configName) {
+		return true
+	}
+	return present(artisanName) && slices.ContainsFunc(composeNames, present)
+}

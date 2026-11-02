@@ -207,8 +207,9 @@ func (h holder) String() string {
 }
 
 // checkConflicts reports ports with more than one holder. Records of directories that no longer exist (or keys that
-// are not absolute clean paths) are left out with a warning: up still keeps their ports free, but they cannot be in
-// use, and a deleted clone must not make check fail for ever.
+// are not absolute clean paths) and main records that another record replaced (replacedMain) are left out with a
+// warning: up still keeps their ports free, but they cannot be in use, and a deleted clone or a moved project must not
+// make check fail for ever.
 func checkConflicts(r *report, reg *Registry) {
 	// A suggestion must avoid every port up treats as taken: alias keys and stale records included. used returns a
 	// fresh map, so suggestion can add to it.
@@ -219,6 +220,10 @@ func checkConflicts(r *report, reg *Registry) {
 		rec := reg.Mains[k]
 		if !usableDir(k) {
 			r.warn("the record of main worktree %q keeps ports free, but it is not a usable local directory: %s", k, cell(portsCell(rec.Ports)))
+			continue
+		}
+		if by, why := reg.replacedMain(k); by != "" {
+			r.warn("the record of main worktree %q keeps ports free, but %s: %s", k, why, cell(portsCell(rec.Ports)))
 			continue
 		}
 		for name, p := range rec.Ports {
