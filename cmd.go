@@ -293,7 +293,7 @@ func mainPorts(dir string, vars []PortVar) (ports, defaults map[string]int, envO
 	}
 	defaults = map[string]int{}
 	for _, v := range vars {
-		if v.Default >= 1 && v.Default <= 65535 {
+		if validPort(v.Default) {
 			defaults[v.Name] = v.Default
 		}
 	}
@@ -316,7 +316,8 @@ func readMainEnv(dir string) (env *envFile, ok bool) {
 	return readEnvIfRegular(envPath)
 }
 
-// portsFromEnv applies the rule of mainPorts to the variables of defaults; env may be nil (no .env).
+// portsFromEnv applies the rule of mainPorts to the variables of defaults; env may be nil (no .env). A default outside
+// 1-65535 (a hand-edited registry) reserves nothing.
 func portsFromEnv(env *envFile, defaults map[string]int) map[string]int {
 	out := map[string]int{}
 	for name, def := range defaults {
@@ -328,7 +329,9 @@ func portsFromEnv(env *envFile, defaults map[string]int) map[string]int {
 				continue
 			}
 		}
-		out[name] = def
+		if validPort(def) {
+			out[name] = def
+		}
 	}
 	return out
 }

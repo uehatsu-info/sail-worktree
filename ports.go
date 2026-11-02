@@ -77,3 +77,7 @@ func allocatePorts(vars []PortVar, current map[string]int, taken map[int]bool, f
 	}
 	return out, nil
 }
+
+// validPort is the port range that parsePort, mainPorts and portsFromEnv share; other range checks still compare
+// inline.
+func validPort(p int) bool { return p >= 1 && p <= 65535 }

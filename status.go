@@ -230,7 +230,7 @@ func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) 
 // parsePort reads a port number from an .env value.
 func parsePort(s string) (int, bool) {
 	p, err := strconv.Atoi(s)
-	return p, err == nil && p >= 1 && p <= 65535
+	return p, err == nil && validPort(p)
 }
 
 // otherHolders lists, sorted, the registry entries other than self that record port, as "dir (VARIABLE)".
