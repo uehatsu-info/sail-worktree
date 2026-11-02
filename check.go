@@ -160,7 +160,7 @@ func checkConflicts(r *report, reg *Registry) {
 			reserved[p] = true
 		}
 		if !validKey(k) || !isDir(k) {
-			r.warn("the record of main worktree %q keeps ports free, but it is not an existing directory: %s", k, cell(portsCell(rec.Ports)))
+			r.warn("the record of main worktree %q keeps ports free, but it is not a usable local directory: %s", k, cell(portsCell(rec.Ports)))
 			continue
 		}
 		for name, p := range rec.Ports {
@@ -180,7 +180,7 @@ func checkConflicts(r *report, reg *Registry) {
 			reserved[p] = true
 		}
 		if !validKey(k) || !isDir(k) {
-			r.warn("the record of worktree %q keeps ports free, but it is not an existing directory: %s", k, cell(portsCell(view[k])))
+			r.warn("the record of worktree %q keeps ports free, but it is not a usable local directory: %s", k, cell(portsCell(view[k])))
 			continue
 		}
 		for name, p := range view[k] {

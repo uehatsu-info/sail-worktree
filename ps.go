@@ -155,11 +155,6 @@ func listWorktrees(dir string) ([]worktreeInfo, error) {
 	return list, nil
 }
 
-// validKey reports whether a registry key is an absolute, clean path. Anything else is never used as a directory.
-func validKey(k string) bool {
-	return k != "" && filepath.IsAbs(k) && filepath.Clean(k) == k
-}
-
 // foldRegistry returns the registry as a map from real project directory to ports. Keys that an older version
 // recorded under a symlinked path are folded into their real path the way Registry.migrate does (an entry under the
 // real path wins, otherwise the smallest alias), but only in this copy: it is never saved.
