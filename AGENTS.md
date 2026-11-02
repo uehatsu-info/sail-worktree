@@ -200,7 +200,8 @@ These come from deliberate decisions; change them only on purpose and update the
   is not read for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record
   reserves nothing. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias
   paths in a record's `worktrees` list are folded like the top-level `worktrees` keys: by `migrate` (saved by `up` and
-  `rm`), and by `check` in memory only (`foldKey`, the key `ofMain` looks a worktree up by); an entry that fails
+  `rm`; only in the current main's list, so an alias in another main's list is not folded by it), and by `check` in
+  memory only (`foldKey`, the key `ofMain` looks a worktree up by); an entry that fails
   `validKey` is never resolved.
 - **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once,
   so nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`,
@@ -219,8 +220,9 @@ These come from deliberate decisions; change them only on purpose and update the
   `exec.Cmd.Env` inherits the whole parent environment.
 - **Paths are real paths.** The worktree root, the main worktree and the project directory are resolved through
   symlinks, because the project name contains a hash of the project directory. `Registry.migrate` merges keys an older
-  version recorded under a symlinked path, and replaces aliases of root in the `mains` worktree lists (a changed list is
-  sorted); it only changes memory and the caller saves on success. A registry key is resolved only after `validKey` (on
+  version recorded under a symlinked path, and replaces aliases of root in the current main's `worktrees` list (the only
+  one root can be listed in; other lists are not resolved under the lock; a changed list is sorted); it only changes
+  memory and the caller saves on success. A registry key is resolved only after `validKey` (on
   Windows that includes the link walk).
 - **Project directory.** `up`, `stop` and `rm` (`lookupProject`) take the nearest directory with `.sail-worktree.json`
   anywhere up to the worktree root; only when there is none, the nearest directory where `isLaravelProject` holds
@@ -290,8 +292,11 @@ These come from deliberate decisions; change them only on purpose and update the
   stays; only the worktree leaves its `worktrees` list (`forgetWorktree`).
 - **The registry lock.** `up`, `rm`, `check` and `prune` update the registry under `lockRegistry` (`registry.json.lock`
   next to it, `O_EXCL`, mode 0600, pid inside; the file is closed at once because Windows cannot remove an open file).
-  `up` takes it after the `.env` checks and before `loadRegistry`, so reading, `allocatePorts`, writing `.env` and
-  `save` are one step, and releases it right after `save` and before `runSail`; `rm` takes it after docker; `check`
+  `up` reads the main's `.env` (`mainPorts`) before it, after a registry read that is used only as the base of that
+  main's record (`recordMainRead`, the rule of `check`; the ports it read are also avoided by this allocation, since a
+  record kept as newer may come from an older read), and takes it after the `.env` checks and before `loadRegistry`, so
+  reading, `allocatePorts`, writing `.env` and `save` are one step, and releases it right after `save` and before
+  `runSail`; `rm` takes it after docker; `check`
   reads the mains' `.env` before it and holds it to read the registry again, record, refresh and save (what it read
   before locking only decides which records may be refreshed; the registry it saves is the one read after locking). If
   `check` times out on a lock that another run holds (`errLockHeld`), it warns and reports on the registry read without

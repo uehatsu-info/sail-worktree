@@ -411,6 +411,17 @@ func betweenReadAndLock(t *testing.T, fn func()) {
 	t.Cleanup(func() { checkLock = old })
 }
 
+// betweenUpReadAndLock is betweenReadAndLock for up: fn runs after up has read the main's .env and before it locks.
+func betweenUpReadAndLock(t *testing.T, fn func()) {
+	t.Helper()
+	old := upLock
+	upLock = func() (func(), error) {
+		fn()
+		return lockRegistry()
+	}
+	t.Cleanup(func() { upLock = old })
+}
+
 func TestCheckReadsMainEnvBeforeTheLock(t *testing.T) {
 	isolatedRegistry(t)
 	m := realTempDir(t)

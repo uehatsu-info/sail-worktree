@@ -876,7 +876,7 @@ func TestRegistryMigrate(t *testing.T) {
 
 	// An alias key is merged into root and no alias remains. A key of a path that no longer exists is kept.
 	r := &Registry{Worktrees: map[string]map[string]int{links[0]: {"APP_PORT": 81}, gone: {"APP_PORT": 82}}}
-	r.migrate(real)
+	r.migrate(real, "")
 	if got := r.Worktrees[real]["APP_PORT"]; got != 81 {
 		t.Errorf("not merged: %v", r.Worktrees)
 	}
@@ -889,21 +889,21 @@ func TestRegistryMigrate(t *testing.T) {
 
 	// An existing root entry wins and the alias is dropped (the alias's ports are not left in used).
 	r = &Registry{Worktrees: map[string]map[string]int{real: {"APP_PORT": 90}, links[0]: {"APP_PORT": 81}}}
-	r.migrate(real)
+	r.migrate(real, "")
 	if r.Worktrees[real]["APP_PORT"] != 90 || len(r.Worktrees) != 1 || r.used("other")[81] {
 		t.Errorf("root does not win: %v", r.Worktrees)
 	}
 
 	// k == root is left unchanged.
 	r = &Registry{Worktrees: map[string]map[string]int{real: {"APP_PORT": 90}}}
-	r.migrate(real)
+	r.migrate(real, "")
 	if r.Worktrees[real]["APP_PORT"] != 90 || len(r.Worktrees) != 1 {
 		t.Errorf("changed k==root: %v", r.Worktrees)
 	}
 
 	// With several aliases and no root entry, the smallest key (a-link) is adopted.
 	r = &Registry{Worktrees: map[string]map[string]int{links[0]: {"APP_PORT": 81}, links[1]: {"APP_PORT": 82}}}
-	r.migrate(real)
+	r.migrate(real, "")
 	if r.Worktrees[real]["APP_PORT"] != 82 || len(r.Worktrees) != 1 {
 		t.Errorf("not adopted deterministically: %v", r.Worktrees)
 	}
@@ -1347,6 +1347,49 @@ func TestUpRecordsMainPortsAndKeepsThemFree(t *testing.T) {
 	reg, _ = loadRegistry()
 	if got := reg.Mains[main].Ports["APP_PORT"]; got != 80 {
 		t.Errorf("APP_PORT recorded for the main = %d, want the default 80", got)
+	}
+}
+
+// up reads the main's .env before the lock (#79): a change after the read is not seen by this run.
+func TestUpReadsMainEnvBeforeTheLock(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8123\n")
+	betweenUpReadAndLock(t, func() { writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8125\n") })
+	captureRunner(t)
+	captureStdout(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := loadRegistry()
+	if got := reg.Mains[main].Ports["APP_PORT"]; got != 8123 {
+		t.Errorf("APP_PORT recorded for the main = %d, want 8123 (the read before the lock)", got)
+	}
+}
+
+// A main record that another run changed while up waited for the lock is newer and stays, as in check (#79). When it
+// comes from an older read (a check that waited too), the port this up read is still avoided.
+func TestUpKeepsAMainRecordChangedBeforeTheLock(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8124\n")
+	// This worktree holds the port the main's .env now sets.
+	saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 8124}}})
+	betweenUpReadAndLock(t, func() {
+		saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 8124}},
+			Mains: map[string]MainRecord{main: mainRec(8123)}})
+	})
+	captureRunner(t)
+	captureStdout(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := loadRegistry()
+	if rec := reg.Mains[main]; rec.Ports["APP_PORT"] != 8123 || len(rec.Worktrees) != 1 || rec.Worktrees[0] != wt {
+		t.Errorf("main record = %+v, want APP_PORT 8123 (changed meanwhile) and the worktree listed", rec)
+	}
+	if got := reg.Worktrees[wt]["APP_PORT"]; got == 8123 || got == 8124 {
+		t.Errorf("worktree APP_PORT = %d, want neither the recorded nor the read port of the main", got)
 	}
 }
 
