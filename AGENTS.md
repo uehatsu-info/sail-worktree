@@ -214,6 +214,9 @@ These come from deliberate decisions; change them only on purpose and update the
   rows are probed like any row that is not `running`, and count in `CONFLICT` (`portsOf`), so `ports --all` agrees with
   `check` on conflicts, except that stale or unattributed rows count here and only give a warning in `check`. The JSON
   fields of `ports`, `process` and `pid` included, are a public contract too.
+  A recorded value that fails `validPort` (a hand-edited registry) is `host` `invalid` (`hostInvalid`, decided before
+  `running` and the probe cache): never probed (binding 0 picks a random port) nor given to `lsof`, and left out of
+  `CONFLICT`, as `check` ignores it. `invalid` is a value added to `host`; the existing values keep their meanings.
 - **`ps --all` attribution.** With `--all` an entry is attributed to the longest listed worktree that contains it, so an
   independent repository nested inside a listed worktree is attributed to the outer one when that one is already known.
   A main record is attributed only to the main (first) worktree of a listing (`attributeMain`). On Windows only the

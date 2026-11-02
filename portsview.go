@@ -35,6 +35,7 @@ const (
 	hostFree        = "free"
 	hostUnavailable = "unavailable" // cannot be bound: in use, or not allowed to bind
 	hostOwn         = "in use by this project"
+	hostInvalid     = "invalid" // the recorded value is not a port number (a hand-edited registry)
 )
 
 // lookupOwner finds the process that listens on a port (tests replace it).
@@ -89,14 +90,17 @@ func parseLsof(out string) (name string, pid int, ok bool) {
 }
 
 // portsOf lists the rows of the entries, sorted by port. A port recorded more than once (by two entries, a main
-// worktree's included, or by two variables of one) marks all its rows as a conflict.
+// worktree's included, or by two variables of one) marks all its rows as a conflict. A value that is not a port number
+// is never a conflict, as in check: no two projects can collide on it.
 func portsOf(entries []entry) []portRow {
 	var rows []portRow
 	count := map[int]int{}
 	for _, e := range entries {
 		for name, p := range e.Ports {
 			rows = append(rows, portRow{Kind: e.Kind, Port: p, Variable: name, Worktree: e.Worktree, Subdir: e.Subdir, State: e.State})
-			count[p]++
+			if validPort(p) {
+				count[p]++
+			}
 		}
 	}
 	for i := range rows {
@@ -116,7 +120,8 @@ func portsOf(entries []entry) []portRow {
 }
 
 // fillHost probes each distinct port once. A port of a running project is that project's own and is not probed.
-// The owner is looked up only for a port that cannot be bound.
+// The owner is looked up only for a port that cannot be bound. A value that is not a port number is neither probed
+// (binding 0 would pick a random port and report it free) nor given to lsof.
 func fillHost(rows []portRow) {
 	type result struct {
 		host string
@@ -126,6 +131,10 @@ func fillHost(rows []portRow) {
 	seen := map[int]result{}
 	for i := range rows {
 		r := &rows[i]
+		if !validPort(r.Port) {
+			r.Host = hostInvalid
+			continue
+		}
 		if r.State == stateRunning {
 			r.Host = hostOwn
 			continue
