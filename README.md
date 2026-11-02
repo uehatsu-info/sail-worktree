@@ -93,17 +93,18 @@ Prints the version (the tag for `go install ...@vX.Y.Z`; a local `go build` prin
 
 ### `sail-worktree ps [--all] [--json] [--no-docker]`
 
-Lists the worktrees recorded in the port registry, which is a view of `registry.json` and not `docker ps`. The main worktree is not listed, because `up` refuses to run there (its ports are recorded separately; see [`check`](#sail-worktree-check)).
+Lists the worktrees and main worktrees recorded in the port registry, which is a view of `registry.json` and not `docker ps`. A main worktree (recorded by `up` or [`check`](#sail-worktree-check)) comes first, marked `(main)` in the `WORKTREE` column; it shows the recorded ports, which `up` keeps free, not a fresh read of its `.env`. Its `STATE` is `-` (docker is not asked: its compose project name depends on its `.env`, which is not read), or `stale` / `unattributed` as below.
 
 ```
-WORKTREE  SUBDIR  BRANCH  PORTS                             STATE    DIR
-myapp-x   .       feat-x  APP_PORT=81 FORWARD_DB_PORT=3307  running  /work/myapp-x
+WORKTREE      SUBDIR  BRANCH  PORTS                             STATE    DIR
+myapp (main)  .       main    APP_PORT=80 FORWARD_DB_PORT=3306  -        /work/myapp
+myapp-x       .       feat-x  APP_PORT=81 FORWARD_DB_PORT=3307  running  /work/myapp-x
 ```
 
 - Without `--all` it shows the projects of the repository you are in (the `SUBDIR` column tells projects of one repository apart); entries of other repositories are not shown. Run it anywhere inside the repository; no `.sail-worktree.json` or Laravel project is needed. `--all` shows every entry of the registry, also outside a repository, and runs `git worktree list` in the other entries' directories (not on Windows; see the [Notes](#notes)).
 - `STATE` is `stale` for an entry whose worktree or directory is gone (or that git lists as prunable) or whose key is not a valid path, `unattributed` (only with `--all`) for a directory that exists but that git does not place in a worktree (not a repository, git failed, or on Windows another repository, where git is not run), and otherwise docker's view of the entry's compose project, asked once with `docker compose ls -a` (`COMPOSE_*` variables are removed from its environment): `running` (a container runs), `stopped` (containers exist, none is `running`; paused or restarting ones count as stopped), `down` (docker knows no such project) or `unknown` (docker could not be asked: not installed, not running, too slow; this never fails `ps`). The project is looked up by the name recomputed for the worktree, so a worktree whose `.env` has another `COMPOSE_PROJECT_NAME` can show `down` while it runs. `DOCKER_HOST`, `DOCKER_CONTEXT` and `DOCKER_CONFIG` are kept on purpose, so the state is that daemon's view (a remote one is reached over the network, for at most 10 seconds). `--no-docker` does not ask docker and shows `-`. A stale entry still holds its ports until `rm` releases them or you edit the registry. Entries that are gone or invalid and cannot be attributed to this repository are counted in a note on stderr; use `--all` to list them.
 - Keys that an older version recorded under a symlinked path are folded into their real path in memory only; the registry is not rewritten.
-- `--json` prints an array of objects with the fields `dir`, `worktree`, `subdir`, `branch` (`(detached)` for a detached HEAD, empty when unknown), `ports` (an object), `name` (the compose project name) and `state`.
+- `--json` prints an array of objects with the fields `kind` (`worktree` or `main`), `dir`, `worktree`, `subdir`, `branch` (`(detached)` for a detached HEAD, empty when unknown), `ports` (an object), `name` (the compose project name; empty for a main worktree) and `state`.
 
 ### `sail-worktree status [--no-docker]`
 
@@ -123,7 +124,7 @@ APP_URL:           "http://localhost:81"
 ```
 
 - It shows only a fixed list of facts (paths, the compose project name, the assigned ports, `APP_URL` without credentials, query and fragment); other `.env` values are never printed.
-- `problems:` lists what `up` would fix or refuse; any problem is reported after the whole report with `error: found N problem(s)` and exit status 1: a configuration error; `.env` missing, a symbolic or hard link, or not a regular file (a link is not read); `COMPOSE_FILE`, `COMPOSE_ENV_FILES` or `SAIL_FILES` in `.env`; `COMPOSE_PROJECT_NAME` missing or different from this worktree's name; a port variable that is missing or not a number in `.env`, different from the registry, not in the registry, or also recorded for another entry; an `APP_URL` that does not use `APP_PORT`; and a `SANCTUM_STATEFUL_DOMAINS` that lacks the entry for `APP_URL` (the same rule as `up`).
+- `problems:` lists what `up` would fix or refuse; any problem is reported after the whole report with `error: found N problem(s)` and exit status 1: a configuration error; `.env` missing, a symbolic or hard link, or not a regular file (a link is not read); `COMPOSE_FILE`, `COMPOSE_ENV_FILES` or `SAIL_FILES` in `.env`; `COMPOSE_PROJECT_NAME` missing or different from this worktree's name; a port variable that is missing or not a number in `.env`, different from the registry, not in the registry, or also recorded for another entry or for a main worktree (of any repository; the next `up` moves it); an `APP_URL` that does not use `APP_PORT`; and a `SANCTUM_STATEFUL_DOMAINS` that lacks the entry for `APP_URL` (the same rule as `up`).
 - The report ends with `warnings:` and then `problems:`. `warnings:` do not change the exit status: a port that cannot be bound while the project is not running (another process may use it; a permission error looks the same), and the `SANCTUM_STATEFUL_DOMAINS` value that `up` only warns about. A port is not probed while docker says the project is running, nor when docker could not be asked (`unknown`) or with `--no-docker` (the `docker:` line then says `not asked`, and the ports show `host=not probed`).
 - The docker state is the one `ps` shows (see above). To see whether a port is free, `status` binds it for an instant and closes it again; nothing is written to disk, but a firewall may notice the bind.
 
@@ -140,9 +141,10 @@ PORT  VARIABLE         WORKTREE  SUBDIR  STATE    HOST                       CON
 
 - `HOST` is `free`, `unavailable` (the port cannot be bound: in use, or not allowed to bind) or `in use by this project` (docker says the project runs, so its own port is not probed). For an unavailable port, on Unix and if `lsof` can see it, the name and pid of the first listening process are added (`lsof` is only called for such ports; without it, or on Windows, you get plain `unavailable`; `status` calls the same condition `cannot bind`). Every port is bound for an instant and closed again; nothing is written to disk, but a firewall may notice the bind.
 - `STATE` is the one `ps` shows (including `stale` for entries whose worktree is gone, which still hold their ports); `--no-docker` does not ask docker, so a running project's own ports are probed too and may show as `unavailable`; the same happens on Windows with `--all` for other repositories' projects, whose entries are `unattributed`.
-- `CONFLICT` is `yes` when the port is recorded more than once, by two entries or by two variables of one entry. `up` never assigns the same port twice, so this points at a hand-edited registry or an alias that was not merged. `ports` and `status` see only worktrees; `check` also compares the main worktrees' ports.
+- Main worktrees' ports are listed too (`WORKTREE` is marked `(main)`, `STATE` is `-` as in `ps`). They are probed like any other port, so a running main worktree's port shows as `unavailable`.
+- `CONFLICT` is `yes` when the port is recorded more than once among the listed rows: by two entries (a main worktree included), or by two variables of one entry. `up` never assigns the same port twice, so between worktrees this points at a hand-edited registry or an alias that was not merged; a worktree on a main worktree's port is moved by its next `up`. With `--all`, every recorded entry is compared, as in `check` (which leaves out records of directories that are gone).
 - With `PORT` (digits only, 1 to 65535) only that port is shown; if nothing records it (also when only another repository does, without `--all`), one row without a variable (empty strings in `--json`) still tells whether the host can bind it.
-- `--json` prints an array of objects with the fields `port`, `variable`, `worktree`, `subdir`, `state`, `host` (the three values above), `process` (empty when unknown), `pid` (0 when unknown) and `conflict`.
+- `--json` prints an array of objects with the fields `kind` (`worktree` or `main`), `port`, `variable`, `worktree`, `subdir`, `state`, `host` (the three values above), `process` (empty when unknown), `pid` (0 when unknown) and `conflict`.
 
 ### `sail-worktree check`
 
@@ -243,6 +245,7 @@ Your checks and the copy are not one step, so a process writing in the worktree 
 - New command `check` (see [`check`](#sail-worktree-check)). It records the main worktree of the repository you run it in and reports ports used more than once across all repositories.
 - `registry.json` has a new `mains` section with the main worktrees' ports. `worktrees` is unchanged. An older version that saves the registry (its `up` or `rm`) drops `mains`; the next `up` or `check` records it again.
 - `up` records the main worktree's ports and no longer assigns them to a worktree. A worktree whose port a recorded main worktree (of any repository) uses gets another port on its next `up`, which prints `APP_PORT=82 (was 81, ...)`.
+- `ps` and `ports` also list main worktree records (their rows come first in `ps`), and `ports` counts them in `CONFLICT`; `status` reports a port that a main worktree record also holds. Their `--json` objects gain a `kind` field (`worktree` or `main`); the other fields keep their names and meanings, so a script that expects only worktrees should skip `"kind": "main"`.
 - On Windows, a registry entry whose path is not a drive-letter path (a UNC or device path) is no longer looked at, so `ps` and `ports` treat it as invalid, and with `--all` they no longer run git in other repositories, whose entries now show as `unattributed`; see the [Notes](#notes).
 
 ### v0.8.0
