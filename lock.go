@@ -20,10 +20,20 @@ var lockTiming = struct{ poll, wait, stale, notice time.Duration }{
 	poll: 50 * time.Millisecond, wait: 75 * time.Second, stale: 60 * time.Second, notice: time.Second,
 }
 
+// Seams for the tests: the create of the lock file, the Windows retry rule, and a hook in claimStale between taking
+// the claim and checking the lock.
+var (
+	openLockFile = func(lock string) (*os.File, error) {
+		return os.OpenFile(lock, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	}
+	lockOnWindows = runtime.GOOS == "windows"
+	lockStep      = func() {}
+)
+
 // lockRegistry takes the lock that serialises the commands that update the registry (up and rm; the read-only
 // commands never lock). The lock is registry.json.lock next to the registry, created with O_EXCL. A caller that
 // updates the registry must read it after locking, so that it sees the update of the run it waited for. unlock is
-// idempotent and removes the lock file only if it is still the one this call created.
+// idempotent and removes the lock file only if it is still the one this call created (see releaser).
 func lockRegistry() (unlock func(), err error) {
 	p, err := registryPath()
 	if err != nil {
@@ -37,7 +47,7 @@ func lockRegistry() (unlock func(), err error) {
 	deadline := start.Add(lockTiming.wait)
 	noticed := false
 	for {
-		f, err := os.OpenFile(lock, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		f, err := openLockFile(lock)
 		if err == nil {
 			// The identity is taken from the open file, and the file is closed at once: on Windows an open file
 			// cannot be removed. The pid is for humans.
@@ -51,9 +61,10 @@ func lockRegistry() (unlock func(), err error) {
 			return releaser(lock, fi), nil
 		}
 		// On Windows a lock whose removal is still pending, or a directory in its place, is "access denied" and not
-		// "exists", so there every error is retried (and an old leftover broken) until the deadline. Elsewhere any
-		// other error (no permission, no space) cannot go away by waiting.
-		retry := errors.Is(err, os.ErrExist) || runtime.GOOS == "windows"
+		// "exists", so there every error is retried (and an old leftover broken) until the deadline, after poll like
+		// any wait: with no lock file in the way the error may simply repeat. Elsewhere any other error (no
+		// permission, no space) cannot go away by waiting.
+		retry := errors.Is(err, os.ErrExist) || lockOnWindows
 		if retry && breakStale(lock) && time.Now().Before(deadline) {
 			continue
 		}
@@ -90,13 +101,14 @@ func lockHolder(lock string) string {
 	return "pid unknown"
 }
 
-// breakStale removes an abandoned lock and reports whether the caller should try to take the lock again at once.
+// breakStale removes an abandoned lock and reports whether it did, so that the caller tries to take the lock again at
+// once. Anything else, a lock file that is already gone included, is retried after lockTiming.poll.
 // A lock is abandoned when its modification time is older than lockTiming.stale or (clock skew, a restored backup)
 // well in the future.
 func breakStale(lock string) bool {
 	fi, err := lstatIdentity(lock)
 	if err != nil {
-		return os.IsNotExist(err) // gone already: try at once
+		return false
 	}
 	if age := time.Since(fi.ModTime()); age <= lockTiming.stale && age >= -5*time.Second {
 		return false
@@ -105,7 +117,8 @@ func breakStale(lock string) bool {
 }
 
 // lstatIdentity is os.Lstat with the file identity already read: on Windows os.SameFile reads it lazily, from the path,
-// so it would find nothing once the file has been renamed away. SameFile(fi, fi) forces the read.
+// so it would compare whatever is at the path by then instead of the file that was looked at. SameFile(fi, fi) forces
+// the read.
 func lstatIdentity(path string) (os.FileInfo, error) {
 	fi, err := os.Lstat(path)
 	if err == nil {
@@ -114,39 +127,82 @@ func lstatIdentity(path string) (os.FileInfo, error) {
 	return fi, err
 }
 
-// claimStale removes the lock that was judged stale (judged is its Lstat). The file is first renamed to a unique name
-// and checked to be the judged one (same file, same modification time: an inode number can be reused), so a waiter
-// that was slow cannot delete the fresh lock another run created meanwhile; that one is given back with a link, which
-// fails instead of replacing a lock a third run took in between. Two waiters that break the same lock race on the
-// next O_EXCL, and only one wins.
+// claimStale removes the lock that was judged stale (judged is its Lstat) and reports whether it is gone. A path has
+// no compare-and-delete, so the check that the path still holds the judged file (same file, same modification time:
+// an inode number can be reused) and the removal are made one step by the claim of that lock: every run that removes
+// a lock, a breaker here or the owner's unlock, holds its claim, and an O_EXCL create cannot replace a file that is
+// still there. A fresh lock another run created meanwhile is therefore never removed or moved, and a second waiter
+// that judged the same lock backs off while the first holds the claim.
 func claimStale(lock string, judged os.FileInfo) bool {
-	claimed := fmt.Sprintf("%s.stale-%d-%d", lock, os.Getpid(), time.Now().UnixNano())
-	if err := os.Rename(lock, claimed); err != nil {
-		return os.IsNotExist(err)
-	}
-	fi, err := lstatIdentity(claimed)
-	if err != nil || !os.SameFile(judged, fi) || !fi.ModTime().Equal(judged.ModTime()) {
-		os.Link(claimed, lock)
-		os.Remove(claimed)
+	release, err := takeClaim(lock, judged)
+	if err != nil {
 		return false
 	}
-	os.Remove(claimed)
-	return true
+	defer release()
+	lockStep()
+	return removeIfSame(lock, judged, 0)
 }
 
-// releaser returns the idempotent unlock for the lock file whose Lstat is ours.
+// claimPath names the claim of one lock file by its modification time, the same for the owner (its f.Stat) and a
+// waiter (its Lstat). A stale lock's time is over lockTiming.stale old or in the future and a fresh one's is now, so
+// the judged lock and a fresh one never share a claim. Two fresh locks can, where mtimes are coarse; that only makes a
+// run back off (an unlock then leaves its lock for lockTiming.stale), never remove a wrong file, since the removal
+// still checks the file itself.
+func claimPath(lock string, fi os.FileInfo) string {
+	return fmt.Sprintf("%s.claim-%d", lock, fi.ModTime().UnixNano())
+}
+
+// takeClaim creates the claim of the lock file fi with O_EXCL (closed at once, like the lock; the pid is for humans)
+// and returns its release. A run killed while it holds a claim leaves the file behind, and that one lock is then never
+// broken automatically: the timeout error's hand recovery (delete the lock) still works, since the next lock has
+// another claim name.
+func takeClaim(lock string, fi os.FileInfo) (release func(), err error) {
+	c := claimPath(lock, fi)
+	f, err := os.OpenFile(c, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(f, "%d\n", os.Getpid())
+	f.Close()
+	return func() { os.Remove(c) }, nil
+}
+
+// removeIfSame removes lock if it is still the file whose Lstat is fi, and reports whether it is gone. The caller holds
+// fi's claim. On Windows a removal fails while another run briefly has the file open (to read the pid); it is tried
+// again up to retries times.
+func removeIfSame(lock string, fi os.FileInfo, retries int) bool {
+	cur, err := lstatIdentity(lock)
+	if os.IsNotExist(err) {
+		return true
+	}
+	if err != nil || !os.SameFile(fi, cur) || !cur.ModTime().Equal(fi.ModTime()) {
+		return false
+	}
+	err = os.Remove(lock)
+	for i := 0; err != nil && !os.IsNotExist(err) && runtime.GOOS == "windows" && i < retries; i++ {
+		time.Sleep(10 * time.Millisecond)
+		err = os.Remove(lock)
+	}
+	return err == nil || os.IsNotExist(err)
+}
+
+// releaser returns the idempotent unlock for the lock file whose Lstat is ours. It removes the lock only if it is
+// still ours, under its claim (see claimStale). A claim that exists already means that a run judged this lock stale
+// (this one was suspended for longer than lockTiming.stale) and is removing it, so it is left to that run. A claim
+// that cannot be created for another reason (no space, say) does not keep the lock for lockTiming.stale: it is removed
+// with the check alone.
 func releaser(lock string, ours os.FileInfo) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			if fi, err := os.Lstat(lock); err == nil && os.SameFile(ours, fi) && fi.ModTime().Equal(ours.ModTime()) {
-				// On Windows the removal fails while another run briefly has the file open (to read the pid).
-				err := os.Remove(lock)
-				for i := 0; err != nil && !os.IsNotExist(err) && runtime.GOOS == "windows" && i < 20; i++ {
-					time.Sleep(10 * time.Millisecond)
-					err = os.Remove(lock)
-				}
+			release, err := takeClaim(lock, ours)
+			if errors.Is(err, os.ErrExist) {
+				return
 			}
+			if err == nil {
+				defer release()
+			}
+			removeIfSame(lock, ours, 20)
 		})
 	}
 }
