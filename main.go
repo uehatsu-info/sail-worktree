@@ -33,7 +33,8 @@ Usage:
   sail-worktree version         print the version (the tag for go install ...@vX.Y.Z; (devel) or a pseudo-version for a local build)
 
 Run the commands in your Laravel project's directory (the one with artisan and the compose file) or below it.
-The project may be in a subdirectory of the repository. ps and ports work anywhere inside the repository.
+The project may be in a subdirectory of the repository. ps, ports, check and prune work anywhere inside the
+repository; check, prune, ps --all and ports --all also work outside a repository.
 `
 
 func version() string {

@@ -12,10 +12,10 @@ import (
 	"time"
 )
 
-// lockTiming holds the timings of the registry lock (tests shrink them). A lock is held for the few seconds up and rm
-// need to read the registry, choose ports and save, never while sail or docker runs, so one older than stale is taken
-// for abandoned (a crashed run); wait is longer than stale, so a waiter outlasts a crashed holder's lock. notice is
-// when a waiter says that it waits.
+// lockTiming holds the timings of the registry lock (tests shrink them). A lock is held for the few seconds up, rm,
+// check and prune need to read, update and save the registry, never while sail or docker runs, so one older than stale
+// is taken for abandoned (a crashed run); wait is longer than stale, so a waiter outlasts a crashed holder's lock.
+// notice is when a waiter says that it waits.
 var lockTiming = struct{ poll, wait, stale, notice time.Duration }{
 	poll: 50 * time.Millisecond, wait: 75 * time.Second, stale: 60 * time.Second, notice: time.Second,
 }
@@ -30,9 +30,9 @@ var (
 	lockStep      = func() {}
 )
 
-// lockRegistry takes the lock that serialises the commands that update the registry (up and rm; the read-only
-// commands never lock). The lock is registry.json.lock next to the registry, created with O_EXCL. A caller that
-// updates the registry must read it after locking, so that it sees the update of the run it waited for. unlock is
+// lockRegistry takes the lock that serialises the commands that update the registry (up, rm, check and prune; the
+// read-only commands never lock). The lock is registry.json.lock next to the registry, created with O_EXCL. A caller
+// that updates the registry must read it after locking, so that it sees the update of the run it waited for. unlock is
 // idempotent and removes the lock file only if it is still the one this call created (see releaser).
 func lockRegistry() (unlock func(), err error) {
 	p, err := registryPath()
@@ -55,7 +55,12 @@ func lockRegistry() (unlock func(), err error) {
 			fi, serr := f.Stat()
 			cerr := f.Close()
 			if err := errors.Join(werr, serr, cerr); err != nil {
-				os.Remove(lock)
+				// Not os.Remove(lock): if this run was suspended for longer than lockTiming.stale, its lock may have
+				// been broken and the path may hold another run's fresh lock by now. Without an identity the file is
+				// left to the stale rule.
+				if serr == nil {
+					releaser(lock, fi)()
+				}
 				return nil, fmt.Errorf("cannot write the registry lock %q: %w", lock, err)
 			}
 			return releaser(lock, fi), nil

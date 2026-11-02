@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const configName = ".sail-worktree.json"
@@ -352,10 +353,116 @@ func writeFileAtomic(path string, data []byte) error {
 }
 
 // validKey reports whether a registry key may be used as a directory: an absolute, clean path, and on Windows a path
-// that starts with a drive letter. Keys are untrusted, and on Windows looking at a UNC or device path (\\host\share,
-// \\?\, \??\, \\.\) can open a network connection that sends the user's credentials.
+// that starts with a drive letter and whose links all lead to drive-letter paths (keyLinksOK; this part reads the
+// filesystem). Keys are untrusted, and on Windows looking at a UNC or device path (\\host\share, \\?\, \??\, \\.\) can
+// open a network connection that sends the user's credentials, also when a link in the middle of a key leads there.
+// The string checks come first, so a UNC key is never walked.
 func validKey(k string) bool {
-	return k != "" && filepath.IsAbs(k) && filepath.Clean(k) == k && windowsDriveKey(k, runtime.GOOS)
+	return k != "" && filepath.IsAbs(k) && filepath.Clean(k) == k && windowsDriveKey(k, runtime.GOOS) && keyLinksOK(k)
+}
+
+// keyLinksOK is replaced by tests, so that every system can check how a refused key is treated.
+var keyLinksOK = func(k string) bool {
+	return runtime.GOOS != "windows" || linksStayLocal(k, osLinkFS, driveTarget)
+}
+
+// driveTarget is the rule for a link target on Windows: a drive-letter path, like a key.
+func driveTarget(p string) bool { return filepath.IsAbs(p) && windowsDriveKey(p, "windows") }
+
+// linkFS is what linksStayLocal reads; tests replace it.
+type linkFS struct {
+	lstat    func(string) (os.FileInfo, error)
+	readlink func(string) (string, error)
+}
+
+var osLinkFS = linkFS{lstat: os.Lstat, readlink: os.Readlink}
+
+// maxKeyLinks bounds the links followed for one key, as EvalSymlinks does, so that a loop ends.
+const maxKeyLinks = 255
+
+// linksStayLocal reports whether every link on the way to k, and on the way through what the links lead to, has a
+// target that ok accepts. It walks from the root with Lstat, so a link is read before anything goes through it, and
+// stops at the first element that does not exist (nothing further can be followed). Windows follows a junction when
+// a path is opened, Lstat'ed or used as git's cwd, so junctions are checked here although EvalSymlinks (realPath) has
+// not followed them since Go 1.23: Go reports them as ModeIrregular without ModeDir. A ModeDir|ModeIrregular element is
+// a reparse point that does not redirect the path (a cloud placeholder folder, say) and is walked like a directory.
+// An element that cannot be looked at for another reason, or a link that cannot be read, refuses the key. A target is
+// walked element by element from where the link is, as EvalSymlinks does, never cleaned first: a cleaned x\..\y
+// would skip x, which may itself be a link; a ".." after a name refuses the key (dotDotAfterName). An absolute target
+// must pass ok, and the walk goes on from its root.
+// Limits: a link created or swapped after the walk is not caught, and a drive letter that is itself mapped to a network
+// share is the user's own setup. os.Readlink returns a target such as \\?\C:\x as it is, so it is refused.
+func linksStayLocal(k string, fs linkFS, ok func(string) bool) bool {
+	vol := filepath.VolumeName(k)
+	cur, rest, links := vol+string(filepath.Separator), splitPath(k[len(vol):]), 0
+	for len(rest) > 0 {
+		e := rest[0]
+		rest = rest[1:]
+		switch e {
+		case ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
+		}
+		next := filepath.Join(cur, e)
+		fi, err := fs.lstat(next)
+		if os.IsNotExist(err) {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+		m := fi.Mode()
+		if m&os.ModeSymlink == 0 && (m&os.ModeIrregular == 0 || m.IsDir()) {
+			cur = next
+			continue
+		}
+		if links++; links > maxKeyLinks {
+			return false
+		}
+		t, err := fs.readlink(next)
+		if err != nil || t == "" {
+			return false
+		}
+		if tv := filepath.VolumeName(t); tv != "" || os.IsPathSeparator(t[0]) {
+			if !ok(t) {
+				return false
+			}
+			cur, t = tv+string(filepath.Separator), t[len(tv):]
+		}
+		te := splitPath(t)
+		if dotDotAfterName(te) {
+			return false
+		}
+		rest = append(te, rest...)
+	}
+	return true
+}
+
+// splitPath splits p at its separators and drops empty elements.
+func splitPath(p string) []string {
+	return strings.FieldsFunc(p, func(r rune) bool {
+		// A rune is not a byte: U+015C would pass as '\\' if it were cut to uint8.
+		return r < utf8.RuneSelf && os.IsPathSeparator(uint8(r))
+	})
+}
+
+// dotDotAfterName reports whether a ".." follows a name in a link target. EvalSymlinks (and so linksStayLocal) goes
+// through the name first, while Windows drops it lexically, so the two would resolve different paths.
+func dotDotAfterName(elems []string) bool {
+	named := false
+	for _, e := range elems {
+		switch {
+		case e == "..":
+			if named {
+				return true
+			}
+		case e != ".":
+			named = true
+		}
+	}
+	return false
 }
 
 // windowsDriveKey reports whether k starts with a drive letter, a colon and a separator, which is the only form
@@ -369,6 +476,10 @@ func windowsDriveKey(k, goos string) bool {
 }
 
 func isASCIILetter(b byte) bool { return 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' }
+
+// usableDir reports whether a registry key can be used as a local directory: validKey first, so that an invalid key
+// (on Windows a UNC or device path) is never looked at, then isDir (a link as its last element is not followed).
+func usableDir(k string) bool { return validKey(k) && isDir(k) }
 
 // migrate merges keys that are aliases of root (recorded by an older version under a symlinked path) into root.
 // It only changes memory; the caller saves on success. An existing entry for root wins; otherwise the entry of the
