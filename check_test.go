@@ -98,6 +98,34 @@ func TestCheckInALinkedWorktreeListsIt(t *testing.T) {
 	}
 }
 
+// A branch whose configuration lacks a variable keeps it in the main's record; only the main's own configuration drops
+// it.
+func TestCheckKeepsAMainVariableUnknownToTheBranch(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	rec := MainRecord{Ports: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6380},
+		Defaults: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6379}}
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{main: rec}})
+	// The kept value is not re-read in a linked worktree (a documented limit), so 6390 is not seen yet.
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8080\nFORWARD_REDIS_PORT=6390\n")
+	if out, err := runCheck(t); err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, _ := loadRegistry()
+	got := reg.Mains[main]
+	if got.Ports["APP_PORT"] != 8080 || got.Ports["FORWARD_REDIS_PORT"] != 6380 || got.Defaults["FORWARD_REDIS_PORT"] != 6379 {
+		t.Errorf("check in %q: record = %+v", wt, got)
+	}
+	t.Chdir(main)
+	if out, err := runCheck(t); err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, _ = loadRegistry()
+	got = reg.Mains[main]
+	if _, ok := got.Defaults["FORWARD_REDIS_PORT"]; ok || len(got.Ports) != 1 || got.Ports["APP_PORT"] != 8080 {
+		t.Errorf("check in the main worktree: record = %+v", got)
+	}
+}
+
 func TestCheckOutsideARepositoryStillReports(t *testing.T) {
 	isolatedRegistry(t)
 	a, b := realTempDir(t), realTempDir(t)
@@ -371,6 +399,15 @@ func TestCheckReportsWithoutTheLock(t *testing.T) {
 	}
 }
 
+// check prints its warnings alone when it fails (#75); without any there is no empty heading.
+func TestReportPrintWarningsWithoutWarnings(t *testing.T) {
+	var b strings.Builder
+	(&report{w: &b}).printWarnings()
+	if b.String() != "" {
+		t.Errorf("an empty list printed %q", b.String())
+	}
+}
+
 // Only a lock that another run holds is reported around; a lock that cannot be created at all (no permission, a
 // read-only file system) would keep every run from recording, so check fails instead of passing with a warning (#63).
 func TestCheckFailsWhenTheLockCannotBeCreated(t *testing.T) {
@@ -395,6 +432,10 @@ func TestCheckFailsWhenTheLockCannotBeCreated(t *testing.T) {
 	if strings.Contains(out, "registry:") || strings.Contains(out, "nothing was recorded") {
 		t.Errorf("check reported as if the lock were only busy:\n%s", out)
 	}
+	// The cwd is outside a repository, so a warning was collected before the lock failed; it is printed (#75).
+	if !strings.Contains(out, "warnings:\n  - no main worktree was recorded") {
+		t.Errorf("the collected warnings are not printed:\n%s", out)
+	}
 	if after, _ := os.ReadFile(p); string(after) != string(before) {
 		t.Error("the registry was written without the lock")
 	}
@@ -409,6 +450,17 @@ func betweenReadAndLock(t *testing.T, fn func()) {
 		return lockRegistry()
 	}
 	t.Cleanup(func() { checkLock = old })
+}
+
+// betweenUpReadAndLock is betweenReadAndLock for up: fn runs after up has read the main's .env and before it locks.
+func betweenUpReadAndLock(t *testing.T, fn func()) {
+	t.Helper()
+	old := upLock
+	upLock = func() (func(), error) {
+		fn()
+		return lockRegistry()
+	}
+	t.Cleanup(func() { upLock = old })
 }
 
 func TestCheckReadsMainEnvBeforeTheLock(t *testing.T) {
@@ -440,6 +492,69 @@ func TestCheckDoesNotRefreshARecordChangedBeforeTheLock(t *testing.T) {
 	reg, _ := loadRegistry()
 	if got := reg.Mains[m].Ports["APP_PORT"]; got != 9000 {
 		t.Errorf("APP_PORT = %d, want 9000 (the record changed meanwhile)", got)
+	}
+}
+
+// The current main follows the same rule as the others (#70): an up that records a newer .env while check waits for the
+// lock keeps its record, and check still adds the worktree it runs in.
+func TestCheckKeepsTheCurrentMainRecordChangedBeforeTheLock(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8090\n")
+	saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 81}},
+		Mains: map[string]MainRecord{main: mainRec(80)}})
+	betweenReadAndLock(t, func() {
+		writeFile(t, filepath.Join(main, ".env"), "APP_PORT=9000\n")
+		saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 81}},
+			Mains: map[string]MainRecord{main: mainRec(9000)}})
+	})
+	if out, err := runCheck(t); err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, _ := loadRegistry()
+	if rec := reg.Mains[main]; rec.Ports["APP_PORT"] != 9000 || rec.Defaults["APP_PORT"] != 80 ||
+		len(rec.Worktrees) != 1 || rec.Worktrees[0] != wt {
+		t.Errorf("record = %+v, want APP_PORT 9000 (the record changed meanwhile) and the worktree listed", rec)
+	}
+}
+
+// A record that appeared while check waited is newer as well; one that is still the base, or that is gone (pruned
+// meanwhile), takes the read, which is then all there is to know.
+func TestCheckRecordsTheCurrentMainUnlessARecordAppeared(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		before, wait *MainRecord // nil: no record
+		want         int
+	}{
+		{"unchanged", &MainRecord{Ports: map[string]int{"APP_PORT": 80}, Defaults: map[string]int{"APP_PORT": 80}}, nil, 8090},
+		{"appeared", nil, &MainRecord{Ports: map[string]int{"APP_PORT": 9000}, Defaults: map[string]int{"APP_PORT": 80}}, 9000},
+		{"gone", &MainRecord{Ports: map[string]int{"APP_PORT": 80}, Defaults: map[string]int{"APP_PORT": 80}}, &MainRecord{}, 8090},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			main, _ := setupWorktreeRepo(t)
+			t.Chdir(main)
+			writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8090\n")
+			reg := &Registry{Mains: map[string]MainRecord{}}
+			if tc.before != nil {
+				reg.Mains[main] = *tc.before
+			}
+			saveRegistry(t, reg)
+			if tc.wait != nil {
+				betweenReadAndLock(t, func() {
+					reg := &Registry{Mains: map[string]MainRecord{}}
+					if tc.wait.Ports != nil {
+						reg.Mains[main] = *tc.wait
+					}
+					saveRegistry(t, reg)
+				})
+			}
+			if out, err := runCheck(t); err != nil {
+				t.Fatalf("err = %v\n%s", err, out)
+			}
+			got, _ := loadRegistry()
+			if p := got.Mains[main].Ports["APP_PORT"]; p != tc.want {
+				t.Errorf("APP_PORT = %d, want %d", p, tc.want)
+			}
+		})
 	}
 }
 
@@ -571,5 +686,44 @@ func TestCheckEscapesADuplicatedPortName(t *testing.T) {
 	}
 	if strings.Contains(out, "\x1b") || !strings.Contains(out, dupWarning(m, cell(evil))) {
 		t.Errorf("the name is not escaped or not named:\n%q", out)
+	}
+}
+
+// check records the main worktree of the project it runs in, found as up finds it: at the repository root of a
+// project in a subdirectory it records nothing and says where to run it (#76).
+func TestCheckAtTheRootOfASubdirectoryProjectSaysWhereToRun(t *testing.T) {
+	main, _ := setupSubdirWorktreeRepo(t, false)
+	t.Chdir(main)
+	captureStderr(t)
+	out, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"  - no main worktree was recorded: no Laravel project found",
+		"\n    a project found in: \"laravel\"",
+		"\n    check records the main worktree of the project it runs in: run it in the project directory or below it",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if reg, _ := loadRegistry(); len(reg.Mains) != 0 {
+		t.Errorf("mains = %+v", reg.Mains)
+	}
+}
+
+func TestCheckInABareLayoutRecordsNoMain(t *testing.T) {
+	bare, _, _ := setupBareWorktreeRepo(t)
+	out, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "is bare, so there is no main worktree checkout") || strings.Contains(out, "recorded main worktree") {
+		t.Errorf("output:\n%s", out)
+	}
+	reg, _ := loadRegistry()
+	if _, ok := reg.Mains[bare]; ok || len(reg.Mains) != 0 {
+		t.Errorf("mains = %v", reg.Mains)
 	}
 }

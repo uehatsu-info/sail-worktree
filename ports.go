@@ -46,13 +46,14 @@ func loopbackBindBlocked(err error, goos string) bool {
 
 // allocatePorts assigns a non-conflicting port to each port variable.
 // An existing assignment (current) is reused first (without checking that it is free, since the worktree's own
-// containers may be using it). A new port is searched from default+1 upwards, skipping ports assigned to other
+// containers may be using it), unless it is not a port number (a hand-edited registry), which would otherwise be
+// written to .env again on every up. A new port is searched from default+1 upwards, skipping ports assigned to other
 // worktrees, ports assigned in this call and ports in use on the host. The default itself is left to the main worktree.
 func allocatePorts(vars []PortVar, current map[string]int, taken map[int]bool, free func(int) bool) (map[string]int, error) {
 	out := map[string]int{}
 	inThis := map[int]bool{}
 	for _, v := range vars {
-		if p, ok := current[v.Name]; ok && !taken[p] && !inThis[p] {
+		if p, ok := current[v.Name]; ok && validPort(p) && !taken[p] && !inThis[p] {
 			out[v.Name] = p
 			inThis[p] = true
 		}

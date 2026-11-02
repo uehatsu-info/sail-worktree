@@ -208,7 +208,7 @@ func TestPortsRunningProjectsAreNotProbed(t *testing.T) {
 	main := filepath.Dir(wt)
 	_ = main
 	probes, _ := portsFakes(t, map[int]bool{81: true}, nil)
-	mainTop, _ := mainWorktree(wt)
+	mainTop, _, _ := mainWorktree(wt)
 	useDocker(t, `[{"Name":"`+projectName(mainTop, wt, wt)+`","Status":"running(2)"}]`, nil)
 	rows := portsJSON(t)
 	for _, r := range rows {
@@ -250,6 +250,39 @@ func TestPortsConflicts(t *testing.T) {
 	}
 	if out, _, _ := runPorts(t); strings.Count(out, "yes") != 3 {
 		t.Errorf("table:\n%s", out)
+	}
+}
+
+func TestPortsInvalidRecordedPorts(t *testing.T) {
+	_, wt, other := portsSetup(t)
+	writeRegistry(t, map[string]map[string]int{
+		wt:    {"APP_PORT": 0, "FORWARD_DB_PORT": 70000},
+		other: {"APP_PORT": 0, "VITE_PORT": -1},
+	})
+	probes, lookups := portsFakes(t, map[int]bool{0: true, 70000: true, -1: true}, nil)
+	rows := portsJSON(t)
+	if len(rows) != 4 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	for _, r := range rows {
+		if r.Host != hostInvalid || r.Conflict || r.Process != "" || r.PID != 0 {
+			t.Errorf("row %+v", r)
+		}
+	}
+	if len(*probes) != 0 || len(*lookups) != 0 {
+		t.Errorf("probes = %v, lookups = %v", *probes, *lookups)
+	}
+	out, _, _ := runPorts(t)
+	if strings.Count(out, " invalid ") != 4 || strings.Contains(out, "yes") {
+		t.Errorf("table:\n%s", out)
+	}
+	// A running project's invalid port is still invalid, not its own.
+	mainTop, _, _ := mainWorktree(wt)
+	useDocker(t, `[{"Name":"`+projectName(mainTop, wt, wt)+`","Status":"running(2)"}]`, nil)
+	for _, r := range portsJSON(t) {
+		if r.Host != hostInvalid {
+			t.Errorf("running row %+v", r)
+		}
 	}
 }
 
@@ -402,7 +435,7 @@ func TestPortsMixedStatesOnOnePort(t *testing.T) {
 	_, wt, other := portsSetup(t)
 	writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}, other: {"APP_PORT": 81}})
 	probes, _ := portsFakes(t, map[int]bool{81: true}, map[int]owner{81: {"docker-proxy", 9}})
-	mainTop, _ := mainWorktree(wt)
+	mainTop, _, _ := mainWorktree(wt)
 	useDocker(t, `[{"Name":"`+projectName(mainTop, wt, wt)+`","Status":"running(1)"}]`, nil)
 	byWorktree := map[string]portRow{}
 	for _, r := range portsJSON(t) {
