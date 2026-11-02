@@ -213,7 +213,9 @@ These come from deliberate decisions; change them only on purpose and update the
   failure included, and adds a repository's listing once (`registryView.list`), since each run may take its timeout.
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
   case-insensitively) from the environment passed to `sail` and `docker`. It must never return `nil`: a `nil`
-  `exec.Cmd.Env` inherits the whole parent environment.
+  `exec.Cmd.Env` inherits the whole parent environment. A port variable named `COMPOSE_X_PORT` (allowed, as it is no
+  compose setting) is removed on both counts and reaches compose only through the `.env` that `up` writes, as every
+  port variable does; a `DOCKER_X_PORT` is removed as a port variable, while `DOCKER_HOST` and the like are kept.
 - **Paths are real paths.** The worktree root, the main worktree and the project directory are resolved through
   symlinks, because the project name contains a hash of the project directory. `Registry.migrate` merges keys an older
   version recorded under a symlinked path, and replaces aliases of root in the `mains` worktree lists (a changed list is
@@ -259,8 +261,9 @@ These come from deliberate decisions; change them only on purpose and update the
   - A configuration error is kept in `ctx.cfgErr` and returned by `ctx.config()` after the main-worktree refusal; no
     command reads `ctx.cfg` directly. `stop` fails on it too, as it did with a broken file. The exception: `stop` and
     `rm` take a reserved name found by detection (`reservedPortVarError`, through `ctx.teardownConfig()`): they write no
-    port variable, and detection yields only `*PORT` names, so the name cannot be `DOCKER_HOST` or `PATH`. Port
-    variables are required only for `up` and only when detected (a file with `port_vars: []` still works).
+    port variable, and detection yields only `*PORT` names, so the name cannot be `DOCKER_HOST` or `PATH`. No reserved
+    name ends in `PORT` today (a test pins it), so this exception is a guard for a future one. Port variables are
+    required only for `up` and only when detected (a file with `port_vars: []` still works).
   - `up`'s order: main refusal, configuration, detected port variables, the existing `.env` checks and port
     allocation, then `sailPath` right before the first write, so nothing is written without Sail and the order of the
     existing refusals stays the same.
@@ -339,13 +342,15 @@ These come from deliberate decisions; change them only on purpose and update the
   including on Windows forms such as `C:x`, `\\srv\x` and `/x`. That check only reads the string; `rm` also checks the
   real path with `composeInsideProject` (see "`rm` is guarded"). Each `port_vars` entry must have a `shellName` name and
   a `validPort` default (`validatePortVars`), because `up` writes `NAME=port` into `.env`; the names are not held to the
-  detection rule, so a hand-added variable may use any name compose does. A name `reservedPortVar` lists (keys `up`
-  writes, `COMPOSE_*`, `SAIL_FILES`, `DOCKER_*`, a few shell and Sail names; case-insensitive, as `cleanEnv` drops them)
-  is refused, by `detectConfig` too, so `init` never writes a file that `loadConfig` refuses (`up` and `init` fail on a
-  detected one; `stop` and `rm` do not, see the configuration error rule above). Keep the list short, and add a key
-  there when `up` starts to write it. A repeated name (also compared case-insensitively) is refused, because `up` would
-  assign two ports and `Set` keeps only the first line; `detectPortVars` yields each name once (`composePortRe` matches
-  upper-case names only), and a test pins that.
+  detection rule, so a hand-added variable may use any name compose does. A name in `reservedNames` (keys `up`
+  writes, the `COMPOSE_*` and `DOCKER_*` settings docker compose and the docker CLI document, sources in the comment,
+  `SAIL_FILES`, a few shell and Sail names; case-insensitive, as `cleanEnv` drops them) is refused, by `detectConfig`
+  too, so `init` never writes a file that `loadConfig` refuses (none ends in `PORT`, so detection finds none today; see
+  the configuration error rule above). Other `COMPOSE_*` and `DOCKER_*` names, such as `DOCKER_WEB_PORT`, are allowed
+  on purpose: v0.8.1 handled them (#74). Keep the shell and Sail part short, add a key there when `up` starts to write
+  it, and add a compose or docker setting when they start to read one. A repeated name (also compared
+  case-insensitively) is refused, because `up` would assign two ports and `Set` keeps only the first line;
+  `detectPortVars` yields each name once (`composePortRe` matches upper-case names only), and a test pins that.
 
 ## Testing notes
 
