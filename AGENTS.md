@@ -40,7 +40,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
 | `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `usableDir`, `staleWorktreeKey` |
 | `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `readMains`, `refreshMains`, `checkConflicts`, `holder`, `suggestion` |
-| `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `lockTiming` |
+| `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `claimStale`/`claimPath`, `releaser`, `lockTiming` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
 | `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `sanctumUnquote`, `statefulDisabled`, `addStatefulDomain` |
 | `sail_worktree_test.go`, `project_test.go`, `detect_test.go`, `sanctum_test.go`, `ps_test.go`, `registry_test.go`, `lock_test.go`, `status_test.go`, `portsview_test.go`, `check_test.go`, `prune_test.go`, `links_unix_test.go` | Tests |
@@ -264,15 +264,19 @@ These come from deliberate decisions; change them only on purpose and update the
   `check` cannot take it, it warns and reports on the registry read without it, writing nothing. `prune` takes it only
   after its prompt. Never hold it while sail or docker runs, and read the registry after locking. `ps`, `ports` and
   `status` never lock (the atomic save keeps them consistent). A lock whose mtime is older than `lockTiming.stale` or
-  more than 5 seconds in the future is abandoned: `claimStale` renames it to a unique name, checks that it is the file
-  that was judged (same file and same mtime, since an inode can be reused) and removes it, or gives a fresh one back
-  with `os.Link`, which fails instead of replacing a lock a third run took. `wait` is longer than `stale`. `unlock` is
-  idempotent and removes only the file it created. Only on Windows are errors other than "exists" retried (a pending
-  removal looks like access denied), always after `poll`, since only a broken stale lock is retried at once; elsewhere
-  they fail at once. The pid in the error comes through `readSmallFile` and is shown only if it is a number. An `O_EXCL`
-  file was chosen over flock/LockFileEx (no per-OS code, no dependency); its cost is the stale rule and the hand
-  recovery in the error message, and a run suspended for longer than `stale` can lose its lock to the next one. Do not
-  "improve" this into a lock held during `sail up`.
+  more than 5 seconds in the future is abandoned. A path has no compare-and-delete, so every run that removes a lock
+  holds that lock's claim, `registry.json.lock.claim-<mtime in ns>` (`claimPath`, `O_EXCL`): `claimStale` takes it,
+  checks that the path still holds the file that was judged (same file and same mtime, since an inode can be reused) and
+  removes it; `unlock` (`releaser`) is idempotent and removes only the file it created, under its claim, and leaves its
+  lock to a run that holds the claim already. A fresh lock is therefore never removed or moved (no rename, no
+  `os.Link`). A run killed while it holds a claim leaves the claim file, and that one lock is then not broken
+  automatically (the error's hand recovery still works); nothing removes such a leftover. `wait` is longer than `stale`.
+  Only on Windows are errors other than "exists" retried (a pending removal looks like access denied), always after
+  `poll`, since only a broken stale lock is retried at once; elsewhere they fail at once. The pid in the error comes
+  through `readSmallFile` and is shown only if it is a number. An `O_EXCL` file was chosen over flock/LockFileEx (no
+  per-OS code, no dependency); its cost is the stale rule and the hand recovery in the error message, and a run
+  suspended for longer than `stale` can lose its lock to the next one. Do not "improve" this into a lock held during
+  `sail up`.
 - **Ports.** A new port is searched from default+1 upwards (the default is left to the main worktree), skipping ports
   of other worktrees, ports recorded for any main worktree (`used` includes `mains`, so `up` moves a worktree off a
   main's port and says so) and ports in use. A port counts as free only if it binds on all interfaces and on `127.0.0.1`;

@@ -146,7 +146,7 @@ func TestLockErrorShowsOnlyANumberAsThePid(t *testing.T) {
 	}
 }
 
-func TestClaimStaleGivesBackAFreshLock(t *testing.T) {
+func TestClaimStaleLeavesAFreshLock(t *testing.T) {
 	setupWorktreeRepo(t)
 	fastLock(t, time.Second, time.Minute)
 	p := plantLock(t, 2*time.Hour)
@@ -163,7 +163,7 @@ func TestClaimStaleGivesBackAFreshLock(t *testing.T) {
 		t.Error("a fresh lock was reported as broken")
 	}
 	if b, err := os.ReadFile(p); err != nil || strings.TrimSpace(string(b)) != "777" {
-		t.Errorf("the fresh lock was not given back: %q, %v", b, err)
+		t.Errorf("the fresh lock was not kept: %q, %v", b, err)
 	}
 	if names := dirNames(t, filepath.Dir(p)); len(names) != 1 {
 		t.Errorf("config directory holds %v", names)
@@ -414,4 +414,128 @@ func TestLockNeverSpinsWhenTheCreateFails(t *testing.T) {
 		t.Errorf("the create was tried %d times in %v (at most %d with a %v poll)",
 			calls, lockTiming.wait, max, lockTiming.poll)
 	}
+}
+
+// TestClaimStaleNeverEmptiesTheLockPath is issue #41: a waiter that judged a lock stale must not move away the fresh
+// lock another run created after it, because a third run could then take the lock as well.
+func TestClaimStaleNeverEmptiesTheLockPath(t *testing.T) {
+	setupWorktreeRepo(t)
+	fastLock(t, time.Second, time.Minute)
+	p := plantLock(t, 2*time.Hour)
+	judged, err := lstatIdentity(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A second run breaks the stale lock and takes a fresh one before this waiter acts on its judgement.
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, p, "777\n")
+	thirdTook := false
+	old := lockStep
+	t.Cleanup(func() { lockStep = old })
+	lockStep = func() {
+		if f, err := openLockFile(p); err == nil {
+			thirdTook = true
+			f.Close()
+		}
+	}
+	if claimStale(p, judged) {
+		t.Error("a fresh lock was reported as broken")
+	}
+	if thirdTook {
+		t.Error("a third run took the lock while the second one held it")
+	}
+	if b, err := os.ReadFile(p); err != nil || strings.TrimSpace(string(b)) != "777" {
+		t.Errorf("the second run's lock is gone: %q, %v", b, err)
+	}
+}
+
+// hookLockStep runs f at the first step claimStale reaches; a claimStale that f calls does not run it again (a flag,
+// not sync.Once, which would deadlock on that call).
+func hookLockStep(t *testing.T, f func()) {
+	t.Helper()
+	old := lockStep
+	t.Cleanup(func() { lockStep = old })
+	ran := false
+	lockStep = func() {
+		if !ran {
+			ran = true
+			f()
+		}
+	}
+}
+
+func TestClaimStaleExcludesASecondWaiter(t *testing.T) {
+	setupWorktreeRepo(t)
+	fastLock(t, time.Second, time.Minute)
+	p := plantLock(t, 2*time.Hour)
+	judged, err := lstatIdentity(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another waiter judged the same lock and acts while this one holds the claim.
+	hookLockStep(t, func() {
+		if claimStale(p, judged) {
+			t.Error("a second waiter broke the lock while the first held its claim")
+		}
+		if _, err := os.Lstat(p); err != nil {
+			t.Errorf("the second waiter removed the lock: %v", err)
+		}
+	})
+	if !claimStale(p, judged) {
+		t.Error("the stale lock was not broken")
+	}
+	if names := dirNames(t, filepath.Dir(p)); len(names) != 0 {
+		t.Errorf("config directory holds %v", names)
+	}
+}
+
+func TestUnlockLeavesALockThatIsBeingBroken(t *testing.T) {
+	setupWorktreeRepo(t)
+	fastLock(t, time.Second, time.Hour)
+	unlock, err := lockRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := lockFilePath(t)
+	fi, err := os.Lstat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A waiter judged this lock stale and holds its claim.
+	claim := claimPath(p, fi)
+	writeFile(t, claim, "4242\n")
+	unlock()
+	if _, err := os.Lstat(p); err != nil {
+		t.Errorf("unlock removed a lock another run was removing: %v", err)
+	}
+	if _, err := os.Lstat(claim); err != nil {
+		t.Errorf("unlock removed another run's claim: %v", err)
+	}
+}
+
+func TestLockWithALeftoverClaimNeedsHandRecovery(t *testing.T) {
+	setupWorktreeRepo(t)
+	fastLock(t, 200*time.Millisecond, time.Minute)
+	captureStderr(t)
+	p := plantLock(t, 2*time.Hour)
+	fi, err := os.Lstat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A run was killed while it held the claim of this lock.
+	writeFile(t, claimPath(p, fi), "4243\n")
+	_, err = lockRegistry()
+	if err == nil || !strings.Contains(err.Error(), "delete it and retry") {
+		t.Fatalf("err = %v", err)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := lockRegistry()
+	if err != nil {
+		t.Fatalf("the lock was not taken after the hand recovery: %v", err)
+	}
+	unlock()
 }
