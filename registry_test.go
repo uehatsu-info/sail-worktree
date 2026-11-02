@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -201,7 +202,7 @@ func TestRegistryMainsLoadAndSave(t *testing.T) {
 		}
 		reg.used("") // must not panic on a null record
 		reg.forgetWorktree("/m", "/wt")
-		reg.recordMain("/m", "/wt", nil, nil, false)
+		reg.recordMain("/m", "/wt", nil, nil, false, false)
 		if rec := reg.Mains["/m"]; rec.Ports == nil || rec.Defaults == nil || len(rec.Worktrees) != 1 {
 			t.Errorf("%s: record = %+v", content, rec)
 		}
@@ -227,28 +228,65 @@ func TestRegistryMainsLoadAndSave(t *testing.T) {
 func TestRecordMainAndForgetWorktree(t *testing.T) {
 	reg := &Registry{Worktrees: map[string]map[string]int{}}
 	ports, defaults := map[string]int{"APP_PORT": 81}, map[string]int{"APP_PORT": 80}
-	if !reg.recordMain("/m", "/wt/b", ports, defaults, true) {
+	if !reg.recordMain("/m", "/wt/b", ports, defaults, true, false) {
 		t.Error("a new record is not reported as a change")
 	}
-	reg.recordMain("/m", "/wt/a", ports, defaults, true)
-	if reg.recordMain("/m", "/wt/a", ports, defaults, true) {
+	reg.recordMain("/m", "/wt/a", ports, defaults, true, false)
+	if reg.recordMain("/m", "/wt/a", ports, defaults, true, false) {
 		t.Error("an identical record is reported as a change")
 	}
 	if got := reg.Mains["/m"].Worktrees; len(got) != 2 || got[0] != "/wt/a" || got[1] != "/wt/b" {
 		t.Errorf("worktrees = %v", got)
 	}
 	// .env could not be read: the recorded ports stay.
-	if reg.recordMain("/m", "", nil, defaults, false) || reg.Mains["/m"].Ports["APP_PORT"] != 81 {
+	if reg.recordMain("/m", "", nil, defaults, false, false) || reg.Mains["/m"].Ports["APP_PORT"] != 81 {
 		t.Errorf("ports of an unreadable .env replaced the record: %+v", reg.Mains["/m"])
 	}
 	// A new record from an unreadable .env reserves nothing.
-	reg.recordMain("/n", "", nil, defaults, false)
+	reg.recordMain("/n", "", nil, defaults, false, false)
 	if rec := reg.Mains["/n"]; len(rec.Ports) != 0 {
 		t.Errorf("new record = %+v", rec)
 	}
 	reg.forgetWorktree("/m", "/wt/a")
 	if rec := reg.Mains["/m"]; len(rec.Worktrees) != 1 || rec.Worktrees[0] != "/wt/b" || rec.Ports["APP_PORT"] != 81 {
 		t.Errorf("after forgetWorktree: %+v", rec)
+	}
+}
+
+func TestRecordMainMergesVariablesTheRunDoesNotKnow(t *testing.T) {
+	old := func() *Registry {
+		return &Registry{Mains: map[string]MainRecord{"/m": {
+			Ports:    map[string]int{"APP_PORT": 8080, "REDIS": 6380, "ONLY_PORTS": 9000},
+			Defaults: map[string]int{"APP_PORT": 80, "REDIS": 6379, "NO_PORT": 5000},
+		}}}
+	}
+	ports, defaults := map[string]int{"APP_PORT": 8081}, map[string]int{"APP_PORT": 80}
+	reg := old()
+	if !reg.recordMain("/m", "", ports, defaults, true, false) {
+		t.Error("an updated record is not reported as a change")
+	}
+	rec := reg.Mains["/m"]
+	wantPorts := map[string]int{"APP_PORT": 8081, "REDIS": 6380}
+	wantDefaults := map[string]int{"APP_PORT": 80, "REDIS": 6379, "NO_PORT": 5000}
+	if !maps.Equal(rec.Ports, wantPorts) || !maps.Equal(rec.Defaults, wantDefaults) {
+		t.Errorf("merged record = %+v", rec)
+	}
+	if len(ports) != 1 || len(defaults) != 1 {
+		t.Errorf("the caller's maps were changed: %v %v", ports, defaults)
+	}
+	if reg.recordMain("/m", "", ports, defaults, true, false) {
+		t.Error("an identical merge is reported as a change")
+	}
+	// The main worktree's own configuration decides: unknown variables are dropped.
+	reg = old()
+	reg.recordMain("/m", "", ports, defaults, true, true)
+	if rec := reg.Mains["/m"]; !maps.Equal(rec.Ports, ports) || !maps.Equal(rec.Defaults, defaults) {
+		t.Errorf("replaced record = %+v", rec)
+	}
+	// An unreadable .env keeps the record, even in the main worktree.
+	reg = old()
+	if reg.recordMain("/m", "", nil, defaults, false, true) || len(reg.Mains["/m"].Ports) != 3 {
+		t.Errorf("record of an unreadable .env = %+v", reg.Mains["/m"])
 	}
 }
 

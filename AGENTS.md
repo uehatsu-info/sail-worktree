@@ -195,7 +195,15 @@ These come from deliberate decisions; change them only on purpose and update the
   (`loadConfig` already refuses one in the configuration; the check stays for the registry). A main directory that does
   not exist is never recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file
   is not read for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record
-  reserves nothing. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias
+  reserves nothing. The variables are those of the run's configuration (`cfg.PortVars`), which may be a branch's, so
+  `recordMain` merges: a variable of the old record's `defaults` that the run does not know keeps its recorded default
+  and port. Only a `check` run in the main worktree itself (`checkTarget.inMain`) replaces the record, so a variable
+  that left the project is dropped only there (or by hand); until then it keeps its port reserved, and a variable that
+  only a branch has is dropped there and comes back with that branch's next `up` or `check`. A kept value is not re-read
+  under the lock: `up` and a `check` in a linked worktree of the same repository (which records its main instead of
+  refreshing it) leave it as recorded however often they run; a `check` in the main worktree or outside that repository
+  (`refreshMains`) re-reads it. An unreadable `.env` keeps the whole record, `inMain` included.
+  `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias
   paths in a record's `worktrees` list are folded like the top-level `worktrees` keys: by `migrate` (saved by `up` and
   `rm`), and by `check` in memory only (`foldKey`, the key `ofMain` looks a worktree up by); an entry that fails
   `validKey` is never resolved.

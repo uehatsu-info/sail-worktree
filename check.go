@@ -38,6 +38,7 @@ type checkTarget struct {
 	main, worktree    string
 	ports, defaults   map[string]int
 	envOK, recordable bool
+	inMain            bool // check runs in the main worktree, whose configuration decides the record's variables
 }
 
 // currentMain finds the main worktree to record. Outside a repository or a project there is none, which is only a
@@ -62,6 +63,7 @@ func currentMain(r *report) checkTarget {
 		r.warn("%s", mainEnvUnreadable(c.main))
 	}
 	cur := checkTarget{main: c.main, ports: ports, defaults: defaults, envOK: envOK, recordable: true}
+	cur.inMain = c.isMain()
 	if !c.isMain() {
 		cur.worktree = c.root
 	}
@@ -107,7 +109,7 @@ func checkRecord(r *report) (*Registry, error) {
 		if _, ok := reg.Worktrees[cur.worktree]; ok && cur.worktree != "" {
 			wt = cur.worktree
 		}
-		changed = reg.recordMain(cur.main, wt, cur.ports, cur.defaults, cur.envOK)
+		changed = reg.recordMain(cur.main, wt, cur.ports, cur.defaults, cur.envOK, cur.inMain)
 		delete(fresh, cur.main) // recordMain used a newer read of the same .env
 	}
 	if refreshMains(reg, fresh) {

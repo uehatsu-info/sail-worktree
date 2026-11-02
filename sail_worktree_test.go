@@ -1343,6 +1343,31 @@ func TestUpReplacesAnInvalidRecordedPort(t *testing.T) {
 	}
 }
 
+// A branch whose configuration lacks a variable must not free the main worktree's port for it.
+func TestUpKeepsAMainVariableUnknownToTheBranch(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8080\n")
+	rec := MainRecord{Ports: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6380},
+		Defaults: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6379}}
+	if err := (&Registry{Worktrees: map[string]map[string]int{}, Mains: map[string]MainRecord{main: rec}}).save(); err != nil {
+		t.Fatal(err)
+	}
+	captureRunner(t)
+	captureStdout(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := loadRegistry()
+	got := reg.Mains[main]
+	if got.Ports["APP_PORT"] != 8080 || got.Ports["FORWARD_REDIS_PORT"] != 6380 || got.Defaults["FORWARD_REDIS_PORT"] != 6379 {
+		t.Errorf("main record = %+v", got)
+	}
+	if !reg.used("")[6380] {
+		t.Error("the kept port is not avoided")
+	}
+}
+
 func TestUpRecordsMainPortsAndKeepsThemFree(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	writeFakeSail(t, wt)

@@ -229,7 +229,7 @@ func cmdUp(args []string) error {
 	reg.migrate(c.root) // before allocatePorts, adopt the keys an older version recorded under an alias path (saved when up succeeds)
 	// Keep the main worktree's ports free as well: it uses them without a port record of its own.
 	if ports, defaults, envOK, found := mainPorts(c.main, cfg.PortVars); found {
-		reg.recordMain(c.main, c.root, ports, defaults, envOK)
+		reg.recordMain(c.main, c.root, ports, defaults, envOK, false)
 		if !envOK {
 			warnMainEnv(c.main)
 		}
