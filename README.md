@@ -266,6 +266,7 @@ Your checks and the copy are not one step, so a process writing in the worktree 
 - `ps` and `ports` also list main worktree records (their rows come first in `ps`), and `ports` counts them in `CONFLICT`; `status` reports a port that a main worktree record also holds. Their `--json` objects gain a `kind` field (`worktree` or `main`); the other fields keep their names and meanings, so a script that expects only worktrees should skip `"kind": "main"`.
 - On Windows, a registry entry whose path is not a drive-letter path (a UNC or device path) is no longer looked at, so `ps` and `ports` treat it as invalid, and with `--all` they no longer run git in other repositories, whose entries now show as `unattributed`; see the [Notes](#notes).
 - A worktree whose names have no ASCII letter or digit gets the project name `wt-<hash>` instead of `-<hash>`, which compose refused. Such a worktree could not start, so nothing is lost; run `up` once before `rm` or `stop` so that `.env` gets the new name. Other names are unchanged.
+- `init` refuses arguments: `init --help` (or `-h`) prints the usage, and any other argument is an error. Before, `init` ignored them and rewrote `.sail-worktree.json`.
 
 ### v0.8.0
 

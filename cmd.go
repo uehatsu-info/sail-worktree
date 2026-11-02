@@ -24,7 +24,15 @@ import (
 
 func cwd() (string, error) { return os.Getwd() }
 
-func cmdInit() error {
+func cmdInit(args []string) error {
+	// init replaces .sail-worktree.json, so a request for help or a mistyped option must not run it.
+	if len(args) > 0 {
+		if args[0] == "-h" || args[0] == "--help" {
+			fmt.Fprint(stdout, usage)
+			return nil
+		}
+		return fmt.Errorf("unknown argument: %s", args[0])
+	}
 	dir, err := cwd()
 	if err != nil {
 		return err

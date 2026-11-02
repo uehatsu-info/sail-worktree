@@ -494,7 +494,7 @@ func readConfigAt(t *testing.T, dir string) Config {
 
 func TestInitInSubdirectory(t *testing.T) {
 	top := initRepo(t, map[string]string{"laravel/compose.yaml": sampleCompose, "laravel/artisan": "x\n"}, "laravel/app/Http")
-	if err := cmdInit(); err != nil {
+	if err := cmdInit(nil); err != nil {
 		t.Fatal(err)
 	}
 	c := readConfigAt(t, filepath.Join(top, "laravel"))
@@ -508,7 +508,7 @@ func TestInitInSubdirectory(t *testing.T) {
 
 func TestInitAtRootNamesSubdirectory(t *testing.T) {
 	top := initRepo(t, map[string]string{"laravel/compose.yaml": sampleCompose, "laravel/artisan": "x\n"}, ".")
-	err := cmdInit()
+	err := cmdInit(nil)
 	if err == nil {
 		t.Fatal("init succeeded without a compose file at the root")
 	}
@@ -524,7 +524,7 @@ func TestInitAtRootNamesSubdirectory(t *testing.T) {
 
 func TestInitRootProjectFromSubdirectory(t *testing.T) {
 	top := initRepo(t, map[string]string{"compose.yaml": sampleCompose, "artisan": "x\n", "docs/x.md": "x\n"}, "docs")
-	if err := cmdInit(); err != nil {
+	if err := cmdInit(nil); err != nil {
 		t.Fatal(err)
 	}
 	if c := readConfigAt(t, top); c.Compose != "compose.yaml" {
@@ -534,7 +534,7 @@ func TestInitRootProjectFromSubdirectory(t *testing.T) {
 
 func TestInitSkipsComposeUnderVendor(t *testing.T) {
 	top := initRepo(t, map[string]string{"compose.yaml": sampleCompose, "artisan": "x\n", "vendor/acme/pkg/docker-compose.yml": sampleCompose, "vendor/acme/pkg/artisan": "x\n"}, "vendor/acme/pkg")
-	if err := cmdInit(); err != nil {
+	if err := cmdInit(nil); err != nil {
 		t.Fatal(err)
 	}
 	readConfigAt(t, top)
@@ -545,8 +545,47 @@ func TestInitSkipsComposeUnderVendor(t *testing.T) {
 
 func TestInitFirstExistingComposeNameDecides(t *testing.T) {
 	initRepo(t, map[string]string{"compose.yml": sampleCompose, "compose.yaml/x": "x\n", "artisan": "x\n"}, ".")
-	if err := cmdInit(); err == nil || !strings.Contains(err.Error(), "is not a regular file") {
+	if err := cmdInit(nil); err == nil || !strings.Contains(err.Error(), "is not a regular file") {
 		t.Errorf("a directory named compose.yaml is not refused: %v", err)
+	}
+}
+
+// init replaces .sail-worktree.json, so --help and a mistyped option must leave it alone (#39).
+func TestInitArgumentsWriteNothing(t *testing.T) {
+	const hand = "{\"compose\": \"compose.yaml\", \"port_vars\": []}\n"
+	for _, tc := range []struct {
+		args    []string
+		wantErr string
+	}{
+		{[]string{"--help"}, ""},
+		{[]string{"-h"}, ""},
+		{[]string{"--help", "--bogus"}, ""},
+		{[]string{"--bogus"}, "unknown argument: --bogus"},
+		{[]string{"compose.yaml"}, "unknown argument: compose.yaml"},
+	} {
+		for _, existing := range []bool{true, false} {
+			files := map[string]string{"compose.yaml": sampleCompose, "artisan": "x\n"}
+			if existing {
+				files[configName] = hand
+			}
+			top := initRepo(t, files, ".")
+			out := captureStdout(t)
+			err := cmdInit(tc.args)
+			if tc.wantErr == "" {
+				if err != nil || !strings.Contains(out.String(), "Usage:") || !strings.Contains(out.String(), "sail-worktree init") {
+					t.Errorf("%q: err = %v, output = %q; want the usage", tc.args, err, out.String())
+				}
+			} else if err == nil || err.Error() != tc.wantErr {
+				t.Errorf("%q: err = %v, want %q", tc.args, err, tc.wantErr)
+			}
+			b, err := os.ReadFile(filepath.Join(top, configName))
+			switch {
+			case existing && (err != nil || string(b) != hand):
+				t.Errorf("%q: %s was changed: %q, %v", tc.args, configName, b, err)
+			case !existing && !os.IsNotExist(err):
+				t.Errorf("%q: %s was written: %v", tc.args, configName, err)
+			}
+		}
 	}
 }
 
@@ -555,7 +594,7 @@ func TestInitRefusesLinkedConfig(t *testing.T) {
 	target := filepath.Join(realTempDir(t), "target")
 	writeFile(t, target, "keep\n")
 	symlinkOrSkip(t, target, filepath.Join(top, configName))
-	err := cmdInit()
+	err := cmdInit(nil)
 	if err == nil || !strings.Contains(err.Error(), "replace it with a real file") {
 		t.Errorf("a linked %s is not refused: %v", configName, err)
 	}
@@ -576,7 +615,7 @@ func TestUpRootProjectWithoutSourceEnv(t *testing.T) {
 
 func TestInitWithoutAnyComposeFile(t *testing.T) {
 	initRepo(t, map[string]string{"README.md": "x\n"}, ".")
-	err := cmdInit()
+	err := cmdInit(nil)
 	if err == nil || !strings.Contains(err.Error(), "no Laravel project found") || strings.Contains(err.Error(), "found in:") {
 		t.Errorf("error = %v", err)
 	}
@@ -584,7 +623,7 @@ func TestInitWithoutAnyComposeFile(t *testing.T) {
 
 func TestInitWithoutPortVariables(t *testing.T) {
 	top := initRepo(t, map[string]string{"laravel/compose.yaml": "services: {}\n", "laravel/artisan": "x\n"}, "laravel")
-	err := cmdInit()
+	err := cmdInit(nil)
 	if want := fmt.Sprintf("no port variable found in %q (a host port mapping such as '${APP_PORT:-80}:80'); add one to the compose file, or write .sail-worktree.json by hand (see README)", filepath.Join(top, "laravel", "compose.yaml")); err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %s", err, want)
 	}
