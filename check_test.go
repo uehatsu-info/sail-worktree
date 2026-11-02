@@ -438,3 +438,22 @@ func TestCheckFindsTheMainOfAWorktreeListedUnderAnAlias(t *testing.T) {
 		t.Errorf("the record was changed: %q", got)
 	}
 }
+
+func TestCheckSuggestionSkipsPortsOfAliasKeys(t *testing.T) {
+	isolatedRegistry(t)
+	real, links := newLinkedDir(t, "alias")
+	a, b := realTempDir(t), realTempDir(t)
+	// The folded view keeps only the real key's 81, but up still treats the alias key's 82 as taken.
+	saveRegistry(t, &Registry{
+		Worktrees: map[string]map[string]int{real: {"APP_PORT": 81}, links[0]: {"APP_PORT": 82}},
+		Mains:     map[string]MainRecord{a: mainRec(80), b: mainRec(80)},
+	})
+	out, err := runCheck(t)
+	if err == nil {
+		t.Fatalf("no error\n%s", out)
+	}
+	// Holders are sorted by directory and the first one keeps the port, so the fix goes to the larger one.
+	if want := fmt.Sprintf("set APP_PORT=83 in the .env of %q", max(a, b)); !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
+	}
+}

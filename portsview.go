@@ -14,17 +14,21 @@ import (
 
 // portRow is one registry port as `ports` shows it. The JSON field names are a public contract.
 type portRow struct {
-	Kind     string `json:"kind"` // the kind of the entry, as in ps
+	Kind     string `json:"kind"` // the kind of the entry, as in ps, or kindNone
 	Port     int    `json:"port"`
 	Variable string `json:"variable"`
 	Worktree string `json:"worktree"`
 	Subdir   string `json:"subdir"`
-	State    string `json:"state"`    // the state of the entry, as in ps
+	State    string `json:"state"`    // the state of the entry, as in ps (stateNone for kindNone)
 	Host     string `json:"host"`     // one of the host* constants
 	Process  string `json:"process"`  // what listens on an unavailable port, when known
 	PID      int    `json:"pid"`      // 0 when unknown
 	Conflict bool   `json:"conflict"` // the port is recorded more than once
 }
+
+// kindNone joins ps's kindWorktree and kindMain for the one row of `ports PORT` when nothing records the port, so
+// that a script switching on kind never sees an empty value.
+const kindNone = "none"
 
 // What the host says about a port.
 const (
@@ -191,7 +195,7 @@ func cmdPorts(args []string) error {
 			}
 		}
 		if kept == nil { // nobody records it; the host is still worth a look
-			kept = []portRow{{Port: filter}}
+			kept = []portRow{{Kind: kindNone, Port: filter, State: stateNone}}
 		}
 		rows = kept
 	}
