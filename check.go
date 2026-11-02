@@ -18,7 +18,7 @@ var shellName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // is known too, updates every recorded main worktree from its .env, and reports ports that more than one main
 // worktree or worktree in the registry uses. It writes only the registry (under the lock, atomically) and never .env:
 // a conflict is fixed by the user, check only suggests how. Like status it exits with an error after the report when
-// it finds a conflict; warnings do not change it.
+// it finds a conflict; warnings (a lock that cannot be taken included) do not change it.
 func cmdCheck(args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("unknown argument: %s", args[0])
@@ -69,12 +69,16 @@ func currentMain(r *report) checkTarget {
 
 // checkRecord records the current main worktree and refreshes the others, then returns the registry as saved. up
 // reads only the records, so a port changed in a main's .env is avoided only once a record holds it; without the
-// refresh, check could tell a worktree to run up and up would keep the port.
+// refresh, check could tell a worktree to run up and up would keep the port. When the lock cannot be taken (another
+// run holds it too long) the report is still worth having, so nothing is recorded and the registry is read without
+// the lock, which is safe because it is replaced atomically; a broken registry stays an error.
 func checkRecord(r *report) (*Registry, error) {
 	cur := currentMain(r) // reads the main's .env before locking
 	unlock, err := lockRegistry()
 	if err != nil {
-		return nil, err
+		r.warn("nothing was recorded or refreshed, so this report may be based on records that refreshing would have "+
+			"changed: %v", err)
+		return loadRegistry()
 	}
 	defer unlock()
 	reg, err := loadRegistry()

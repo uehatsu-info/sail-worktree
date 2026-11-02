@@ -326,3 +326,45 @@ func TestCheckDropsInvalidRecordedDefaults(t *testing.T) {
 		t.Errorf("defaults after check = %v", rec.Defaults)
 	}
 }
+
+func TestCheckReportsWithoutTheLock(t *testing.T) {
+	isolatedRegistry(t)
+	fastLock(t, 50*time.Millisecond, time.Hour)
+	captureStderr(t)
+	a, b := realTempDir(t), realTempDir(t)
+	// Refreshing would move b to 8090; without the lock the record (80) is reported as it is.
+	writeFile(t, filepath.Join(b, ".env"), "APP_PORT=8090\n")
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{a: mainRec(80), b: mainRec(80)}})
+	p := mustRegistryPath(t)
+	before, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := plantLock(t, 0)
+	out, err := runCheck(t)
+	if err == nil || !strings.Contains(err.Error(), "found 1 problem") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"registry: 2 main worktree record(s)",
+		"port 80:",
+		"report may be based on records that refreshing would have changed",
+		"the registry is locked by another sail-worktree run",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if after, _ := os.ReadFile(p); string(after) != string(before) {
+		t.Error("the registry was written without the lock")
+	}
+	if _, err := os.Lstat(lock); err != nil {
+		t.Errorf("the other run's lock is gone: %v", err)
+	}
+
+	// A broken registry is still an error.
+	writeFile(t, p, "{")
+	if out, err := runCheck(t); err == nil {
+		t.Errorf("a broken registry is accepted without the lock\n%s", out)
+	}
+}
