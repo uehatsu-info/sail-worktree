@@ -15,18 +15,16 @@ import (
 var shellName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // cmdCheck records the main worktree of the current repository, so that a repository used only in its main worktree
-// is known too, and reports ports that more than one main worktree or worktree in the registry uses. It writes only
-// the registry (under the lock, atomically) and never .env: a conflict is fixed by the user, check only suggests how.
-// Like status it exits with an error after the report when it finds a conflict; warnings do not change it.
+// is known too, updates every recorded main worktree from its .env, and reports ports that more than one main
+// worktree or worktree in the registry uses. It writes only the registry (under the lock, atomically) and never .env:
+// a conflict is fixed by the user, check only suggests how. Like status it exits with an error after the report when
+// it finds a conflict; warnings do not change it.
 func cmdCheck(args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("unknown argument: %s", args[0])
 	}
 	r := &report{w: stdout}
-	if err := checkRecord(r); err != nil {
-		return err
-	}
-	reg, err := loadRegistry()
+	reg, err := checkRecord(r)
 	if err != nil {
 		return err
 	}
@@ -34,49 +32,97 @@ func cmdCheck(args []string) error {
 	return r.finish()
 }
 
-// checkRecord records the current repository's main worktree. Outside a repository or a project there is nothing to
-// record, which is only a warning: the rest of the registry can still be checked.
-func checkRecord(r *report) error {
+// current is the main worktree that check records: the one of the repository it runs in, if any.
+type current struct {
+	main, worktree    string
+	ports, defaults   map[string]int
+	envOK, recordable bool
+}
+
+// currentMain finds the main worktree to record. Outside a repository or a project there is none, which is only a
+// warning: the rest of the registry can still be checked.
+func currentMain(r *report) current {
 	c, err := loadCtx()
 	if err != nil {
 		r.warn("no main worktree was recorded: %v", err)
-		return nil
+		return current{}
 	}
 	cfg, err := c.config()
 	if err != nil {
 		r.warn("no main worktree was recorded: %v", err)
-		return nil
+		return current{}
 	}
 	ports, defaults, envOK, found := mainPorts(c.main, cfg.PortVars)
 	if !found {
 		r.warn("no main worktree was recorded: the main worktree has no project directory at %q", c.main)
-		return nil
+		return current{}
 	}
 	if !envOK {
 		r.warn("%s", mainEnvUnreadable(c.main))
 	}
-	// The main's .env was read above, outside the lock; the registry is read only after locking.
+	cur := current{main: c.main, ports: ports, defaults: defaults, envOK: envOK, recordable: true}
+	if !c.isMain() {
+		cur.worktree = c.root
+	}
+	return cur
+}
+
+// checkRecord records the current main worktree and refreshes the others, then returns the registry as saved. up
+// reads only the records, so a port changed in a main's .env is avoided only once a record holds it; without the
+// refresh, check could tell a worktree to run up and up would keep the port.
+func checkRecord(r *report) (*Registry, error) {
+	cur := currentMain(r) // reads the main's .env before locking
 	unlock, err := lockRegistry()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer unlock()
 	reg, err := loadRegistry()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	wt := ""
-	if _, ok := reg.Worktrees[c.root]; ok && !c.isMain() {
-		wt = c.root
+	changed := false
+	if cur.recordable {
+		wt := ""
+		if _, ok := reg.Worktrees[cur.worktree]; ok && cur.worktree != "" {
+			wt = cur.worktree
+		}
+		changed = reg.recordMain(cur.main, wt, cur.ports, cur.defaults, cur.envOK)
 	}
-	if reg.recordMain(c.main, wt, ports, defaults, envOK) {
+	if refreshMains(reg) {
+		changed = true
+	}
+	if changed {
 		if err := reg.save(); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	unlock()
-	r.line("recorded main worktree: %q", c.main)
-	return nil
+	if cur.recordable {
+		r.line("recorded main worktree: %q", cur.main)
+	}
+	return reg, nil
+}
+
+// refreshMains re-reads the ports of every recorded main worktree with the rule of mainPorts and the recorded
+// defaults. A key is used as a directory only after validKey, and a .env that cannot be read keeps its record.
+func refreshMains(reg *Registry) bool {
+	changed := false
+	for k, rec := range reg.Mains {
+		if !validKey(k) || !isDir(k) {
+			continue
+		}
+		env, ok := readMainEnv(k)
+		if !ok {
+			continue
+		}
+		if ports := portsFromEnv(env, rec.Defaults); !maps.Equal(ports, rec.Ports) {
+			rec.Ports = ports
+			reg.Mains[k] = rec
+			changed = true
+		}
+	}
+	return changed
 }
 
 // holder is one port of one main worktree or worktree.
@@ -116,8 +162,7 @@ func checkConflicts(r *report, reg *Registry) {
 			r.warn("the record of main worktree %q keeps ports free, but it is not an existing directory: %s", k, cell(portsCell(rec.Ports)))
 			continue
 		}
-		for name, p := range mainPortsNow(k, rec) {
-			reserved[p] = true
+		for name, p := range rec.Ports {
 			holders = append(holders, holder{main: true, dir: k, name: name, port: p})
 		}
 	}
@@ -163,7 +208,7 @@ func checkConflicts(r *report, reg *Registry) {
 		byPort[h.port] = append(byPort[h.port], h)
 	}
 	sort.Ints(ports)
-	r.line("registry: %d main worktree(s), %d worktree(s)", len(reg.Mains), len(view))
+	r.line("registry: %d main worktree record(s), %d worktree record(s)", len(reg.Mains), len(view))
 	conflicts := 0
 	for _, p := range ports {
 		hs := byPort[p]
@@ -188,15 +233,6 @@ func checkConflicts(r *report, reg *Registry) {
 	if conflicts == 0 {
 		r.line("no port is used more than once")
 	}
-}
-
-// mainPortsNow re-reads the ports of a recorded main worktree with the rule of mainPorts, so a change made since it
-// was recorded is seen. When its .env cannot be read, the record is used.
-func mainPortsNow(dir string, rec MainRecord) map[string]int {
-	if env, ok := readMainEnv(dir); ok {
-		return portsFromEnv(env, rec.Defaults)
-	}
-	return rec.Ports
 }
 
 // isDir reports whether p is a directory itself, not a link to one: a registry key is untrusted.

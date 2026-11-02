@@ -38,7 +38,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`, `foldRegistry` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
-| `check.go` | `check`: `checkRecord` (records the main worktree), `checkConflicts`, `holder`, `mainPortsNow`, `suggestion` |
+| `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `refreshMains`, `checkConflicts`, `holder`, `suggestion` |
 | `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `lockTiming` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
 | `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `sanctumUnquote`, `statefulDisabled`, `addStatefulDomain` |
@@ -118,13 +118,15 @@ These come from deliberate decisions; change them only on purpose and update the
   an invalid port value, because a port variable name may be any key; `APP_URL` without credentials, query and
   fragment), never reads a symlinked `.env`, and exits 1 after the report when it found a problem (warnings do not).
 - **`check` writes only the registry.** It records the current repository's main worktree (`checkRecord`) and then
-  reports conflicts over the whole registry; it never writes `.env` or `.sail-worktree.json`, never sources `.env`,
+  reports conflicts over the whole registry. Under the same lock `refreshMains` updates every recorded main from its
+  `.env`, because `up` avoids only recorded ports: without it, a suggested `up` could keep a port a main now uses.
+  It never writes `.env` or `.sail-worktree.json`, never sources `.env`,
   and runs neither sail nor docker (git only through `loadCtx` in the cwd). `mainPorts` reads the main's `.env` before
   the lock; the registry is read after `lockRegistry` and saved only when `recordMain` reports a change. A `loadCtx`
   or configuration error is a warning, so `check` works outside a repository. In the report, a `mains` key is used as a
-  directory only after `validKey`, its `.env` only through `readEnvIfRegular` (`mainPortsNow`), and only valid port
-  numbers are printed. Records of missing directories or invalid keys are warnings, never conflicts, so a deleted
-  clone cannot make `check` fail for ever. A conflict is fixed by the user: a worktree by `up`, a main worktree by
+  directory only after `validKey` and `isDir` (`Lstat`, a link is not followed), its `.env` only through
+  `readMainEnv`, and only valid port numbers are printed. Records of missing directories or invalid keys are
+  warnings, never conflicts, so a deleted clone cannot make `check` fail for ever. A conflict is fixed by the user: a worktree by `up`, a main worktree by
   hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`). Exit 1 only for a
   conflict (`report.finish`, shared with `status`).
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory

@@ -232,3 +232,44 @@ func TestCheckRejectsArguments(t *testing.T) {
 		t.Error("an unknown argument is accepted")
 	}
 }
+
+func TestCheckRefreshesOtherMainsSoUpAvoidsTheirNewPorts(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	// Another repository's main changed its .env to 8081 after it was recorded (as 80); this worktree holds 8081.
+	other := realTempDir(t)
+	writeFile(t, filepath.Join(other, ".env"), "APP_PORT=8081\n")
+	saveRegistry(t, &Registry{
+		Worktrees: map[string]map[string]int{wt: {"APP_PORT": 8081}},
+		Mains:     map[string]MainRecord{other: mainRec(80)},
+	})
+	out, err := runCheck(t)
+	if err == nil || !strings.Contains(out, fmt.Sprintf("fix: run `sail-worktree up` in %q", wt)) {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	// The suggestion works: up now sees 8081 as used.
+	reg, _ := loadRegistry()
+	if got := reg.Mains[other].Ports["APP_PORT"]; got != 8081 || !reg.used(wt)[8081] {
+		t.Errorf("the other main's record was not refreshed: %+v", reg.Mains[other])
+	}
+}
+
+func TestCheckReportsTwoVariablesOfOneMain(t *testing.T) {
+	isolatedRegistry(t)
+	a := realTempDir(t)
+	// No .env: both variables fall back to the same default.
+	both := map[string]int{"APP_PORT": 8080, "VITE_PORT": 8080}
+	rec := MainRecord{Ports: both, Defaults: both}
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{a: rec}})
+	out, err := runCheck(t)
+	if err == nil {
+		t.Fatalf("no conflict\n%s", out)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("keeps it: main worktree %q APP_PORT", a),
+		fmt.Sprintf("fix: set VITE_PORT=8081 in the .env of %q", a),
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}

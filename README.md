@@ -150,7 +150,7 @@ Records the main worktree of the repository you are in, then reports ports that 
 
 ```
 recorded main worktree: "/work/shop"
-registry: 2 main worktree(s), 1 worktree(s)
+registry: 2 main worktree record(s), 1 worktree record(s)
 conflicts:
   port 80: main worktree "/work/blog" APP_PORT, main worktree "/work/shop" APP_PORT
     keeps it: main worktree "/work/blog" APP_PORT
@@ -163,7 +163,8 @@ error: found 1 problem(s)
 - It writes only the registry: under the same lock as `up`, replaced atomically, and only when the record changed. It never writes `.env` or `.sail-worktree.json`, never sources `.env`, and runs neither docker nor sail.
 - What is recorded for a main worktree: for each port variable, the value in its `.env`, or the compose default when `.env` does not set it (or there is no `.env`); an invalid value reserves nothing. A `.env` that is a link or not a regular file is not read, and the previous record is kept (a warning says so). The main worktree must have the project directory at the same relative path. `up` records the same, when it runs in a linked worktree.
 - The first holder keeps the port: main worktrees before worktrees, each in path order. For a worktree, the fix is to run `sail-worktree up` in it (it assigns another port). For a main worktree, `check` proposes a port that no record uses and that this host can bind (bound for an instant and closed again); set it in that `.env` yourself and restart its containers. A variable name that is not a plain shell name is only quoted.
-- On every run the main worktrees' `.env` files are read again (links are not followed), so a change made since they were recorded is seen; a port variable added to the configuration is seen after the next `up` or `check` in that repository.
+- On every run `check` also updates every recorded main worktree from its `.env` (links are not followed), so a port changed there since is seen, and `up` avoids it from then on. A port variable added to the configuration is seen after the next `up` or `check` in that repository.
+- Two repositories whose main worktrees both use the compose defaults (`APP_PORT` 80, `FORWARD_DB_PORT` 3306 and so on) conflict: they cannot run at the same time. Give one of them other ports if you run them together; if you never do, the report is expected.
 - A record whose directory no longer exists (or whose key is not an absolute path) is listed under `warnings:` and is not a conflict; `up` still keeps its ports free. There is no command to drop such a record yet; edit the registry.
 - The exit status is 1 when there is a conflict (`error: found N problem(s)`); warnings do not change it.
 
