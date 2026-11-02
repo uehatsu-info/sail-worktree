@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -125,6 +126,23 @@ func (e *envFile) lastRaw(key string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// duplicateKeys returns, sorted, the names that keyOf finds on more than one line, as lastRaw and portValue see keys.
+func (e *envFile) duplicateKeys(names []string) []string {
+	count := map[string]int{}
+	for _, l := range e.lines {
+		if k, ok := keyOf(l); ok {
+			count[k]++
+		}
+	}
+	var out []string
+	for _, n := range slices.Sorted(slices.Values(names)) {
+		if count[n] > 1 {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func (e *envFile) Get(key string) (string, bool) {
