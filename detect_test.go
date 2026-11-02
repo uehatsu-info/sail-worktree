@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -393,7 +394,8 @@ func TestLoadConfigValidatesPortVars(t *testing.T) {
 		{`{"name":"PATH","default":80}`, `port_vars[0] ("PATH"): name in .sail-worktree.json is reserved: the shell`},
 		{`{"name":"home","default":80}`, `port_vars[0] ("home"): name in .sail-worktree.json is reserved: the shell`},
 		{`{"name":"COMPOSE_FILE","default":80}`, `port_vars[0] ("COMPOSE_FILE"): name in .sail-worktree.json is reserved: it would override`},
-		{`{"name":"compose_x_port","default":80}`, `port_vars[0] ("compose_x_port"): name in .sail-worktree.json is reserved: it would override`},
+		{`{"name":"Compose_Ansi","default":80}`, `port_vars[0] ("Compose_Ansi"): name in .sail-worktree.json is reserved: compose reads it`},
+		{`{"name":"docker_context","default":80}`, `port_vars[0] ("docker_context"): name in .sail-worktree.json is reserved: docker`},
 		{`{"name":"SAIL_FILES","default":80}`, `port_vars[0] ("SAIL_FILES"): name in .sail-worktree.json is reserved: it would override`},
 		{`{"name":"DOCKER_HOST","default":80}`, `port_vars[0] ("DOCKER_HOST"): name in .sail-worktree.json is reserved: docker`},
 		{`{"name":"WWWUSER","default":80}`, `port_vars[0] ("WWWUSER"): name in .sail-worktree.json is reserved: Sail's`},
@@ -411,8 +413,8 @@ func TestLoadConfigValidatesPortVars(t *testing.T) {
 		}
 	}
 	// A hand-added variable need not follow the detection rule; the bounds themselves are ports.
-	writeFile(t, cfg, `{"compose":"compose.yaml","port_vars":[{"name":"vite_port","default":1},{"name":"_X","default":65535},{"name":"PATH_PORT","default":2},{"name":"APP_URL_PORT","default":3},{"name":"APP_PORT","default":80},{"name":"APP_PORT_2","default":80}]}`)
-	if c, err := loadConfig(dir); err != nil || len(c.PortVars) != 6 {
+	writeFile(t, cfg, `{"compose":"compose.yaml","port_vars":[{"name":"vite_port","default":1},{"name":"_X","default":65535},{"name":"PATH_PORT","default":2},{"name":"APP_URL_PORT","default":3},{"name":"APP_PORT","default":80},{"name":"APP_PORT_2","default":80},{"name":"compose_x_port","default":80},{"name":"DOCKER_WEB_PORT","default":8080},{"name":"docker_web_port_2","default":8081},{"name":"Compose_Web_Port","default":8082}]}`)
+	if c, err := loadConfig(dir); err != nil || len(c.PortVars) != 10 {
 		t.Errorf("valid port_vars: %+v, %v", c, err)
 	}
 }
@@ -434,61 +436,62 @@ func captureStdoutFile(t *testing.T) func() string {
 	}
 }
 
-func TestDetectionRefusesAReservedPortVariable(t *testing.T) {
+// Only the settings compose and docker read are reserved, so DOCKER_* and COMPOSE_* port variables that v0.8.1
+// handled are detected, written by init and up, and kept out of sail's environment like any port variable (#74).
+func TestDetectionAcceptsDockerAndComposePortNames(t *testing.T) {
 	_, wt := setupDetectedRepo(t, "")
-	writeFile(t, filepath.Join(wt, "compose.yaml"), "services:\n  app:\n    ports:\n      - '${APP_PORT:-80}:80'\n      - '${DOCKER_X_PORT:-81}:81'\n")
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services:\n  app:\n    ports:\n      - '${APP_PORT:-80}:80'\n      - '${DOCKER_WEB_PORT:-8080}:81'\n      - '${COMPOSE_WEB_PORT:-8090}:82'\n")
+	want := []PortVar{{"APP_PORT", 80}, {"DOCKER_WEB_PORT", 8080}, {"COMPOSE_WEB_PORT", 8090}}
+	if c, err := detectConfig(wt, "compose.yaml"); err != nil || !slices.Equal(c.PortVars, want) {
+		t.Fatalf("detectConfig: %+v, %v", c, err)
+	}
+	writeFakeSail(t, wt)
+	t.Setenv("DOCKER_WEB_PORT", "1")
+	t.Setenv("COMPOSE_WEB_PORT", "2")
+	captureStderr(t)
+	captureStdout(t)
+	calls := captureRunner(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(wt, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := "\n" + string(b)
+	for _, k := range []string{"DOCKER_WEB_PORT=", "COMPOSE_WEB_PORT="} {
+		if !strings.Contains(env, "\n"+k) {
+			t.Errorf(".env has no %s line:\n%s", k, env)
+		}
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("calls = %+v", *calls)
+	}
+	for _, kv := range (*calls)[0].env {
+		if strings.HasPrefix(kv, "DOCKER_WEB_PORT=") || strings.HasPrefix(kv, "COMPOSE_WEB_PORT=") {
+			t.Errorf("sail's environment has %s", kv)
+		}
+	}
+
 	captureStdoutFile(t)
-	want := `port variable "DOCKER_X_PORT" in "compose.yaml" cannot be used: docker reads it from the environment; rename it`
-	if err := cmdInit(nil); err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("error = %v", err)
+	if err := cmdInit(nil); err != nil {
+		t.Fatalf("init: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(wt, configName)); !os.IsNotExist(err) {
-		t.Errorf("init wrote %s: %v", configName, err)
-	}
-	writeFile(t, filepath.Join(wt, "compose.yaml"), "services:\n  app:\n    ports:\n      - '${COMPOSE_X_PORT:-81}:81'\n")
-	if _, err := detectConfig(wt, "compose.yaml"); err == nil || !strings.Contains(err.Error(), `"COMPOSE_X_PORT" in "compose.yaml" cannot be used`) {
-		t.Errorf("COMPOSE_X_PORT: error = %v", err)
+	if c, err := loadConfig(wt); err != nil || !slices.Equal(c.PortVars, want) {
+		t.Errorf("loadConfig after init: %+v, %v", c, err)
 	}
 }
 
-// A reserved name that detection finds keeps up and init from running, but not stop and rm, which write no port
-// variable; a .sail-worktree.json that lists one stays an error for all of them (#63).
-func TestDetectedReservedNameDoesNotBlockStopAndRm(t *testing.T) {
+// A .sail-worktree.json that lists a reserved name is a configuration error for stop and rm too (#63).
+func TestReservedNameInConfigBlocksStopAndRm(t *testing.T) {
 	main, wt := setupDetectedRepo(t, "")
-	writeFile(t, filepath.Join(wt, "compose.yaml"), "services:\n  app:\n    ports:\n      - '${APP_PORT:-80}:80'\n      - '${DOCKER_X_PORT:-81}:81'\n")
 	writeFile(t, filepath.Join(wt, ".env"), "COMPOSE_PROJECT_NAME="+projectName(main, wt, wt)+"\n")
 	writeFakeSail(t, wt)
-	t.Setenv("DOCKER_X_PORT", "1")
 	captureStderr(t)
 	captureStdout(t)
-	want := `port variable "DOCKER_X_PORT" in "compose.yaml" cannot be used`
 	calls := captureRunner(t)
-	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), want) {
-		t.Errorf("up: error = %v", err)
-	}
-	if len(*calls) != 0 {
-		t.Fatalf("up ran %v", *calls)
-	}
-	probePortFake(t, true)
-	if out, _, err := runStatus(t, "--no-docker"); err == nil || !strings.Contains(out, "configuration: "+want) {
-		t.Errorf("status does not report the reserved name: %v\n%s", err, out)
-	}
-	if err := cmdStop(nil); err != nil {
-		t.Fatalf("stop: %v", err)
-	}
-	if len(*calls) != 1 || strings.Contains(strings.Join((*calls)[0].env, "\n"), "DOCKER_X_PORT=") {
-		t.Errorf("stop: calls = %+v", *calls)
-	}
-	if err := cmdRm([]string{"-y"}); err != nil {
-		t.Fatalf("rm: %v", err)
-	}
-	if len(*calls) != 2 || (*calls)[1].name != "docker" || !slices.Contains((*calls)[1].args, filepath.Join(wt, "compose.yaml")) {
-		t.Errorf("rm: calls = %+v", *calls)
-	}
-
-	writeFile(t, filepath.Join(wt, configName), `{"compose":"compose.yaml","port_vars":[{"name":"APP_PORT","default":80},{"name":"DOCKER_X_PORT","default":81}]}`)
-	want = `port_vars[1] ("DOCKER_X_PORT"): name in .sail-worktree.json is reserved`
-	*calls = nil
+	writeFile(t, filepath.Join(wt, configName), `{"compose":"compose.yaml","port_vars":[{"name":"APP_PORT","default":80},{"name":"DOCKER_HOST","default":81}]}`)
+	want := `port_vars[1] ("DOCKER_HOST"): name in .sail-worktree.json is reserved`
 	if err := cmdStop(nil); err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("stop with %s: error = %v", configName, err)
 	}
@@ -497,6 +500,23 @@ func TestDetectedReservedNameDoesNotBlockStopAndRm(t *testing.T) {
 	}
 	if len(*calls) != 0 {
 		t.Errorf("a refused command ran %v", *calls)
+	}
+}
+
+// Detection cannot yield a reserved name today, so stop's and rm's exception (teardownConfig) is a guard; it still
+// returns the detected configuration, and only for a reservedPortVarError.
+func TestTeardownConfigTakesTheDetectedConfiguration(t *testing.T) {
+	cfg := &Config{Compose: "compose.yaml", PortVars: []PortVar{{"X_PORT", 80}}}
+	c := &ctx{cfgErr: &reservedPortVarError{msg: "reserved", detected: cfg}, teardown: cfg}
+	if got, err := c.teardownConfig(); err != nil || got != cfg {
+		t.Errorf("teardownConfig = %v, %v", got, err)
+	}
+	if _, err := c.config(); err == nil {
+		t.Error("config() accepts a reserved name")
+	}
+	broken := &ctx{cfgErr: errors.New("broken")}
+	if _, err := broken.teardownConfig(); err == nil {
+		t.Error("teardownConfig hides another configuration error")
 	}
 }
 
@@ -560,14 +580,37 @@ func TestDetectionListsARepeatedVariableOnce(t *testing.T) {
 }
 
 func TestReservedPortVarNames(t *testing.T) {
-	for _, n := range []string{"SHELL", "USER", "PWD", "IFS", "APP_SERVICE", "WWWGROUP", "Docker_Config", "compose_profiles"} {
-		if _, ok := reservedPortVar(n); !ok {
-			t.Errorf("%s is not reserved", n)
+	// Written out so that the list cannot lose one unnoticed: the keys up writes, the shell and Sail names, and the
+	// settings that send compose to other files or docker to another daemon. The map's own keys are checked too,
+	// which catches a key that is not upper-case.
+	reserved := []string{"SHELL", "USER", "PWD", "IFS", "APP_SERVICE", "WWWGROUP", "PATH", "HOME", "WWWUSER", "APP_ENV",
+		"COMPOSE_PROJECT_NAME", "SESSION_COOKIE", "APP_URL", "SANCTUM_STATEFUL_DOMAINS", "SAIL_FILES",
+		"COMPOSE_FILE", "COMPOSE_ENV_FILES", "COMPOSE_PROFILES", "COMPOSE_PATH_SEPARATOR", "COMPOSE_DISABLE_ENV_FILE",
+		"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"}
+	for n := range reservedNames {
+		reserved = append(reserved, n)
+	}
+	for _, n := range reserved {
+		for _, v := range []string{n, strings.ToLower(n), strings.ToUpper(n[:1]) + strings.ToLower(n[1:])} {
+			if _, ok := reservedPortVar(v); !ok {
+				t.Errorf("%s is not reserved", v)
+			}
 		}
 	}
-	for _, n := range []string{"APP_PORT", "FORWARD_DB_PORT", "VITE_PORT", "PATH_PORT", "SAIL_FILES_PORT"} {
+	for _, n := range []string{"APP_PORT", "FORWARD_DB_PORT", "VITE_PORT", "PATH_PORT", "SAIL_FILES_PORT",
+		"DOCKER_WEB_PORT", "docker_web_port", "COMPOSE_WEB_PORT", "Compose_Web_Port", "DOCKER_X", "COMPOSE_X"} {
 		if why, ok := reservedPortVar(n); ok {
 			t.Errorf("%s is reserved: %s", n, why)
+		}
+	}
+}
+
+// Detection yields only names ending in PORT. If a reserved name ever matched, up and init would refuse a detected
+// variable and stop and rm would take teardownConfig's exception: check that path before adding one.
+func TestNoReservedNameIsDetected(t *testing.T) {
+	for n := range reservedNames {
+		if vars := detectPortVars("      - '${" + n + ":-80}:80'\n"); len(vars) != 0 {
+			t.Errorf("%s is detected: %v", n, vars)
 		}
 	}
 }
