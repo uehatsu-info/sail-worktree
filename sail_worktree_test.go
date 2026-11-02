@@ -1393,3 +1393,53 @@ func TestRmForgetsTheWorktreeButKeepsTheMain(t *testing.T) {
 		t.Errorf("main record after rm = %+v", rec)
 	}
 }
+
+func TestRmArgumentsAndConfirmation(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	proj := projectName(main, wt, wt)
+	writeFile(t, filepath.Join(wt, ".env"), "COMPOSE_PROJECT_NAME="+proj+"\n")
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services: {}\n")
+	reg := &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 8123}}}
+	if err := reg.save(); err != nil {
+		t.Fatal(err)
+	}
+	before := registryBytes(t)
+	old := stdin
+	t.Cleanup(func() { stdin = old })
+
+	// An unknown argument is refused before anything is read or run.
+	in := strings.NewReader("y\n")
+	stdin = in
+	calls := captureRunner(t)
+	if err := cmdRm([]string{"--bogus"}); err == nil || !strings.Contains(err.Error(), "unknown argument: --bogus") ||
+		in.Len() != 2 || len(*calls) != 0 {
+		t.Fatalf("unknown argument: err=%v remaining=%d calls=%d", err, in.Len(), len(*calls))
+	}
+
+	// Anything but y or yes (an empty input included) aborts, and both lines go to the package stdout.
+	for _, ans := range []string{"n\n", ""} {
+		stdin = strings.NewReader(ans)
+		out := captureStdout(t)
+		if err := cmdRm(nil); err != nil || len(*calls) != 0 {
+			t.Fatalf("%q: err=%v calls=%d", ans, err, len(*calls))
+		}
+		want := fmt.Sprintf("of project %q. Continue? [y/N] aborted\n", proj)
+		if !strings.HasSuffix(out.String(), want) {
+			t.Errorf("%q: output = %q, want a suffix %q", ans, out.String(), want)
+		}
+		if string(registryBytes(t)) != string(before) {
+			t.Errorf("%q: the registry changed", ans)
+		}
+	}
+
+	in = strings.NewReader(" YES \n")
+	stdin = in
+	out := captureStdout(t)
+	if err := cmdRm(nil); err != nil || len(*calls) != 1 || in.Len() != 0 {
+		t.Fatalf("yes: err=%v calls=%d remaining=%d", err, len(*calls), in.Len())
+	}
+	if s := out.String(); !strings.Contains(s, "[y/N] ") || strings.Contains(s, "aborted") ||
+		!strings.HasSuffix(s, "released the port assignments\n") {
+		t.Errorf("yes: output = %q", s)
+	}
+}
