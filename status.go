@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // probePort reports whether a port can be bound on this host (tests replace it). It binds for an instant and writes
@@ -34,14 +35,15 @@ func (r *report) warn(format string, args ...any) {
 	r.warnings = append(r.warnings, fmt.Sprintf(format, args...))
 }
 
-// list prints items under a heading, or nothing when there are none.
+// list prints items under a heading, or nothing when there are none. The continuation lines of an item are indented
+// under its text, so that they cannot pass for a heading or an item of their own.
 func (r *report) list(heading string, items []string) {
 	if len(items) == 0 {
 		return
 	}
 	r.line("%s", heading)
 	for _, m := range items {
-		r.line("  - %s", m)
+		r.line("  - %s", strings.ReplaceAll(m, "\n", "\n    "))
 	}
 }
 

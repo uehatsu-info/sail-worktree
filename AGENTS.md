@@ -142,8 +142,9 @@ These come from deliberate decisions; change them only on purpose and update the
   it found a problem (warnings do not). A port variable that the worktree's `.env` sets on more than one line is a
   warning (`statusDuplicates`, through `duplicateKeys`; the name, never a value; none when the configuration is broken,
   as there are no names then; the multi-line limit of the `check` bullet applies).
-- **`check` writes only the registry.** It records the current repository's main worktree, if it runs in one
-  (`currentMain`, `checkRecord`), refreshes every recorded main from its `.env` (`refreshMains`, also outside a
+- **`check` writes only the registry.** It records the current repository's main worktree, if it runs in its project
+  directory or below it (`currentMain`, `checkRecord`; the `loadCtx` lookup, as for `up`; elsewhere a warning says
+  where to run it), refreshes every recorded main from its `.env` (`refreshMains`, also outside a
   repository) and then reports conflicts over the whole registry. The refresh exists because `up` avoids only recorded
   ports: without it, a suggested `up` could keep a port that a main now uses. It never writes `.env` or
   `.sail-worktree.json`, never sources `.env`, and runs neither sail nor docker (git only through `loadCtx` in the cwd).
@@ -183,8 +184,8 @@ These come from deliberate decisions; change them only on purpose and update the
   Untrusted keys are printed with `%q` and port names through `cell`. A directory that is only out of reach for the
   moment counts as missing. So removing the record of a project that is still in use (one on a disk that is out of reach
   for the moment, or on Windows one run from a UNC path or through a link to one, which is not a usable key) frees its
-  ports in the registry until `up`, or for a main worktree also `check` in its repository, records it again; a port
-  bound at that moment is still skipped by `up`'s `portFree`. The prompt lists the records first.
+  ports in the registry until `up`, or for a main worktree also `check` in its project directory, records it again; a
+  port bound at that moment is still skipped by `up`'s `portFree`. The prompt lists the records first.
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and

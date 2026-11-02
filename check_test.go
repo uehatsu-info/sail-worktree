@@ -586,3 +586,27 @@ func TestCheckEscapesADuplicatedPortName(t *testing.T) {
 		t.Errorf("the name is not escaped or not named:\n%q", out)
 	}
 }
+
+// check records the main worktree of the project it runs in, found as up finds it: at the repository root of a
+// project in a subdirectory it records nothing and says where to run it (#76).
+func TestCheckAtTheRootOfASubdirectoryProjectSaysWhereToRun(t *testing.T) {
+	main, _ := setupSubdirWorktreeRepo(t, false)
+	t.Chdir(main)
+	captureStderr(t)
+	out, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"  - no main worktree was recorded: no Laravel project found",
+		"\n    a project found in: \"laravel\"",
+		"\n    check records the main worktree of the project it runs in: run it in the project directory or below it",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if reg, _ := loadRegistry(); len(reg.Mains) != 0 {
+		t.Errorf("mains = %+v", reg.Mains)
+	}
+}

@@ -46,7 +46,8 @@ type checkTarget struct {
 func currentMain(r *report) checkTarget {
 	c, err := loadCtx()
 	if err != nil {
-		r.warn("no main worktree was recorded: %v", err)
+		r.warn("no main worktree was recorded: %v\ncheck records the main worktree of the project it runs in: run it in "+
+			"the project directory or below it", err)
 		return checkTarget{}
 	}
 	cfg, err := c.config()
