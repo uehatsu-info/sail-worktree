@@ -541,3 +541,35 @@ func TestPortsEscapesMainWorktreeRecords(t *testing.T) {
 		t.Errorf("rows = %+v", rows)
 	}
 }
+
+// ports --all agrees with check on replaced main records: their rows are marked and never a conflict, while the same
+// port recorded twice elsewhere still is (#96).
+func TestPortsDoesNotCountReplacedMainsInConflict(t *testing.T) {
+	isolatedRegistry(t)
+	withGitInRegistryDirs(t, false)
+	portsFakes(t, nil, nil)
+	stale, live := aliasMain(t)
+	root, sub := movedRoot(t)
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{stale: mainRec(80), live: mainRec(80), root: mainRec(90),
+		sub: mainRec(90)}, Worktrees: map[string]map[string]int{filepath.Join(realTempDir(t), "wt"): {"APP_PORT": 90}}})
+	rows := portsJSON(t, "--all")
+	if len(rows) != 5 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	replaced := 0
+	for _, r := range rows {
+		if r.State == stateReplaced {
+			replaced++
+			if r.Conflict {
+				t.Errorf("a replaced row conflicts: %+v", r)
+			}
+			continue
+		}
+		if want := r.Port == 90; r.Conflict != want { // sub and the worktree share 90; live is alone on 80
+			t.Errorf("row %+v: conflict = %v, want %v", r, r.Conflict, want)
+		}
+	}
+	if replaced != 2 {
+		t.Errorf("replaced rows = %d: %+v", replaced, rows)
+	}
+}

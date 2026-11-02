@@ -98,21 +98,20 @@ func TestCheckInALinkedWorktreeListsIt(t *testing.T) {
 	}
 }
 
-// A branch whose configuration lacks a variable keeps it in the main's record; only the main's own configuration drops
-// it.
+// A branch whose configuration lacks a variable keeps it in the main's record, refreshed from the main's .env (#88);
+// only the main's own configuration drops it.
 func TestCheckKeepsAMainVariableUnknownToTheBranch(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	rec := MainRecord{Ports: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6380},
 		Defaults: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6379}}
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{main: rec}})
-	// The kept value is not re-read in a linked worktree (a documented limit), so 6390 is not seen yet.
 	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8080\nFORWARD_REDIS_PORT=6390\n")
 	if out, err := runCheck(t); err != nil {
 		t.Fatalf("err = %v\n%s", err, out)
 	}
 	reg, _ := loadRegistry()
 	got := reg.Mains[main]
-	if got.Ports["APP_PORT"] != 8080 || got.Ports["FORWARD_REDIS_PORT"] != 6380 || got.Defaults["FORWARD_REDIS_PORT"] != 6379 {
+	if got.Ports["APP_PORT"] != 8080 || got.Ports["FORWARD_REDIS_PORT"] != 6390 || got.Defaults["FORWARD_REDIS_PORT"] != 6379 {
 		t.Errorf("check in %q: record = %+v", wt, got)
 	}
 	t.Chdir(main)
@@ -452,7 +451,8 @@ func betweenReadAndLock(t *testing.T, fn func()) {
 	t.Cleanup(func() { checkLock = old })
 }
 
-// betweenUpReadAndLock is betweenReadAndLock for up: fn runs after up has read the main's .env and before it locks.
+// betweenUpReadAndLock is betweenReadAndLock for up: fn runs after up has read the main's .env, found alias keys and
+// read the source of a new .env, and before it locks.
 func betweenUpReadAndLock(t *testing.T, fn func()) {
 	t.Helper()
 	old := upLock
@@ -568,7 +568,8 @@ func TestCheckFindsTheMainOfAWorktreeListedUnderAnAlias(t *testing.T) {
 			Worktrees: []string{links[0], unclean}}},
 	}
 	b := captureStdout(t)
-	checkConflicts(&report{w: stdout}, reg)
+	r := &report{w: stdout}
+	checkConflicts(r, reg)
 	out := b.String()
 	if want := fmt.Sprintf("worktree %q APP_PORT (of %q)", real, main); !strings.Contains(out, want) {
 		t.Errorf("missing %q in:\n%s", want, out)
@@ -579,9 +580,36 @@ func TestCheckFindsTheMainOfAWorktreeListedUnderAnAlias(t *testing.T) {
 	if bad := fmt.Sprintf("worktree %q APP_PORT (of", wt2); strings.Contains(out, bad) {
 		t.Errorf("an invalid list entry was resolved:\n%s", out)
 	}
+	// The alias entry is folded, so it is not warned about (prune keeps it, #99); the invalid entry is.
+	warnings := strings.Join(r.warnings, "\n")
+	if bad := fmt.Sprintf("lists linked worktree %q", links[0]); strings.Contains(warnings, bad) {
+		t.Errorf("the alias entry was warned about:\n%s", warnings)
+	}
+	if want := fmt.Sprintf("lists linked worktree %q", unclean); !strings.Contains(warnings, want) {
+		t.Errorf("missing %q in:\n%s", want, warnings)
+	}
 	// The fold is a view: the record itself is not changed.
 	if got := reg.Mains[main].Worktrees; len(got) != 2 || got[0] != links[0] || got[1] != unclean {
 		t.Errorf("the record was changed: %q", got)
+	}
+}
+
+// A worktree listed by a replaced main record and by the record that replaced it is named after the live one, whatever
+// the key order: the replaced key (base/work/app) sorts after the live one (base/data/app) (#99).
+func TestCheckNamesTheLiveMainOfAWorktree(t *testing.T) {
+	stale, live := aliasMain(t)
+	wt := realTempDir(t)
+	staleRec, liveRec := mainRec(80), mainRec(81)
+	staleRec.Worktrees, liveRec.Worktrees = []string{wt}, []string{wt}
+	reg := &Registry{
+		Worktrees: map[string]map[string]int{wt: {"APP_PORT": 81}},
+		Mains:     map[string]MainRecord{stale: staleRec, live: liveRec},
+	}
+	b := captureStdout(t)
+	checkConflicts(&report{w: stdout}, reg)
+	out := b.String()
+	if want := fmt.Sprintf("worktree %q APP_PORT (of %q)", wt, live); !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
 	}
 }
 

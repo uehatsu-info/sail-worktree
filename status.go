@@ -77,7 +77,11 @@ func cmdStatus(args []string) error {
 	r := &report{w: stdout}
 	r.line("project directory: %q", c.root)
 	r.line("worktree:          %s (branch %s)", filepath.Base(c.wtTop), currentBranch(c.wtTop))
-	r.line("main worktree:     %q", c.mainTop)
+	if c.bare { // mainTop is the bare repository there, not a checkout (as check's warning says)
+		r.line("main worktree:     none (the repository %q is bare, so there is no main worktree checkout)", c.mainTop)
+	} else {
+		r.line("main worktree:     %q", c.mainTop)
+	}
 	if c.isMain() {
 		r.line("this is the main worktree: up and rm do not run here; check records its ports (up does too, in a worktree)")
 		return nil
@@ -194,6 +198,7 @@ func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) 
 		return
 	}
 	view := foldRegistry(reg)
+	mains := foldMains(reg)
 	mine := view[c.root]
 	if len(vars) > 0 {
 		r.line("ports:")
@@ -224,7 +229,7 @@ func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) 
 		if !haveEnv {
 			port = regPort
 		}
-		for _, other := range otherHolders(view, reg.Mains, c.root, port) {
+		for _, other := range otherHolders(view, mains, c.root, port) {
 			r.problem("port %d (%s) is also recorded for %s", port, v.Name, other)
 		}
 		host, blocked := hostState(port, state)
@@ -256,35 +261,50 @@ func parsePort(s string) (int, bool) {
 	return p, err == nil && validPort(p)
 }
 
-// otherHolders lists, sorted, the registry entries other than self that record port, as "dir (VARIABLE)", and then
-// the main worktree records that do, as `main worktree "dir" (VARIABLE)`. Every main record counts, also one of a
-// directory that is gone, because up avoids them all and would move this port on its next run.
-func otherHolders(view map[string]map[string]int, mains map[string]MainRecord, self string, port int) []string {
-	if port == 0 {
+// otherHolders lists, sorted, the registry entries other than self that record port, and then the main worktree
+// records that do, with check's labels (holder.String). Every main record counts, also one of a directory that is gone,
+// because up avoids them all and would move this port on its next run; one that another record replaced says so. A
+// worktree's main is not named: the line is about this worktree's port, and the holder's own directory already tells
+// which record to look at.
+func otherHolders(view map[string]map[string]int, mains map[string]mainView, self string, port int) []string {
+	// A value that is not a port number holds nothing, as in check and ports. The callers pass a valid port or 0, and
+	// an equal recorded value is then valid too.
+	if !validPort(port) {
 		return nil
 	}
-	var out []string
+	var hs []holder
 	for dir, ports := range view {
 		if dir == self {
 			continue
 		}
 		for name, p := range ports {
 			if p == port {
-				out = append(out, fmt.Sprintf("%q (%s)", dir, name))
+				hs = append(hs, holder{dir: dir, name: name, port: p})
 			}
 		}
 	}
-	sort.Strings(out)
-	var ofMains []string
-	for dir, rec := range mains {
-		for name, p := range rec.Ports {
+	for dir, m := range mains {
+		for name, p := range m.rec.Ports {
 			if p == port {
-				ofMains = append(ofMains, fmt.Sprintf("main worktree %q (%s)", dir, name))
+				hs = append(hs, holder{main: true, dir: dir, name: name, port: p, replacedBy: m.replacedBy})
 			}
 		}
 	}
-	sort.Strings(ofMains)
-	return append(out, ofMains...)
+	sort.Slice(hs, func(i, j int) bool {
+		a, b := hs[i], hs[j]
+		if a.main != b.main {
+			return !a.main // worktrees first
+		}
+		if a.dir != b.dir {
+			return a.dir < b.dir
+		}
+		return a.name < b.name
+	})
+	out := make([]string, len(hs))
+	for i, h := range hs {
+		out[i] = h.String()
+	}
+	return out
 }
 
 func portText(p int, ok bool) string {

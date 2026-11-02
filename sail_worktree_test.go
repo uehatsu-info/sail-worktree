@@ -1002,6 +1002,121 @@ func TestUpReusesPortsRecordedUnderSymlinkedPath(t *testing.T) {
 	}
 }
 
+// up finds alias keys before the lock and resolves only those under it (#93): one recorded meanwhile is left for a
+// later run.
+func TestUpResolvesOnlyAliasesFoundBeforeTheLock(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(main, ".env"), "APP_NAME=x\n")
+	dir := t.TempDir()
+	early, late := filepath.Join(dir, "early"), filepath.Join(dir, "late")
+	symlinkOrSkip(t, wt, early)
+	symlinkOrSkip(t, wt, late)
+	saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{early: {"APP_PORT": 8123}}})
+	betweenUpReadAndLock(t, func() {
+		saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{early: {"APP_PORT": 8123}, late: {"APP_PORT": 8124}}})
+	})
+	captureRunner(t)
+	captureStdout(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := loadRegistry()
+	if _, ok := reg.Worktrees[early]; ok || reg.Worktrees[wt]["APP_PORT"] != 8123 || reg.Worktrees[late]["APP_PORT"] != 8124 {
+		t.Errorf("worktrees = %v, want early folded into the root and late left alone", reg.Worktrees)
+	}
+}
+
+// The source of a new .env is read before the lock (#93): a change after the read is not copied.
+func TestUpReadsTheCopySourceBeforeTheLock(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(main, ".env"), "APP_NAME=before\n")
+	betweenUpReadAndLock(t, func() { writeFile(t, filepath.Join(main, ".env"), "APP_NAME=after\n") })
+	captureRunner(t)
+	out := captureStdout(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := readEnv(filepath.Join(wt, ".env"))
+	if v, _ := e.Get("APP_NAME"); v != "before" {
+		t.Errorf("APP_NAME = %q, want the source as read before the lock", v)
+	}
+	if !strings.Contains(out.String(), "created .env (copied from the main worktree)") {
+		t.Errorf("output:\n%s", out)
+	}
+}
+
+// A source that cannot be read fails before the lock is taken.
+func TestUpFailsOnTheCopySourceBeforeTheLock(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	old := upLock
+	upLock = func() (func(), error) {
+		t.Error("the lock was taken")
+		return lockRegistry()
+	}
+	t.Cleanup(func() { upLock = old })
+	captureRunner(t)
+	captureStdout(t)
+	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "cannot read the source .env") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// A .env that appeared while up waited for the lock (another up in this worktree) is used, not overwritten by the copy;
+// one that is gone by then is copied after all.
+func TestUpRereadsTheOwnEnvUnderTheLock(t *testing.T) {
+	for _, tc := range []struct {
+		name, before, want string // before: this worktree's .env before up; "" means none
+		wait               func(wt string)
+	}{
+		{"appeared", "", "own", func(wt string) { writeFile(t, filepath.Join(wt, ".env"), "APP_NAME=own\n") }},
+		{"gone", "APP_NAME=own\n", "main", func(wt string) {
+			if err := os.Remove(filepath.Join(wt, ".env")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			main, wt := setupWorktreeRepo(t)
+			writeFakeSail(t, wt)
+			writeFile(t, filepath.Join(main, ".env"), "APP_NAME=main\n")
+			if tc.before != "" {
+				writeFile(t, filepath.Join(wt, ".env"), tc.before)
+			}
+			betweenUpReadAndLock(t, func() { tc.wait(wt) })
+			captureRunner(t)
+			out := captureStdout(t)
+			if err := cmdUp(nil); err != nil {
+				t.Fatal(err)
+			}
+			e, _ := readEnv(filepath.Join(wt, ".env"))
+			copied := strings.Contains(out.String(), "created .env")
+			if v, _ := e.Get("APP_NAME"); v != tc.want || copied != (tc.want == "main") {
+				t.Errorf("APP_NAME = %q, output:\n%s", v, out)
+			}
+		})
+	}
+}
+
+// A refusal of the copy names the source read before the lock, not what is there by the time up locks.
+func TestUpRefusalNamesTheSourceReadBeforeTheLock(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(main, ".env"), "COMPOSE_FILE=x.yaml\n")
+	betweenUpReadAndLock(t, func() {
+		if err := os.Remove(filepath.Join(main, ".env")); err != nil {
+			t.Fatal(err)
+		}
+	})
+	captureRunner(t)
+	captureStdout(t)
+	if err := cmdUp(nil); err == nil || err.Error() != upOverrideError("COMPOSE_FILE", envFromMain).Error() {
+		t.Errorf("err = %v", err)
+	}
+}
+
 func TestRmReleasesAliasKeysAndFailsEarlyOnBrokenRegistry(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	proj := projectName(main, wt, wt)
@@ -1398,11 +1513,12 @@ func TestUpReplacesAnInvalidRecordedPort(t *testing.T) {
 	}
 }
 
-// A branch whose configuration lacks a variable must not free the main worktree's port for it.
+// A branch whose configuration lacks a variable must not free the main worktree's port for it, and the port follows
+// the main's .env (#88).
 func TestUpKeepsAMainVariableUnknownToTheBranch(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	writeFakeSail(t, wt)
-	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8080\n")
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8080\nFORWARD_REDIS_PORT=6390\n")
 	rec := MainRecord{Ports: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6380},
 		Defaults: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6379}}
 	if err := (&Registry{Worktrees: map[string]map[string]int{}, Mains: map[string]MainRecord{main: rec}}).save(); err != nil {
@@ -1415,11 +1531,41 @@ func TestUpKeepsAMainVariableUnknownToTheBranch(t *testing.T) {
 	}
 	reg, _ := loadRegistry()
 	got := reg.Mains[main]
-	if got.Ports["APP_PORT"] != 8080 || got.Ports["FORWARD_REDIS_PORT"] != 6380 || got.Defaults["FORWARD_REDIS_PORT"] != 6379 {
+	if got.Ports["APP_PORT"] != 8080 || got.Ports["FORWARD_REDIS_PORT"] != 6390 || got.Defaults["FORWARD_REDIS_PORT"] != 6379 {
 		t.Errorf("main record = %+v", got)
 	}
-	if !reg.used("")[6380] {
+	if !reg.used("")[6390] {
 		t.Error("the kept port is not avoided")
+	}
+}
+
+// A record that another run changed while up waited for the lock keeps its kept variable as it is, but the value this
+// up read is still avoided, as the configuration's own ports are.
+func TestUpAvoidsTheKeptPortItReadWhenTheRecordChanged(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	// The branch's configuration also has REDIS_PORT, so up allocates it; its default is 6389, so the first free
+	// port it tries is 6390, the main's FORWARD_REDIS_PORT.
+	cfg := `{"compose":"compose.yaml","port_vars":[{"name":"APP_PORT","default":80},{"name":"REDIS_PORT","default":6389}]}`
+	writeFile(t, filepath.Join(wt, configName), cfg)
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8080\nREDIS_PORT=6389\nFORWARD_REDIS_PORT=6390\n")
+	rec := func(p int) MainRecord {
+		return MainRecord{Ports: map[string]int{"APP_PORT": p, "REDIS_PORT": 6389, "FORWARD_REDIS_PORT": 6380},
+			Defaults: map[string]int{"APP_PORT": 80, "REDIS_PORT": 6389, "FORWARD_REDIS_PORT": 6379}}
+	}
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{main: rec(80)}})
+	betweenUpReadAndLock(t, func() { saveRegistry(t, &Registry{Mains: map[string]MainRecord{main: rec(81)}}) })
+	captureRunner(t)
+	captureStdout(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := loadRegistry()
+	if got := reg.Mains[main].Ports["FORWARD_REDIS_PORT"]; got != 6380 {
+		t.Errorf("FORWARD_REDIS_PORT recorded = %d, want 6380 (the record changed meanwhile)", got)
+	}
+	if got := reg.Worktrees[wt]["REDIS_PORT"]; got == 6389 || got == 6390 || got == 6380 {
+		t.Errorf("worktree REDIS_PORT = %d, want none of the main's ports", got)
 	}
 }
 

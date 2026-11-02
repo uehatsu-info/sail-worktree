@@ -243,6 +243,20 @@ func TestStatusInTheMainWorktree(t *testing.T) {
 	}
 }
 
+// In a bare layout there is no main worktree checkout, so the bare directory is not shown as one (#89). The report
+// may still find problems (no .env), so only its main worktree line is checked.
+func TestStatusInABareLayoutSaysThereIsNoMainWorktree(t *testing.T) {
+	bare, _, _ := setupBareWorktreeRepo(t)
+	out, _, _ := runStatus(t)
+	want := fmt.Sprintf("main worktree:     none (the repository %q is bare, so there is no main worktree checkout)\n", bare)
+	if !strings.Contains(out, want) {
+		t.Errorf("no line %q:\n%s", want, out)
+	}
+	if old := fmt.Sprintf("main worktree:     %q\n", bare); strings.Contains(out, old) {
+		t.Errorf("the bare directory is shown as the main worktree:\n%s", out)
+	}
+}
+
 func TestStatusEscapesUntrustedText(t *testing.T) {
 	_, wt := statusSetup(t, "")
 	setEnv(t, wt, "APP_PORT", "8\x1b[31m0\u202e")
@@ -461,5 +475,55 @@ func TestReportIndentsContinuationLines(t *testing.T) {
 	want := "warnings:\n  - a\n    b\n  - c\\rd\nproblems:\n  - e\n    problems:\n"
 	if b.String() != want {
 		t.Errorf("got %q, want %q", b.String(), want)
+	}
+}
+
+// status labels other holders as check does (holder.String), so a name is escaped by cell: a newline is written out
+// instead of starting an indented continuation line.
+func TestStatusOtherHoldersUseCheckLabels(t *testing.T) {
+	_, wt := statusSetup(t, "")
+	other := filepath.Join(realTempDir(t), "elsewhere")
+	main := filepath.Join(realTempDir(t), "gone-main")
+	writeRegistryWithMains(t, map[string]map[string]int{wt: {"APP_PORT": 81}, other: {"X\nPORT": 81}},
+		map[string]MainRecord{main: viewMain(map[string]int{"FORWARD_PORT": 81})})
+	out, _, err := runStatus(t)
+	if err == nil {
+		t.Fatalf("no error\n%s", out)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("port 81 (APP_PORT) is also recorded for %s", holder{dir: other, name: "X\nPORT"}),
+		fmt.Sprintf("port 81 (APP_PORT) is also recorded for worktree %q X\\nPORT", other),
+		fmt.Sprintf("port 81 (APP_PORT) is also recorded for main worktree %q FORWARD_PORT", main),
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+// A value that is not a port number holds nothing, as in check and ports, even if two records share it.
+func TestOtherHoldersIgnoreInvalidPorts(t *testing.T) {
+	view := map[string]map[string]int{"/a": {"APP_PORT": 70000}, "/b": {"APP_PORT": 70000}}
+	mains := map[string]mainView{"/m": {rec: viewMain(map[string]int{"APP_PORT": 70000})}}
+	for _, port := range []int{0, -1, 70000} {
+		if got := otherHolders(view, mains, "/a", port); got != nil {
+			t.Errorf("otherHolders(%d) = %q, want none", port, got)
+		}
+	}
+	if got := otherHolders(map[string]map[string]int{"/b": {"APP_PORT": 81}}, nil, "/a", 81); len(got) != 1 {
+		t.Errorf("otherHolders(81) = %q", got)
+	}
+}
+
+// status still counts a replaced main record as another holder (up avoids its ports), and says that it is replaced.
+func TestStatusLabelsReplacedMainHolders(t *testing.T) {
+	_, wt := statusSetup(t, "")
+	stale, live := aliasMain(t)
+	writeRegistryWithMains(t, map[string]map[string]int{wt: {"APP_PORT": 81}},
+		map[string]MainRecord{stale: viewMain(map[string]int{"APP_PORT": 81}), live: viewMain(map[string]int{"APP_PORT": 82})})
+	out, _, err := runStatus(t)
+	want := fmt.Sprintf("port 81 (APP_PORT) is also recorded for main worktree %q APP_PORT (replaced by %q)", stale, live)
+	if err == nil || !strings.Contains(out, want) {
+		t.Errorf("err = %v; missing %q in:\n%s", err, want, out)
 	}
 }

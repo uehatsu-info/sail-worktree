@@ -50,7 +50,7 @@ func loadConfig(root string) (*Config, error) {
 // search at 1 or bind :0. Names are held to shellName, not to the detection rule, because a hand-added variable may be
 // any name the compose file uses. A repeated name is refused too: up would assign two ports and Set would keep only
 // the first line, leaving the other port recorded but unused. Names are compared case-insensitively, as for a reserved
-// name. Detected variables always pass: detection yields only names ending in PORT, and no reserved name does.
+// name. Of the reserved names, detection can yield only SAIL_SHARE_SERVER_PORT (see reservedNames).
 func validatePortVars(vars []PortVar) error {
 	first := map[string]int{}
 	for i, v := range vars {
@@ -82,22 +82,34 @@ func reservedPortVar(name string) (string, bool) {
 }
 
 const (
-	upWrites       = "up writes it"
-	overridesUp    = "it would override the compose files or project that up uses"
-	composeSetting = "compose reads it as its own setting"
-	dockerSetting  = "docker reads it from the environment"
-	shellNeeds     = "the shell and sail need it"
-	sailUses       = "Sail's script uses it"
+	upWrites        = "up writes it"
+	overridesUp     = "it would override the compose files or project that up uses"
+	composeSetting  = "compose reads it as its own setting"
+	dockerSetting   = "docker reads it from the environment"
+	shellNeeds      = "the shell and sail need it"
+	sailUses        = "Sail's script uses it"
+	proxySetting    = "docker and other programs read it as their proxy setting"
+	sshAgentSetting = "docker and ssh use it to reach the SSH agent"
+	buildSetting    = "docker build (BuildKit, buildx) reads it from the environment"
 )
 
 // reservedNames holds, upper-case, the keys up writes itself (keep it in step with up), SAIL_FILES, the shell and Sail
-// names whose loss breaks sail, and the COMPOSE_* and DOCKER_* settings that docker compose and the docker CLI
-// document (checked 2026-11): https://docs.docker.com/compose/how-tos/environment-variables/envvars/ (with the names
-// it lists as unsupported in Compose V2, which an older docker-compose still reads) and
-// https://docs.docker.com/reference/cli/docker/#environment-variables (plus DOCKER_CONTENT_TRUST*, which older CLIs
-// read). Other COMPOSE_* and DOCKER_* names, such as DOCKER_WEB_PORT, are allowed: v0.8.1 handled them (#74). None ends
-// in PORT, so detection never yields one; adding one makes detectConfig's refusal and teardownConfig reachable again,
-// which TestNoReservedNameIsDetected points out.
+// names whose loss breaks sail, the settings Sail's bin/sail reads (the names it exports with a default, other than the
+// port variables APP_PORT and DB_PORT, and its other SAIL_* names), the COMPOSE_* and DOCKER_* settings that docker
+// compose and the docker CLI document, the build settings of BuildKit and buildx, and the proxy and SSH agent names
+// that docker reads. Sources (checked 2026-11; check them again before each release):
+//   - https://docs.docker.com/compose/how-tos/environment-variables/envvars/ (with the names it lists as unsupported
+//     in Compose V2, which an older docker-compose still reads)
+//   - https://docs.docker.com/reference/cli/docker/#environment-variables (plus DOCKER_CONTENT_TRUST*, which older
+//     CLIs read)
+//   - https://docs.docker.com/build/building/variables/ (the build tool configuration variables)
+//   - https://docs.docker.com/engine/cli/proxy/ (the proxy names)
+//   - https://docs.docker.com/reference/cli/docker/buildx/build/#ssh (SSH_AUTH_SOCK)
+//   - the SAIL_* names in laravel/sail 1.x bin/sail
+//
+// Other COMPOSE_* and DOCKER_* names, such as DOCKER_WEB_PORT, are allowed: v0.8.1 handled them (#74). Only
+// SAIL_SHARE_SERVER_PORT ends in PORT, so it is the only one detection can yield; detectConfig refuses it for up and
+// init, and stop and rm take teardownConfig's exception. TestOnlySailShareServerPortIsDetected points out another.
 var reservedNames = map[string]string{
 	"COMPOSE_PROJECT_NAME": upWrites,
 	"SESSION_COOKIE":       upWrites,
@@ -110,11 +122,31 @@ var reservedNames = map[string]string{
 	"USER":                 shellNeeds,
 	"PWD":                  shellNeeds,
 	"IFS":                  shellNeeds,
+	"UID":                  shellNeeds, // read-only in bash: sourcing .env stops at it, so the rest is skipped
 	// Sail's script reads these; APP_ENV also chooses the .env file it sources.
 	"APP_SERVICE": sailUses,
 	"WWWUSER":     sailUses,
 	"WWWGROUP":    sailUses,
 	"APP_ENV":     sailUses,
+	"APP_USER":    sailUses, // the user sail runs commands as in the container
+	// bin/sail reads these as its own settings; SAIL_DOCKER_BINARY chooses the program it runs.
+	"SAIL_DOCKER_BINARY":     sailUses,
+	"SAIL_SKIP_CHECKS":       sailUses,
+	"SAIL_SHARE_DASHBOARD":   sailUses,
+	"SAIL_SHARE_DOMAIN":      sailUses,
+	"SAIL_SHARE_SERVER":      sailUses,
+	"SAIL_SHARE_SERVER_HOST": sailUses,
+	"SAIL_SHARE_SERVER_PORT": sailUses,
+	"SAIL_SHARE_SUBDOMAIN":   sailUses,
+	"SAIL_SHARE_TOKEN":       sailUses,
+	// Lower-case forms (http_proxy, which curl and Go also read) are covered: names are compared case-insensitively.
+	"HTTP_PROXY":  proxySetting,
+	"HTTPS_PROXY": proxySetting,
+	"FTP_PROXY":   proxySetting,
+	"NO_PROXY":    proxySetting,
+	"ALL_PROXY":   proxySetting,
+	// docker build --ssh default and an ssh:// DOCKER_HOST reach the agent through it.
+	"SSH_AUTH_SOCK": sshAgentSetting,
 
 	"COMPOSE_FILE":                  overridesUp,
 	"COMPOSE_ENV_FILES":             overridesUp,
@@ -152,6 +184,34 @@ var reservedNames = map[string]string{
 	"DOCKER_HOST":                 dockerSetting,
 	"DOCKER_TLS":                  dockerSetting,
 	"DOCKER_TLS_VERIFY":           dockerSetting,
+
+	"BUILDKIT_COLORS":                     buildSetting,
+	"BUILDKIT_HOST":                       buildSetting,
+	"BUILDKIT_PROGRESS":                   buildSetting,
+	"BUILDKIT_TTY_LOG_LINES":              buildSetting,
+	"BUILDX_BAKE_DISABLE_VARS_ENV_LOOKUP": buildSetting,
+	"BUILDX_BAKE_FILE":                    buildSetting,
+	"BUILDX_BAKE_FILE_RELATIVE_PATHS":     buildSetting,
+	"BUILDX_BAKE_FILE_SEPARATOR":          buildSetting,
+	"BUILDX_BAKE_GIT_ADVICE":              buildSetting,
+	"BUILDX_BAKE_GIT_AUTH_HEADER":         buildSetting,
+	"BUILDX_BAKE_GIT_AUTH_TOKEN":          buildSetting,
+	"BUILDX_BAKE_GIT_SSH":                 buildSetting,
+	"BUILDX_BUILDER":                      buildSetting,
+	"BUILDX_CONFIG":                       buildSetting,
+	"BUILDX_CPU_PROFILE":                  buildSetting,
+	"BUILDX_EXPERIMENTAL":                 buildSetting,
+	"BUILDX_GIT_CHECK_DIRTY":              buildSetting,
+	"BUILDX_GIT_INFO":                     buildSetting,
+	"BUILDX_GIT_LABELS":                   buildSetting,
+	"BUILDX_MEM_PROFILE":                  buildSetting,
+	"BUILDX_METADATA_PROVENANCE":          buildSetting,
+	"BUILDX_METADATA_WARNINGS":            buildSetting,
+	"BUILDX_NO_DEFAULT_ATTESTATIONS":      buildSetting,
+	"BUILDX_NO_DEFAULT_LOAD":              buildSetting,
+	"BUILDX_NO_DEFAULT_OCI_ARTIFACT":      buildSetting,
+	"BUILDX_SEND_GIT_QUERY_AS_INPUT":      buildSetting,
+	"EXPERIMENTAL_BUILDKIT_SOURCE_POLICY": buildSetting,
 }
 
 // maxSmallFile bounds what readSmallFile reads from a compose file or .sail-worktree.json, and what
@@ -191,7 +251,8 @@ func detectConfig(root, compose string) (*Config, error) {
 	}
 	cfg := &Config{Compose: compose, PortVars: detectPortVars(string(b))}
 	for _, v := range cfg.PortVars {
-		// Not reached today (see reservedNames); it keeps init from writing a file that loadConfig refuses.
+		// Only SAIL_SHARE_SERVER_PORT can be reached (see reservedNames); it keeps init from writing a file that
+		// loadConfig refuses, and up from writing the name into .env.
 		if why, ok := reservedPortVar(v.Name); ok {
 			return nil, &reservedPortVarError{
 				msg:      fmt.Sprintf("port variable %+q in %q cannot be used: %s; rename it in the compose file", v.Name, compose, why),
@@ -203,9 +264,12 @@ func detectConfig(root, compose string) (*Config, error) {
 }
 
 // reservedPortVarError is detectConfig's refusal of a reserved name. It carries the detected configuration for stop
-// and rm (ctx.teardownConfig), which do not write port variables. No reserved name ends in PORT, so it is a guard for
-// a future *PORT entry (see reservedNames). Letting stop and rm through is safe only because detection yields names
-// ending in PORT, never one such as DOCKER_HOST or PATH.
+// and rm (ctx.teardownConfig), which do not write port variables. Only SAIL_SHARE_SERVER_PORT ends in PORT (see
+// reservedNames). Letting stop and rm through is safe only because detection yields names ending in PORT, never one
+// such as DOCKER_HOST or PATH, and because neither writes .env, so the name never reaches what Sail sources. stop also
+// drops it from sail's environment; rm keeps a shell value (cleanEnv(nil)), with which compose expands the compose
+// file without reading it as a setting of its own, and down -v picks what it removes by the project name pinned with
+// --project-name, so the port value does not change what is removed.
 type reservedPortVarError struct {
 	msg      string
 	detected *Config
@@ -306,10 +370,8 @@ func loadRegistry() (*Registry, error) {
 //   - inMain (check runs in the main worktree itself) replaces them: the main's own configuration decides, so a
 //     variable that left it is dropped here.
 //   - Otherwise the run may be on a branch whose configuration lacks a variable the main still uses, so a variable of
-//     the old record's defaults that the run does not know keeps its recorded default and port. They are not re-read
-//     here: recordMain reads no .env, and check drops its pre-lock read of the current main. A check run outside the
-//     repository's project directory re-reads them (refreshMains), and one run in the main worktree re-records or
-//     drops them.
+//     the old record's defaults that the run does not know keeps its recorded default and port. recordMain reads no
+//     .env: recordMainRead passes such variables in ports and defaults when the run read them before the lock.
 func (r *Registry) recordMain(main, worktree string, ports, defaults map[string]int, ok, inMain bool) bool {
 	if r.Mains == nil {
 		r.Mains = map[string]MainRecord{}
@@ -560,25 +622,55 @@ func isASCIILetter(b byte) bool { return 'a' <= b && b <= 'z' || 'A' <= b && b <
 func usableDir(k string) bool { return validKey(k) && isDir(k) }
 
 // migrate merges keys that are aliases of root (recorded by an older version under a symlinked path) into root.
-// It only changes memory; the caller saves on success. An existing entry for root wins; otherwise the entry of the
-// alias with the smallest key (lexicographically) is adopted. The ports of dropped aliases are not left in used.
-// Keys whose path cannot be resolved (it no longer exists) and keys that fail validKey are left alone. Aliases of root
-// in the worktree list of main, the only record root can be listed in, are replaced by root as well (a list that holds
-// none is left as it is); other mains' lists are not looked at, since each entry may be resolved under the lock.
-func (r *Registry) migrate(root, main string) {
-	var aliases []string
+// It only changes memory; the caller saves on success. It resolves every key, so it is not for use under the lock: up
+// and rm find the aliases before they take it (aliasesOf) and resolve only those under it (migrateAliases).
+func (r *Registry) migrate(root, main string) { r.migrateAliases(root, main, r.aliasesOf(root, main)) }
+
+// aliasesOf returns the paths whose real path is root: worktrees keys, and entries of the worktree list of main, the
+// only record root can be listed in (other mains' lists are not looked at). Keys that fail validKey are never resolved,
+// and keys whose path cannot be resolved (it no longer exists) are not aliases. It reads the filesystem, so up and rm
+// call it before they take the lock.
+func (r *Registry) aliasesOf(root, main string) []string {
+	found := map[string]bool{}
 	for k := range r.Worktrees {
-		if k == root || !validKey(k) {
-			continue
-		}
-		if rp, err := realPath(k); err == nil && rp == root {
-			aliases = append(aliases, k)
+		if aliasOf(k, root) {
+			found[k] = true
 		}
 	}
-	sort.Strings(aliases)
-	for _, k := range aliases {
+	for _, w := range r.Mains[main].Worktrees {
+		if !found[w] && aliasOf(w, root) {
+			found[w] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(found))
+}
+
+// aliasOf reports whether k is another path of root. foldKey resolves k only after validKey.
+func aliasOf(k, root string) bool { return k != root && foldKey(k) == root }
+
+// migrateAliases is migrate for the paths in found (from aliasesOf, possibly on an older read of the registry): each
+// one that is still recorded is resolved again, after validKey, so that only these few are resolved under the lock;
+// an alias that an older version records after found was made is folded by a later up. An existing entry for root
+// wins; otherwise the entry of the alias with the smallest key (lexicographically) is adopted. The ports of dropped
+// aliases are not left in used. Aliases of root in the worktree list of main are replaced by root as well (a list that
+// holds none is left as it is).
+func (r *Registry) migrateAliases(root, main string, found []string) {
+	alias := map[string]bool{}
+	for _, k := range found {
+		if aliasOf(k, root) {
+			alias[k] = true
+		}
+	}
+	if len(alias) == 0 {
+		return
+	}
+	for _, k := range slices.Sorted(maps.Keys(alias)) {
+		ports, ok := r.Worktrees[k]
+		if !ok {
+			continue
+		}
 		if _, ok := r.Worktrees[root]; !ok {
-			r.Worktrees[root] = r.Worktrees[k]
+			r.Worktrees[root] = ports
 		}
 		delete(r.Worktrees, k)
 	}
@@ -586,7 +678,7 @@ func (r *Registry) migrate(root, main string) {
 		ws := make([]string, 0, len(rec.Worktrees))
 		changed, seen := false, false
 		for _, w := range rec.Worktrees {
-			if w != root && foldKey(w) == root {
+			if alias[w] {
 				w, changed = root, true
 			}
 			if w == root {
@@ -625,10 +717,10 @@ func (r *Registry) used(except string) map[int]bool {
 }
 
 // replacedMain returns the record that replaces the record of main worktree k, and why, or "" when none does. Main
-// keys are never folded, so a record that a move left behind would otherwise conflict with the new one for ever. Only
-// a live record replaces one (an alias whose real path has its own record, or a directory that is no longer a project
-// with a project's record below it), so a main without a second record keeps its ports. usableDir comes first, so
-// validKey does too.
+// keys are never folded in the registry (only in memory by the read-only views, foldMains), so a record that a move
+// left behind would otherwise conflict with the new one for ever. Only a live record replaces one (an alias whose real
+// path has its own record, or a directory that is no longer a project with a project's record below it), so a main
+// without a second record keeps its ports. usableDir comes first, so validKey does too.
 func (r *Registry) replacedMain(k string) (by, why string) {
 	if !usableDir(k) {
 		return "", ""

@@ -578,6 +578,41 @@ func TestCheckWarnsAboutTheLinkedEntriesPruneRemoves(t *testing.T) {
 	}
 }
 
+// An entry of a main's list that is an alias of a live worktree is folded, as a worktrees key is: check does not warn
+// about it and prune keeps it, also when it is tested again under the lock. A dangling alias is stale for both (#99).
+func TestPruneKeepsAnAliasEntryOfALiveWorktree(t *testing.T) {
+	isolatedRegistry(t)
+	_, links := newLinkedDir(t, "alias")
+	base := realTempDir(t)
+	main := mustMkdir(t, filepath.Join(base, "main"))
+	dangling := filepath.Join(base, "dangling")
+	symlinkOrSkip(t, filepath.Join(base, "missing"), dangling)
+	rec := mainRec(80)
+	rec.Worktrees = []string{links[0], dangling}
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{main: rec}})
+	out, err := runCheck(t)
+	if err != nil || strings.Contains(out, fmt.Sprintf("lists linked worktree %q", links[0])) ||
+		!strings.Contains(out, fmt.Sprintf("lists linked worktree %q", dangling)) {
+		t.Errorf("err = %v\n%s", err, out)
+	}
+	out, err = runPrune(t, strings.NewReader(""), "-y")
+	if err != nil || !strings.Contains(out, "0 main worktree record(s), 1 linked worktree entr(ies)") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, err := loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.Mains[main].Worktrees; !slices.Equal(got, []string{links[0]}) {
+		t.Errorf("list = %q", got)
+	}
+	// The test under the lock agrees with the list: an alias entry listed by an older run is kept.
+	done, kept := reg.prune(pruneList{linked: []linkedEntry{{main: main, worktree: links[0]}}})
+	if len(done.linked) != 0 || len(kept) != 1 {
+		t.Errorf("done = %+v, kept = %q", done, kept)
+	}
+}
+
 // The list of a replaced main record leaves with it, so check does not warn about its entries one by one either.
 func TestCheckDoesNotWarnAboutTheListOfAReplacedMain(t *testing.T) {
 	isolatedRegistry(t)
@@ -593,5 +628,38 @@ func TestCheckDoesNotWarnAboutTheListOfAReplacedMain(t *testing.T) {
 	out, err = runPrune(t, strings.NewReader(""), "-y")
 	if err != nil || !strings.Contains(out, "1 main worktree record(s), 0 linked worktree entr(ies)") {
 		t.Errorf("err = %v\n%s", err, out)
+	}
+}
+
+// A worktree on a branch from before the project moved into laravel/ does not record the main worktree's root again
+// after prune removed that record (#98): since #95 up and check record a main only where it has the project.
+func TestPrunedReplacedMainIsNotRecordedAgainFromAnOldBranch(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	if err := os.Remove(filepath.Join(main, configName)); err != nil {
+		t.Fatal(err)
+	}
+	sub := projectDir(t, mustMkdir(t, filepath.Join(main, "laravel")))
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8123\n") // the source of the worktree's .env, still at the root
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{main: mainRec(80), sub: mainRec(80)}})
+	if out, err := runPrune(t, strings.NewReader(""), "-y"); err != nil ||
+		!strings.Contains(out, "removed 0 worktree record(s), 1 main worktree record(s)") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	captureRunner(t)
+	captureStderr(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, _ := loadRegistry()
+	if _, ok := reg.Mains[main]; ok || len(reg.Mains) != 1 {
+		t.Errorf("mains = %+v, want only %q", reg.Mains, sub)
+	}
+	if strings.Contains(out, "keeps ports free, but") {
+		t.Errorf("check warns about a replaced record again:\n%s", out)
 	}
 }

@@ -23,7 +23,7 @@ import (
 // entry is one registry entry as ps shows it. The JSON field names are a public contract.
 type entry struct {
 	Kind     string         `json:"kind"`     // kindWorktree or kindMain
-	Dir      string         `json:"dir"`      // project directory (the registry key)
+	Dir      string         `json:"dir"`      // project directory (the registry key, or its real path when folded)
 	Worktree string         `json:"worktree"` // name of the worktree root
 	Subdir   string         `json:"subdir"`   // project directory below the worktree root, "." at the root
 	Branch   string         `json:"branch"`
@@ -43,6 +43,7 @@ const (
 	stateNone         = "-"
 	stateStale        = "stale"        // the worktree or directory is gone, or the key is invalid
 	stateUnattributed = "unattributed" // the directory exists but no listed worktree holds it
+	stateReplaced     = "replaced"     // a main record that another record replaced (replacedMain)
 	// docker's view of the compose project.
 	stateRunning = "running" // at least one container runs
 	stateStopped = "stopped" // containers exist, none runs
@@ -163,6 +164,37 @@ func foldRegistry(r *Registry) map[string]map[string]int {
 			}
 		}
 		out[rp] = r.Worktrees[pick]
+	}
+	return out
+}
+
+// mainView is a main worktree record as the read-only views show it.
+type mainView struct {
+	rec        MainRecord
+	replacedBy string // the record that replaces it (replacedMain), or ""
+}
+
+// foldMains returns the main records keyed as the read-only views show them; it is never saved. A record that another
+// replaces (replacedMain, which check warns about) keeps its key and is marked. Otherwise a usable alias key whose real
+// path has no record of its own is shown under that real path (the smallest alias, as in foldRegistry), so that it is
+// attributed to its repository. A further alias of the same path keeps its key instead of being dropped as
+// foldRegistry drops one: check counts every main record as a holder, and the views must find the same conflicts.
+func foldMains(r *Registry) map[string]mainView {
+	out := make(map[string]mainView, len(r.Mains))
+	for _, k := range slices.Sorted(maps.Keys(r.Mains)) {
+		v := mainView{rec: r.Mains[k]}
+		key := k
+		if by, _ := r.replacedMain(k); by != "" {
+			v.replacedBy = by
+		} else if usableDir(k) { // validKey first, so an invalid key is never resolved
+			if rp, err := realPath(k); err == nil && rp != k {
+				_, recorded := r.Mains[rp]
+				if _, taken := out[rp]; !recorded && !taken {
+					key = rp
+				}
+			}
+		}
+		out[key] = v
 	}
 	return out
 }
@@ -344,13 +376,9 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 			ports = map[string]int{}
 		}
 		present := func() bool { return validKey(key) && pathExists(key) }
-		listable := func() bool { // git runs only in a directory that still exists
-			if !validKey(key) {
-				return false
-			}
-			fi, err := os.Stat(key)
-			return err == nil && fi.IsDir()
-		}
+		// git runs only in a directory that still exists. The key is folded, so a link as its last element (which
+		// usableDir does not follow) is left only where the link cannot be resolved.
+		listable := func() bool { return usableDir(key) }
 		ri, wi, p := v.place(key, present, listable, attribute)
 		switch p {
 		case placeListed:
@@ -370,26 +398,35 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 // They show the recorded ports, which up avoids, and never read the main's .env. The compose project name and the
 // docker state are left out: the name comes from that .env or the directory, so it would only be a guess.
 func mainEntries(reg *Registry, v *registryView) (entries []entry, hidden int) {
-	for _, key := range slices.Sorted(maps.Keys(reg.Mains)) {
-		ports := reg.Mains[key].Ports
+	mains := foldMains(reg)
+	for _, key := range slices.Sorted(maps.Keys(mains)) {
+		ports := mains[key].rec.Ports
 		if ports == nil {
 			ports = map[string]int{}
 		}
-		// Lstat, as check does: a main key that is a link is not followed (worktree keys keep their older os.Stat).
+		// Lstat, as check does: a main key that is a link is not followed.
 		usable := usableDir(key)
 		isUsable := func() bool { return usable }
 		ri, _, p := v.place(key, isUsable, isUsable, func(k string, repos [][]worktreeInfo) (int, int, bool) {
 			ri, ok := attributeMain(k, repos)
 			return ri, 0, ok
 		})
+		var e entry
 		switch p {
 		case placeListed:
-			entries = append(entries, buildMainEntry(key, ports, v.repos[ri][0], usable))
+			e = buildMainEntry(key, ports, v.repos[ri][0], usable)
 		case placeUnattributed, placeStale:
-			entries = append(entries, unlisted(kindMain, key, ports, p))
+			e = unlisted(kindMain, key, ports, p)
 		case placeHidden:
 			hidden++
+			continue
+		default: // placeSkipped: another repository's record, left out without all
+			continue
 		}
+		if mains[key].replacedBy != "" { // replacedMain needs a usable key, so the entry is never stale
+			e.State = stateReplaced
+		}
+		entries = append(entries, e)
 	}
 	return entries, hidden
 }
@@ -450,7 +487,14 @@ func worktreeCell(kind, name string) string {
 	return cell(name) + " (main)"
 }
 
-func portsCell(ports map[string]int) string {
+// portsCell prints recorded ports as they are (check's and prune's messages).
+func portsCell(ports map[string]int) string { return portsText(ports, false) }
+
+// psPortsCell marks a value that is not a port number, which up replaces and ports, check and status ignore. The JSON
+// keeps the plain value.
+func psPortsCell(ports map[string]int) string { return portsText(ports, true) }
+
+func portsText(ports map[string]int, markInvalid bool) string {
 	names := make([]string, 0, len(ports))
 	for n := range ports {
 		names = append(names, n)
@@ -459,6 +503,9 @@ func portsCell(ports map[string]int) string {
 	parts := make([]string, len(names))
 	for i, n := range names {
 		parts[i] = n + "=" + strconv.Itoa(ports[n])
+		if markInvalid && !validPort(ports[n]) {
+			parts[i] += "(invalid)"
+		}
 	}
 	return strings.Join(parts, " ")
 }
@@ -538,7 +585,7 @@ func renderPs(w io.Writer, entries []entry) {
 	fmt.Fprintln(tw, "WORKTREE\tSUBDIR\tBRANCH\tPORTS\tSTATE\tDIR")
 	for _, e := range entries {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", worktreeCell(e.Kind, e.Worktree), cell(e.Subdir), cell(e.Branch),
-			cell(portsCell(e.Ports)), cell(e.State), cell(e.Dir))
+			cell(psPortsCell(e.Ports)), cell(e.State), cell(e.Dir))
 	}
 	tw.Flush()
 }
