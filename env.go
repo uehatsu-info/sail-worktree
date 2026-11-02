@@ -116,6 +116,17 @@ func (e *envFile) Raw(key string) (string, bool) {
 	return "", false
 }
 
+// lastRaw is Raw for the last line of key.
+func (e *envFile) lastRaw(key string) (string, bool) {
+	for i := len(e.lines) - 1; i >= 0; i-- {
+		if k, ok := keyOf(e.lines[i]); ok && k == key {
+			_, v, _ := strings.Cut(e.lines[i], "=")
+			return v, true
+		}
+	}
+	return "", false
+}
+
 func (e *envFile) Get(key string) (string, bool) {
 	v, ok := e.Raw(key)
 	return strings.Trim(strings.TrimSpace(v), `"'`), ok
@@ -125,10 +136,12 @@ func (e *envFile) Get(key string) (string, bool) {
 // and an unquoted one at a "#" that follows a space or tab; spaces around it are dropped. An empty result means the
 // compose default applies, like an absent key. Where the two read a form differently, the result is the value one of
 // them uses ('3307'#x, and "= 3307", which bash does not assign) or not a port ("33"07), which reserves nothing, as
-// before. Like Get it reads the first line of key (bash and compose use the last), and it does not expand variables.
+// before. Unlike Get it reads the last line of key: Sail sources .env, so the last assignment wins, and compose keeps
+// the last value too. A last line that bash does not assign ("KEY =3307") is read all the same. It does not expand
+// variables.
 // Only the main's ports use it; Get keeps comments because up writes what it returns back to .env (APP_URL).
 func (e *envFile) portValue(key string) (string, bool) {
-	raw, ok := e.Raw(key)
+	raw, ok := e.lastRaw(key)
 	if !ok {
 		return "", false
 	}

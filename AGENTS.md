@@ -167,7 +167,8 @@ These come from deliberate decisions; change them only on purpose and update the
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
   `check` record it again. Ports follow one rule (`portsFromEnv`): a valid value in the main's `.env`, the default when
   the key is absent or empty or there is no `.env`, nothing for an invalid value. The value is read with `portValue`
-  (quotes, inline comments), as compose and Sail's bash do; `Get` keeps comments, because `up` writes its result back. A
+  (quotes, inline comments, the last line of a duplicated key), as compose and Sail's bash do; `Get` keeps comments
+  and reads the first line, because `up` writes its result back and collapses duplicates to the first line. A
   default counts only if it is 1 to 65535 (`validPort`), so a hand-edited recorded default outside that reserves nothing
   (`loadConfig` already refuses one in the configuration; the check stays for the registry). A main directory that does
   not exist is never recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file
