@@ -31,7 +31,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `main.go` | Command dispatch, usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv` (a main worktree's ports), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
-| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
+| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
@@ -109,27 +109,37 @@ These come from deliberate decisions; change them only on purpose and update the
   aliases in a copy), never write `.env` or `.sail-worktree.json`, and never source `.env`. Registry keys are untrusted:
   a key that fails `validKey` (absolute and clean, and on Windows a drive-letter path, an allow-list, because a UNC or
   device path such as `\\host\share`, `\\?\` or `\??\` can open a network connection) is never used as a directory, by
-  any command (`migrate` in `up` and `rm` included). On Windows git never runs in the registry directories of other
-  repositories (`gitInRegistryDirs` is off), because git itself looks at paths from that repository's metadata (`gitdir`
-  targets, a `.git` file's `gitdir:`), and a UNC or device path there can open a network connection; those entries are
-  `unattributed`. Elsewhere git runs there only through `listWorktrees` (`worktree list` with `core.fsmonitor=false`,
-  `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_COMMON_DIR` removed); the worktree paths such a listing prints
-  come from that repository's metadata (git itself still reads them), so `parseWorktreeList` drops a record whose path
-  fails `registryPathOK` (`validKey`) before anything looks at it (a refused main record drops the listing). The listing
-  of the repository the user runs in passes `anyPath`. External queries go through `runOutput` (explicit env, timeout,
-  no stdin, stdout capped while read). docker is asked once (`dockerProjects`, through the replaceable `output`, with
-  `cleanEnv(nil)` in the system temp directory); a failure is the state `unknown`, never an error, and a test that does
-  not fake `output` must pass `--no-docker`. Every untrusted string is printed through `cell`/`escapeControl`. The JSON
-  field names of `ps` are a public contract (`--json` goes through `jsonEscape`). Output goes to the package `stdout`,
-  never `fmt.Println`. Main worktree records (`mains`) are shown too (`kind` `main`, before the worktree rows;
-  `mainEntries`) with their recorded `Ports`, never a read of the main's `.env`; a main key is used as a directory
-  (`isDir`, git) only after `validKey`, docker is never asked about it (its compose project name depends on that `.env`,
-  so `name` is empty and `state` is `-`, `stale` or `unattributed`), and `status` counts every main record as another
-  holder (`otherHolders`), as `used` does. The `kind` field was added to both JSON outputs; existing fields keep their
-  names and meanings. `status` reuses `checkOwnEnv`, `upOverrideKeys`, `projectName` and `addStatefulDomain` (on a copy
-  of `.env`) instead of re-implementing them, prints only an allow-list of facts (never other `.env` values, and not
-  even an invalid port value, because a port variable name may be any key; `APP_URL` without credentials, query and
-  fragment), never reads a symlinked `.env`, and exits 1 after the report when it found a problem (warnings do not).
+  any command (`migrate` in `up` and `rm` included). On Windows `validKey` also walks the key from its drive root with
+  `Lstat` and `Readlink` (`linksStayLocal`, through the replaceable `keyLinksOK`) and refuses it when a symbolic link or
+  junction on the way, or in what it leads to, has a target that is not a drive-letter path, because Windows follows a
+  link in the middle of a path whenever the path is used (`realPath`, `isDir`, git); a junction is checked although
+  `EvalSymlinks` does not follow it, a `ModeDir|ModeIrregular` reparse point (one that does not redirect, such as a
+  cloud placeholder) is walked like a directory, and an element that cannot be looked at, a link that cannot be read, or
+  a `..` after a name in a link target refuses the key (a target is walked element by element like `EvalSymlinks` does,
+  never cleaned first, so no link in it is skipped). The walk may run several times for one key in a command. Limits: a
+  link swapped after the walk is not caught, a drive letter mapped to a network share is the user's own setup, and a
+  folder where a volume without a drive letter is mounted (`\\?\Volume{...}`) is refused as well. On Windows git never
+  runs in the registry directories of other repositories (`gitInRegistryDirs` is off), because git itself looks at paths
+  from that repository's metadata (`gitdir` targets, a `.git` file's `gitdir:`), and a UNC or device path there can open
+  a network connection; those entries are `unattributed`. Elsewhere git runs there only through `listWorktrees`
+  (`worktree list` with `core.fsmonitor=false`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_COMMON_DIR`
+  removed); the worktree paths such a listing prints come from that repository's metadata (git itself still reads them),
+  so `parseWorktreeList` drops a record whose path fails `registryPathOK` (`validKey`) before anything looks at it (a
+  refused main record drops the listing). The listing of the repository the user runs in passes `anyPath`. External
+  queries go through `runOutput` (explicit env, timeout, no stdin, stdout capped while read). docker is asked once
+  (`dockerProjects`, through the replaceable `output`, with `cleanEnv(nil)` in the system temp directory); a failure is
+  the state `unknown`, never an error, and a test that does not fake `output` must pass `--no-docker`. Every untrusted
+  string is printed through `cell`/`escapeControl`. The JSON field names of `ps` are a public contract (`--json` goes
+  through `jsonEscape`). Output goes to the package `stdout`, never `fmt.Println`. Main worktree records (`mains`) are
+  shown too (`kind` `main`, before the worktree rows; `mainEntries`) with their recorded `Ports`, never a read of the
+  main's `.env`; a main key is used as a directory (`isDir`, git) only after `validKey`, docker is never asked about it
+  (its compose project name depends on that `.env`, so `name` is empty and `state` is `-`, `stale` or `unattributed`),
+  and `status` counts every main record as another holder (`otherHolders`), as `used` does. The `kind` field was added
+  to both JSON outputs; existing fields keep their names and meanings. `status` reuses `checkOwnEnv`, `upOverrideKeys`,
+  `projectName` and `addStatefulDomain` (on a copy of `.env`) instead of re-implementing them, prints only an allow-list
+  of facts (never other `.env` values, and not even an invalid port value, because a port variable name may be any key;
+  `APP_URL` without credentials, query and fragment), never reads a symlinked `.env`, and exits 1 after the report when
+  it found a problem (warnings do not).
 - **`check` writes only the registry.** It records the current repository's main worktree, if it runs in one
   (`currentMain`, `checkRecord`), refreshes every recorded main from its `.env` (`refreshMains`, also outside a
   repository) and then reports conflicts over the whole registry. The refresh exists because `up` avoids only recorded
@@ -157,13 +167,14 @@ These come from deliberate decisions; change them only on purpose and update the
   kept: it still holds that worktree's ports, and the next `up` there folds it with `migrate`, not `prune`), a `mains`
   key that fails `usableDir` (`validKey`, then `isDir`; links are not followed, mains are recorded as real paths), and
   entries of a kept main's `worktrees` list that fail `usableDir`. `validKey` always comes first, so an invalid key is
-  never looked at. It lists and asks (package `stdin`/`stdout`, `-y` skips) without the lock, then takes
-  `lockRegistry`, reads the registry again and removes only listed records that are still recorded and still unusable
-  (with the same per-kind test), saving only when something was removed; records that became unusable after the
-  prompt are left for the next run, because the user did not confirm them. It never writes `.env` or
-  `.sail-worktree.json` and runs neither docker, sail nor git: the containers, networks and volumes of a removed
-  worktree are left alone and the output says so (`docker compose ls -a`). Untrusted keys are printed with `%q` and
-  port names through `cell`. A directory that is only out of reach for the moment counts as missing.
+  never looked at (on Windows its walk reads only the elements and links on the way, up to the first refused link). It
+  lists and asks (package `stdin`/`stdout`, `-y` skips) without the lock, then takes `lockRegistry`, reads the registry
+  again and removes only listed records that are still recorded and still unusable (with the same per-kind test), saving
+  only when something was removed; records that became unusable after the prompt are left for the next run, because the
+  user did not confirm them. It never writes `.env` or `.sail-worktree.json` and runs neither docker, sail nor git: the
+  containers, networks and volumes of a removed worktree are left alone and the output says so (`docker compose ls -a`).
+  Untrusted keys are printed with `%q` and port names through `cell`. A directory that is only out of reach for the
+  moment counts as missing.
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
@@ -196,8 +207,9 @@ These come from deliberate decisions; change them only on purpose and update the
   `exec.Cmd.Env` inherits the whole parent environment.
 - **Paths are real paths.** The worktree root, the main worktree and the project directory are resolved through
   symlinks, because the project name contains a hash of the project directory. `Registry.migrate` merges keys an older
-  version recorded under a symlinked path, and replaces aliases of root in the `mains` worktree lists (a changed list
-  is sorted); it only changes memory and the caller saves on success.
+  version recorded under a symlinked path, and replaces aliases of root in the `mains` worktree lists (a changed list is
+  sorted); it only changes memory and the caller saves on success. A registry key is resolved only after `validKey` (on
+  Windows that includes the link walk).
 - **Project directory.** `up`, `stop` and `rm` (`lookupProject`) take the nearest directory with `.sail-worktree.json`
   anywhere up to the worktree root; only when there is none, the nearest directory where `isLaravelProject` holds
   (`artisan` is a regular file and a compose file exists), and then the configuration is detected (`ctx.detected`).
@@ -277,13 +289,18 @@ These come from deliberate decisions; change them only on purpose and update the
   removes it; `unlock` (`releaser`) is idempotent and removes only the file it created, under its claim, and leaves its
   lock to a run that holds the claim already. A fresh lock is therefore never removed or moved (no rename, no
   `os.Link`). A run killed while it holds a claim leaves the claim file, and that one lock is then not broken
-  automatically (the error's hand recovery still works); nothing removes such a leftover. `wait` is longer than `stale`.
-  Only on Windows are errors other than "exists" retried (a pending removal looks like access denied), always after
-  `poll`, since only a broken stale lock is retried at once; elsewhere they fail at once. The pid in the error comes
-  through `readSmallFile` and is shown only if it is a number. An `O_EXCL` file was chosen over flock/LockFileEx (no
-  per-OS code, no dependency); its cost is the stale rule and the hand recovery in the error message, and a run
-  suspended for longer than `stale` can lose its lock to the next one. Do not "improve" this into a lock held during
-  `sail up`.
+  automatically (the error's hand recovery still works); nothing removes such a leftover. A lock whose write or close
+  fails after a successful `Stat` is released through `releaser` as well, never removed by path (this run may have been
+  suspended for longer than `stale` and its path taken by another run); if `Stat` failed, the file has no identity and
+  is left to the stale rule or the hand recovery. The claims protect only runs of versions that use them: v0.8.0 and
+  v0.8.1 break a stale lock by renaming it and remove locks by path, and earlier versions take no lock, so running one
+  of them at the same time as this version reopens the window claims close (a fresh lock removed, two runs updating the
+  registry at once); the README says to use one version at a time. `wait` is longer than `stale`. Only on Windows are
+  errors other than "exists" retried (a pending removal looks like access denied), always after `poll`, since only a
+  broken stale lock is retried at once; elsewhere they fail at once. The pid in the error comes through `readSmallFile`
+  and is shown only if it is a number. An `O_EXCL` file was chosen over flock/LockFileEx (no per-OS code, no
+  dependency); its cost is the stale rule and the hand recovery in the error message, and a run suspended for longer
+  than `stale` can lose its lock to the next one. Do not "improve" this into a lock held during `sail up`.
 - **Ports.** A new port is searched from default+1 upwards (the default is left to the main worktree), skipping ports
   of other worktrees, ports recorded for any main worktree (`used` includes `mains`, so `up` moves a worktree off a
   main's port and says so) and ports in use. A port counts as free only if it binds on all interfaces and on `127.0.0.1`;

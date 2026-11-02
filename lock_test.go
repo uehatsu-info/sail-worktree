@@ -539,3 +539,94 @@ func TestLockWithALeftoverClaimNeedsHandRecovery(t *testing.T) {
 	}
 	unlock()
 }
+
+// replaceLockOpen makes lockRegistry's create return what open gives for the lock path.
+func replaceLockOpen(t *testing.T, open func(lock string) (*os.File, error)) {
+	t.Helper()
+	old := openLockFile
+	t.Cleanup(func() { openLockFile = old })
+	openLockFile = open
+}
+
+func claimFiles(t *testing.T, lock string) []string {
+	t.Helper()
+	m, err := filepath.Glob(lock + ".claim-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func checkWriteError(t *testing.T, err error) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), "cannot write the registry lock") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestLockWriteErrorLeavesAnotherRunsLock: a run whose write fails may have been suspended for longer than
+// lockTiming.stale, its lock broken and the path taken by another run, so it must not remove that run's lock.
+func TestLockWriteErrorLeavesAnotherRunsLock(t *testing.T) {
+	setupWorktreeRepo(t)
+	fastLock(t, time.Second, time.Hour)
+	replaceLockOpen(t, func(lock string) (*os.File, error) {
+		writeFile(t, lock, "4242\n") // the other run's fresh lock
+		ours := lock + ".ours"       // this run's lock, already broken and gone from the path
+		writeFile(t, ours, "")
+		return os.Open(ours) // read-only: the write fails
+	})
+	_, err := lockRegistry()
+	checkWriteError(t, err)
+	p := lockFilePath(t)
+	if b, err := os.ReadFile(p); err != nil || string(b) != "4242\n" {
+		t.Errorf("the other run's lock was removed or changed: %q, %v", b, err)
+	}
+	if c := claimFiles(t, p); len(c) != 0 {
+		t.Errorf("claim files left: %q", c)
+	}
+}
+
+// TestLockWriteErrorRemovesItsOwnLock: a lock that is still this run's file is removed, under its claim.
+func TestLockWriteErrorRemovesItsOwnLock(t *testing.T) {
+	setupWorktreeRepo(t)
+	fastLock(t, time.Second, time.Hour)
+	create := openLockFile
+	replaceLockOpen(t, func(lock string) (*os.File, error) {
+		f, err := create(lock)
+		if err != nil {
+			return nil, err
+		}
+		f.Close()
+		return os.Open(lock) // read-only: the write fails
+	})
+	_, err := lockRegistry()
+	checkWriteError(t, err)
+	p := lockFilePath(t)
+	if _, err := os.Lstat(p); !os.IsNotExist(err) {
+		t.Errorf("the lock was left behind: %v", err)
+	}
+	if c := claimFiles(t, p); len(c) != 0 {
+		t.Errorf("claim files left: %q", c)
+	}
+}
+
+// TestLockWriteErrorWithoutIdentityLeavesTheFile: when Stat fails too, nothing tells this run's file from another
+// run's lock, so the file is left to the stale rule.
+func TestLockWriteErrorWithoutIdentityLeavesTheFile(t *testing.T) {
+	setupWorktreeRepo(t)
+	fastLock(t, time.Second, time.Hour)
+	create := openLockFile
+	replaceLockOpen(t, func(lock string) (*os.File, error) {
+		f, err := create(lock)
+		if err != nil {
+			return nil, err
+		}
+		f.Close() // write, Stat and Close all fail on a closed file
+		return f, nil
+	})
+	_, err := lockRegistry()
+	checkWriteError(t, err)
+	if _, err := os.Lstat(lockFilePath(t)); err != nil {
+		t.Errorf("a file that could not be identified was removed: %v", err)
+	}
+}
