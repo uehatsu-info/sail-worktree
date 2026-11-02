@@ -198,6 +198,13 @@ func cmdUp(args []string) error {
 		return err
 	}
 	reg.migrate(c.root) // before allocatePorts, adopt the keys an older version recorded under an alias path (saved when up succeeds)
+	// Keep the main worktree's ports free as well: it uses them without a port record of its own.
+	if ports, defaults, envOK, found := mainPorts(c.main, cfg.PortVars); found {
+		reg.recordMain(c.main, c.root, ports, defaults, envOK)
+		if !envOK {
+			warnMainEnv(c.main)
+		}
+	}
 	src := envOwn
 	env, err := readEnv(envPath)
 	if os.IsNotExist(err) {
@@ -268,6 +275,56 @@ func cmdUp(args []string) error {
 		fmt.Fprintf(stderr, "warning: %s\n", statefulWarning)
 	}
 	return runSail(c.root, cfg, append([]string{"up"}, args...))
+}
+
+// mainPorts returns the ports that the main worktree's project directory dir uses for vars: the value in its .env
+// when it is a port number, the compose default when .env does not set the variable (or there is no .env), nothing
+// for an invalid value. envOK is false when .env exists but is not a regular file that can be read (a link is never
+// followed); found is false when dir is not a directory (the main worktree may lack the project), and then nothing
+// is recorded.
+func mainPorts(dir string, vars []PortVar) (ports, defaults map[string]int, envOK, found bool) {
+	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() {
+		return nil, nil, false, false
+	}
+	defaults = map[string]int{}
+	for _, v := range vars {
+		if v.Default >= 1 && v.Default <= 65535 {
+			defaults[v.Name] = v.Default
+		}
+	}
+	envPath := filepath.Join(dir, ".env")
+	var env *envFile
+	if _, err := os.Lstat(envPath); err == nil {
+		e, ok := readEnvIfRegular(envPath)
+		if !ok {
+			return nil, defaults, false, true
+		}
+		env = e
+	} else if !os.IsNotExist(err) {
+		return nil, defaults, false, true
+	}
+	return portsFromEnv(env, defaults), defaults, true, true
+}
+
+// portsFromEnv applies the rule of mainPorts to the variables of defaults; env may be nil (no .env).
+func portsFromEnv(env *envFile, defaults map[string]int) map[string]int {
+	out := map[string]int{}
+	for name, def := range defaults {
+		if env != nil {
+			if s, ok := env.Get(name); ok {
+				if p, ok := parsePort(s); ok {
+					out[name] = p
+				}
+				continue
+			}
+		}
+		out[name] = def
+	}
+	return out
+}
+
+func warnMainEnv(main string) {
+	fmt.Fprintf(stderr, "warning: the .env of the main worktree's project directory %q is not a regular file, so its ports are not recorded\n", main)
 }
 
 // envSource is where up took .env from. It is remembered to tailor the guidance in the refusal error.
@@ -437,6 +494,7 @@ func cmdRm(args []string) error {
 	}
 	reg.migrate(c.root)
 	delete(reg.Worktrees, c.root)
+	reg.forgetWorktree(c.main, c.root)
 	if err := reg.save(); err != nil {
 		return err
 	}

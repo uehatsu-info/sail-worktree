@@ -1265,3 +1265,97 @@ func TestUpKeepsIPv6BracketsInAppURL(t *testing.T) {
 		t.Errorf("APP_URL=%q", v)
 	}
 }
+
+func TestUpRecordsMainPortsAndKeepsThemFree(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8123\n")
+	// This worktree holds the main's port already: up moves it.
+	reg := &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 8123}}}
+	if err := reg.save(); err != nil {
+		t.Fatal(err)
+	}
+	captureRunner(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := readEnv(filepath.Join(wt, ".env"))
+	if v, _ := e.Get("APP_PORT"); v == "8123" || v == "" {
+		t.Errorf("the worktree kept the main worktree's port: APP_PORT=%q", v)
+	}
+	reg, _ = loadRegistry()
+	rec, ok := reg.Mains[main]
+	if !ok || rec.Ports["APP_PORT"] != 8123 || rec.Defaults["APP_PORT"] != 80 || len(rec.Worktrees) != 1 || rec.Worktrees[0] != wt {
+		t.Errorf("main record = %+v (ok=%v)", rec, ok)
+	}
+
+	// Without the key in the main's .env, compose uses the default, and that is what is recorded.
+	writeFile(t, filepath.Join(main, ".env"), "APP_NAME=x\n")
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ = loadRegistry()
+	if got := reg.Mains[main].Ports["APP_PORT"]; got != 80 {
+		t.Errorf("APP_PORT recorded for the main = %d, want the default 80", got)
+	}
+}
+
+func TestUpDoesNotReadSymlinkedMainEnvForTheRecord(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	target := filepath.Join(t.TempDir(), "env")
+	writeFile(t, target, "APP_PORT=8124\n")
+	symlinkOrSkip(t, target, filepath.Join(main, ".env"))
+	reg := &Registry{Worktrees: map[string]map[string]int{}, Mains: map[string]MainRecord{
+		main: {Ports: map[string]int{"APP_PORT": 8200}, Defaults: map[string]int{"APP_PORT": 80}},
+	}}
+	if err := reg.save(); err != nil {
+		t.Fatal(err)
+	}
+	captureRunner(t)
+	errOut := captureStderr(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ = loadRegistry()
+	if got := reg.Mains[main].Ports["APP_PORT"]; got != 8200 {
+		t.Errorf("the record was replaced through a link: APP_PORT=%d", got)
+	}
+	if !strings.Contains(errOut.String(), "not a regular file") {
+		t.Errorf("no warning: %q", errOut.String())
+	}
+}
+
+func TestUpDoesNotRecordMissingMainProjectDirectory(t *testing.T) {
+	_, wt := setupSubdirWorktreeRepo(t, true)
+	root := filepath.Join(wt, "laravel")
+	writeFakeSail(t, root)
+	writeFile(t, filepath.Join(root, ".env"), "APP_NAME=x\n")
+	captureRunner(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := loadRegistry()
+	if len(reg.Mains) != 0 {
+		t.Errorf("a missing main project directory was recorded: %+v", reg.Mains)
+	}
+}
+
+func TestRmForgetsTheWorktreeButKeepsTheMain(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeRmFixtures(t, main, wt)
+	reg := &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 8123}}, Mains: map[string]MainRecord{
+		main: {Ports: map[string]int{"APP_PORT": 80}, Defaults: map[string]int{"APP_PORT": 80}, Worktrees: []string{"/other", wt}},
+	}}
+	if err := reg.save(); err != nil {
+		t.Fatal(err)
+	}
+	captureRunner(t)
+	if err := cmdRm([]string{"-y"}); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ = loadRegistry()
+	if rec := reg.Mains[main]; len(rec.Worktrees) != 1 || rec.Worktrees[0] != "/other" || rec.Ports["APP_PORT"] != 80 {
+		t.Errorf("main record after rm = %+v", rec)
+	}
+}
