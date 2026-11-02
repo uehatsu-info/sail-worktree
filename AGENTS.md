@@ -134,9 +134,10 @@ These come from deliberate decisions; change them only on purpose and update the
   shown too (`kind` `main`, before the worktree rows; `mainEntries`) with their recorded `Ports`, never a read of the
   main's `.env`; a main key is used as a directory (`isDir`, git) only after `validKey`, docker is never asked about it
   (its compose project name depends on that `.env`, so `name` is empty and `state` is `-`, `stale` or `unattributed`),
-  and `status` counts every main record as another holder (`otherHolders`), as `used` does. The `kind` field was added
-  to both JSON outputs; existing fields keep their names and meanings. `status` reuses `checkOwnEnv`, `upOverrideKeys`,
-  `projectName` and `addStatefulDomain` (on a copy of `.env`) instead of re-implementing them, prints only an allow-list
+  and `status` counts every main record as another holder (`otherHolders`, labelled by `check`'s `holder.String`), as
+  `used` does. The `kind` field was added to both JSON outputs; existing fields keep their names and meanings. `status`
+  reuses `checkOwnEnv`, `upOverrideKeys`, `projectName` and `addStatefulDomain` (on a copy of `.env`) instead of
+  re-implementing them, prints only an allow-list
   of facts (never other `.env` values, and not even an invalid port value, because a port variable name may be any key;
   `APP_URL` without credentials, query and fragment), never reads a symlinked `.env`, and exits 1 after the report when
   it found a problem (warnings do not). A port variable that the worktree's `.env` sets on more than one line is a

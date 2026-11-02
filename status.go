@@ -256,35 +256,47 @@ func parsePort(s string) (int, bool) {
 	return p, err == nil && validPort(p)
 }
 
-// otherHolders lists, sorted, the registry entries other than self that record port, as "dir (VARIABLE)", and then
-// the main worktree records that do, as `main worktree "dir" (VARIABLE)`. Every main record counts, also one of a
-// directory that is gone, because up avoids them all and would move this port on its next run.
+// otherHolders lists, sorted, the registry entries other than self that record port, and then the main worktree
+// records that do, with check's labels (holder.String). Every main record counts, also one of a directory that is gone,
+// because up avoids them all and would move this port on its next run. A worktree's main is not named: the line is
+// about this worktree's port, and the holder's own directory already tells which record to look at.
 func otherHolders(view map[string]map[string]int, mains map[string]MainRecord, self string, port int) []string {
 	if port == 0 {
 		return nil
 	}
-	var out []string
+	var hs []holder
 	for dir, ports := range view {
 		if dir == self {
 			continue
 		}
 		for name, p := range ports {
 			if p == port {
-				out = append(out, fmt.Sprintf("%q (%s)", dir, name))
+				hs = append(hs, holder{dir: dir, name: name, port: p})
 			}
 		}
 	}
-	sort.Strings(out)
-	var ofMains []string
 	for dir, rec := range mains {
 		for name, p := range rec.Ports {
 			if p == port {
-				ofMains = append(ofMains, fmt.Sprintf("main worktree %q (%s)", dir, name))
+				hs = append(hs, holder{main: true, dir: dir, name: name, port: p})
 			}
 		}
 	}
-	sort.Strings(ofMains)
-	return append(out, ofMains...)
+	sort.Slice(hs, func(i, j int) bool {
+		a, b := hs[i], hs[j]
+		if a.main != b.main {
+			return !a.main // worktrees first
+		}
+		if a.dir != b.dir {
+			return a.dir < b.dir
+		}
+		return a.name < b.name
+	})
+	out := make([]string, len(hs))
+	for i, h := range hs {
+		out[i] = h.String()
+	}
+	return out
 }
 
 func portText(p int, ok bool) string {

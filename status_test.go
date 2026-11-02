@@ -463,3 +463,26 @@ func TestReportIndentsContinuationLines(t *testing.T) {
 		t.Errorf("got %q, want %q", b.String(), want)
 	}
 }
+
+// status labels other holders as check does (holder.String), so a name is escaped by cell: a newline is written out
+// instead of starting an indented continuation line.
+func TestStatusOtherHoldersUseCheckLabels(t *testing.T) {
+	_, wt := statusSetup(t, "")
+	other := filepath.Join(realTempDir(t), "elsewhere")
+	main := filepath.Join(realTempDir(t), "gone-main")
+	writeRegistryWithMains(t, map[string]map[string]int{wt: {"APP_PORT": 81}, other: {"X\nPORT": 81}},
+		map[string]MainRecord{main: viewMain(map[string]int{"FORWARD_PORT": 81})})
+	out, _, err := runStatus(t)
+	if err == nil {
+		t.Fatalf("no error\n%s", out)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("port 81 (APP_PORT) is also recorded for %s", holder{dir: other, name: "X\nPORT"}),
+		fmt.Sprintf("port 81 (APP_PORT) is also recorded for worktree %q X\\nPORT", other),
+		fmt.Sprintf("port 81 (APP_PORT) is also recorded for main worktree %q FORWARD_PORT", main),
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}

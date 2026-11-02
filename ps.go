@@ -381,13 +381,9 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 			ports = map[string]int{}
 		}
 		present := func() bool { return validKey(key) && pathExists(key) }
-		listable := func() bool { // git runs only in a directory that still exists
-			if !validKey(key) {
-				return false
-			}
-			fi, err := os.Stat(key)
-			return err == nil && fi.IsDir()
-		}
+		// git runs only in a directory that still exists. The key is folded, so a link as its last element (which
+		// usableDir does not follow) is left only where the link cannot be resolved.
+		listable := func() bool { return usableDir(key) }
 		ri, wi, p := v.place(key, present, listable, attribute)
 		switch p {
 		case placeListed:
@@ -412,7 +408,7 @@ func mainEntries(reg *Registry, v *registryView) (entries []entry, hidden int) {
 		if ports == nil {
 			ports = map[string]int{}
 		}
-		// Lstat, as check does: a main key that is a link is not followed (worktree keys keep their older os.Stat).
+		// Lstat, as check does: a main key that is a link is not followed.
 		usable := usableDir(key)
 		isUsable := func() bool { return usable }
 		ri, _, p := v.place(key, isUsable, isUsable, func(k string, repos [][]worktreeInfo) (int, int, bool) {
