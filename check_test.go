@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -455,5 +456,90 @@ func TestCheckSuggestionSkipsPortsOfAliasKeys(t *testing.T) {
 	// Holders are sorted by directory and the first one keeps the port, so the fix goes to the larger one.
 	if want := fmt.Sprintf("set APP_PORT=83 in the .env of %q", max(a, b)); !strings.Contains(out, want) {
 		t.Errorf("missing %q in:\n%s", want, out)
+	}
+}
+
+// dupWarning is the warning check gives for a port variable set on more than one line of a main's .env.
+func dupWarning(dir, name string) string {
+	return fmt.Sprintf("the .env of main worktree %q sets %s on more than one line", dir, name)
+}
+
+func TestCheckWarnsAboutADuplicatedPortKey(t *testing.T) {
+	isolatedRegistry(t)
+	m := realTempDir(t)
+	writeFile(t, filepath.Join(m, ".env"), "APP_PORT=8091\nAPP_NAME=x\nexport APP_PORT=8092\n")
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(80)}})
+	out, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("a duplicated key changed the exit status: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "warnings:") || !strings.Contains(out, dupWarning(m, "APP_PORT")) {
+		t.Errorf("no warning about APP_PORT in:\n%s", out)
+	}
+	// The directory may contain any digits, so it is removed before looking for the values.
+	if rest := strings.ReplaceAll(out, strconv.Quote(m), ""); strings.Contains(rest, "8091") || strings.Contains(rest, "8092") {
+		t.Errorf("a value of the duplicated key was printed:\n%s", out)
+	}
+}
+
+func TestCheckDoesNotWarnAboutOtherKeysOrOneLine(t *testing.T) {
+	isolatedRegistry(t)
+	m := realTempDir(t)
+	writeFile(t, filepath.Join(m, ".env"), "APP_NAME=a\nAPP_PORT=8090\n# APP_PORT=8091\nAPP_NAME=b\n")
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(80)}})
+	out, err := runCheck(t)
+	if err != nil || strings.Contains(out, "more than one line") {
+		t.Errorf("err = %v, unexpected warning in:\n%s", err, out)
+	}
+}
+
+func TestCheckDoesNotReadASymlinkedMainEnvForDuplicates(t *testing.T) {
+	isolatedRegistry(t)
+	a, b := realTempDir(t), realTempDir(t)
+	writeFile(t, filepath.Join(a, ".env"), "APP_PORT=8090\nAPP_PORT=8091\n")
+	target := filepath.Join(t.TempDir(), "env")
+	writeFile(t, target, "APP_PORT=8092\nAPP_PORT=8093\n")
+	symlinkOrSkip(t, target, filepath.Join(b, ".env"))
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{a: mainRec(80), b: mainRec(81)}})
+	out, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	// a is the control: the same setup with a regular file warns.
+	if !strings.Contains(out, dupWarning(a, "APP_PORT")) {
+		t.Errorf("no warning for the regular .env in:\n%s", out)
+	}
+	if strings.Contains(out, dupWarning(b, "APP_PORT")) {
+		t.Errorf("the .env was read through a link:\n%s", out)
+	}
+}
+
+func TestCheckWarnsAboutDuplicatesWithoutTheLock(t *testing.T) {
+	isolatedRegistry(t)
+	fastLock(t, 50*time.Millisecond, time.Hour)
+	captureStderr(t) // the lock wait message
+	m := realTempDir(t)
+	writeFile(t, filepath.Join(m, ".env"), "APP_PORT=8090\nAPP_PORT=8091\n")
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(80)}})
+	plantLock(t, 0)
+	out, err := runCheck(t)
+	if err != nil || !strings.Contains(out, dupWarning(m, "APP_PORT")) {
+		t.Errorf("err = %v, no warning in:\n%s", err, out)
+	}
+}
+
+func TestCheckEscapesADuplicatedPortName(t *testing.T) {
+	isolatedRegistry(t)
+	m := realTempDir(t)
+	evil := "X\x1b[2J"
+	writeFile(t, filepath.Join(m, ".env"), evil+"=1\n"+evil+"=2\n")
+	rec := MainRecord{Ports: map[string]int{evil: 80}, Defaults: map[string]int{evil: 80}}
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: rec}})
+	out, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	if strings.Contains(out, "\x1b") || !strings.Contains(out, dupWarning(m, cell(evil))) {
+		t.Errorf("the name is not escaped or not named:\n%q", out)
 	}
 }

@@ -83,6 +83,7 @@ func checkRecord(r *report) (*Registry, error) {
 		return nil, err
 	}
 	fresh := readMains(pre)
+	warnDuplicates(r, fresh)
 	cur := currentMain(r) // read last, so the current main's record comes from the newest read of its .env
 	unlock, err := checkLock()
 	if err != nil {
@@ -119,13 +120,17 @@ func checkRecord(r *report) (*Registry, error) {
 	return reg, nil
 }
 
-// mainRefresh is the ports of a recorded main worktree as read from its .env, and the record they were based on.
+// mainRefresh is what readMains found in a recorded main worktree's .env: its ports, the record they were based on, and
+// the port variables set on more than one line.
 type mainRefresh struct {
 	ports, basePorts, baseDefaults map[string]int
+	duplicates                     []string
 }
 
 // readMains reads the ports of every recorded main worktree with the rule of mainPorts and the recorded defaults. A key
 // is used as a directory only after validKey, and a main whose .env cannot be read is left out (its record is kept).
+// The port variables are the recorded defaults' keys, so a variable added to the configuration counts from the next
+// check, as its port does.
 func readMains(reg *Registry) map[string]mainRefresh {
 	out := map[string]mainRefresh{}
 	for k, rec := range reg.Mains {
@@ -136,9 +141,25 @@ func readMains(reg *Registry) map[string]mainRefresh {
 		if !ok {
 			continue
 		}
-		out[k] = mainRefresh{ports: portsFromEnv(env, rec.Defaults), basePorts: rec.Ports, baseDefaults: rec.Defaults}
+		f := mainRefresh{ports: portsFromEnv(env, rec.Defaults), basePorts: rec.Ports, baseDefaults: rec.Defaults}
+		if env != nil {
+			f.duplicates = env.duplicateKeys(slices.Collect(maps.Keys(rec.Defaults)))
+		}
+		out[k] = f
 	}
 	return out
+}
+
+// warnDuplicates warns about port variables that a main's .env sets on more than one line: the port is read from the
+// last line, as Sail and compose do, but Laravel's Dotenv reads the first, so the two can disagree unseen. It is only a
+// warning, and the values are not shown (a port variable name may be any key).
+func warnDuplicates(r *report, fresh map[string]mainRefresh) {
+	for _, k := range slices.Sorted(maps.Keys(fresh)) {
+		for _, name := range fresh[k].duplicates {
+			r.warn("the .env of main worktree %q sets %s on more than one line; Sail and compose use the last line, "+
+				"Laravel's Dotenv the first, so keep only one", k, cell(name))
+		}
+	}
 }
 
 // refreshMains applies what readMains found, but only to a record whose ports and defaults (all a refresh depends on)

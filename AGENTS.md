@@ -149,7 +149,9 @@ These come from deliberate decisions; change them only on purpose and update the
   directories or invalid keys are warnings (their recorded ports printed as they are), never conflicts, so a deleted
   clone cannot make `check` fail for ever. A conflict is fixed by the user: a worktree by `up`, a main worktree by hand
   (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`). Exit 1 only for a conflict
-  (`report.finish`, shared with `status`).
+  (`report.finish`, shared with `status`). A variable of a record's `defaults` that the main's `.env` sets on more than
+  one line is a warning (`warnDuplicates`, from the `.env` that `readMains` already read, so a main recorded by this
+  run is checked from the next one; the name through `cell`, never a value).
 - **`prune` writes only the registry.** It removes what `check` warns about: a `worktrees` key that fails `validKey` or
   does not resolve to a directory (`staleWorktreeKey`, the `foldRegistry` rule, so an alias key of a live worktree is
   kept: it still holds that worktree's ports, and the next `up` there folds it with `migrate`, not `prune`), a `mains`
