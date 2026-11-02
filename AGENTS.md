@@ -35,7 +35,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
-| `ps.go` | `ps` and its registry view: `entry`, `collectEntries` (`gitInRegistryDirs`, `registryPathOK`), `foldRegistry`/`foldKey` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
+| `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
 | `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `usableDir`, `staleWorktreeKey` |
@@ -186,7 +186,8 @@ These come from deliberate decisions; change them only on purpose and update the
 - **`ps --all` attribution.** With `--all` an entry is attributed to the longest listed worktree that contains it, so an
   independent repository nested inside a listed worktree is attributed to the outer one when that one is already known.
   A main record is attributed only to the main (first) worktree of a listing (`attributeMain`). On Windows only the
-  current repository's worktrees are listed (`gitInRegistryDirs`).
+  current repository's worktrees are listed (`gitInRegistryDirs`). One command runs git at most once in a directory, a
+  failure included, and adds a repository's listing once (`registryView.list`), since each run may take its timeout.
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
   case-insensitively) from the environment passed to `sail` and `docker`. It must never return `nil`: a `nil`
   `exec.Cmd.Env` inherits the whole parent environment.

@@ -260,16 +260,107 @@ func pathExists(p string) bool {
 	return err == nil
 }
 
+// registryView attributes registry records to listed worktrees for one command. collectEntries makes a new one on
+// every call; repos[0] is the current repository's listing when there is one.
+type registryView struct {
+	all   bool
+	repos [][]worktreeInfo
+	tried map[string]bool // directories git has listed in (or failed in) for this view
+}
+
+// worktreeLister runs `git worktree list` for registryView.list (replaceable in tests, to count the runs).
+var worktreeLister = listWorktrees
+
+// list runs git in dir at most once per view, since each run can take up to its timeout, and adds the listing unless
+// the same repository (the same main worktree path) is already listed: attribute keeps the first of equal matches,
+// so a second copy would change nothing. It reports whether the repositories may have changed.
+func (v *registryView) list(dir string) bool {
+	if v.tried[dir] {
+		return false
+	}
+	if v.tried == nil {
+		v.tried = map[string]bool{}
+	}
+	v.tried[dir] = true
+	l, err := worktreeLister(dir, registryPathOK)
+	if err != nil || len(l) == 0 {
+		return false
+	}
+	for _, r := range v.repos { // listWorktrees never returns an empty listing without an error
+		if r[0].Path == l[0].Path {
+			return false
+		}
+	}
+	v.repos = append(v.repos, l)
+	return true
+}
+
+// placement is what a list shows for a registry record.
+type placement int
+
+const (
+	placeListed       placement = iota // attributed to a listing that is shown
+	placeSkipped                       // another repository without all, or a usable record not attributed
+	placeUnattributed                  // all: the directory exists but no listed worktree holds it
+	placeStale                         // all: the directory is gone or the key is invalid
+	placeHidden                        // without all: gone or invalid, counted for the note
+)
+
+// place attributes key with find. With all, a record of another repository that is listable makes git list that
+// repository in key's directory (only where gitInRegistryDirs allows it). present tells whether the record's
+// directory is still there; without all a record that is not present cannot be told apart from another repository's,
+// so it is hidden and counted. present and listable are called only when an unattributed record needs them, and must
+// check validKey before they look at key.
+func (v *registryView) place(key string, present, listable func() bool,
+	find func(string, [][]worktreeInfo) (int, int, bool)) (ri, wi int, p placement) {
+	ri, wi, ok := find(key, v.repos)
+	if !ok && v.all && gitInRegistryDirs && listable() {
+		if v.list(key) {
+			ri, wi, ok = find(key, v.repos)
+		}
+	}
+	switch {
+	case ok && (v.all || ri == 0):
+		return ri, wi, placeListed
+	case ok:
+		return ri, wi, placeSkipped
+	case v.all && present():
+		return ri, wi, placeUnattributed
+	case v.all:
+		return ri, wi, placeStale
+	case !present():
+		return ri, wi, placeHidden
+	}
+	return ri, wi, placeSkipped
+}
+
+// unlisted is the entry of a record that no shown listing places (placeUnattributed or placeStale).
+func unlisted(kind, key string, ports map[string]int, p placement) entry {
+	st := stateStale
+	if p == placeUnattributed {
+		st = stateUnattributed
+	}
+	return entry{Kind: kind, Dir: key, Ports: ports, State: st}
+}
+
+// noteHidden tells, for ps and ports, how many records collectEntries left out without all.
+func noteHidden(hidden int) {
+	if hidden > 0 {
+		fmt.Fprintf(stderr, "note: registry entries not listed: %d (gone or invalid, they still hold their ports); "+
+			"use --all\n", hidden)
+	}
+}
+
 // collectEntries lists the registry entries of the current repository, or of every repository with all. hidden
 // counts entries that are gone or invalid and cannot be attributed to the current repository (only without all).
-// They still hold their ports, so the caller says so.
+// They still hold their ports, so the caller says so (noteHidden).
 func collectEntries(all bool) (entries []entry, hidden int, err error) {
 	reg, err := loadRegistry()
 	if err != nil {
 		return nil, 0, err
 	}
 	view := foldRegistry(reg)
-	var repos [][]worktreeInfo
+	v := &registryView{all: all}
 	repoErr := fmt.Errorf("not in a git repository")
 	if dir, err := cwd(); err != nil {
 		repoErr = err
@@ -278,47 +369,36 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 	} else if l, err := listWorktrees(top, anyPath); err != nil {
 		repoErr = err
 	} else {
-		repos = append(repos, l)
+		v.repos = append(v.repos, l)
 	}
-	if len(repos) == 0 && !all {
+	if len(v.repos) == 0 && !all {
 		return nil, 0, fmt.Errorf("run this inside a git repository, or use --all to list every project in the registry: %w", repoErr)
 	}
-	keys := make([]string, 0, len(view))
-	for k := range view {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
 	entries = []entry{}
-	for _, key := range keys {
+	for _, key := range slices.Sorted(maps.Keys(view)) {
 		ports := view[key]
 		if ports == nil {
 			ports = map[string]int{}
 		}
-		ri, wi, ok := attribute(key, repos)
-		if !ok && all && validKey(key) && gitInRegistryDirs {
-			// Another repository: ask git in the entry's own directory (only if it still exists).
-			if fi, err := os.Stat(key); err == nil && fi.IsDir() {
-				if l, err := listWorktrees(key, registryPathOK); err == nil && len(l) > 0 {
-					repos = append(repos, l)
-					ri, wi, ok = attribute(key, repos)
-				}
+		present := func() bool { return validKey(key) && pathExists(key) }
+		listable := func() bool { // git runs only in a directory that still exists
+			if !validKey(key) {
+				return false
 			}
+			fi, err := os.Stat(key)
+			return err == nil && fi.IsDir()
 		}
-		// Without --all only the current repository is shown. An entry of another repository is skipped on purpose;
-		// one that is gone or invalid cannot be told apart, so it is counted for the note.
-		switch {
-		case ok && (all || ri == 0):
-			entries = append(entries, buildEntry(key, ports, repos[ri], wi))
-		case ok:
-		case all && validKey(key) && pathExists(key):
-			entries = append(entries, entry{Kind: kindWorktree, Dir: key, Ports: ports, State: stateUnattributed})
-		case all:
-			entries = append(entries, entry{Kind: kindWorktree, Dir: key, Ports: ports, State: stateStale})
-		case !validKey(key) || !pathExists(key):
+		ri, wi, p := v.place(key, present, listable, attribute)
+		switch p {
+		case placeListed:
+			entries = append(entries, buildEntry(key, ports, v.repos[ri], wi))
+		case placeUnattributed, placeStale:
+			entries = append(entries, unlisted(kindWorktree, key, ports, p))
+		case placeHidden:
 			hidden++
 		}
 	}
-	mains, mainHidden := mainEntries(reg, all, &repos)
+	mains, mainHidden := mainEntries(reg, v)
 	// Mains first; never nil, so that an empty list is [] in JSON.
 	return append(append(make([]entry, 0, len(mains)+len(entries)), mains...), entries...), hidden + mainHidden, nil
 }
@@ -326,8 +406,7 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 // mainEntries lists the main worktree records: the current repository's main without all, every record with all.
 // They show the recorded ports, which up avoids, and never read the main's .env. The compose project name and the
 // docker state are left out: the name comes from that .env or the directory, so it would only be a guess.
-// A listing it runs is added to repos, as collectEntries does with its own.
-func mainEntries(reg *Registry, all bool, repos *[][]worktreeInfo) (entries []entry, hidden int) {
+func mainEntries(reg *Registry, v *registryView) (entries []entry, hidden int) {
 	for _, key := range slices.Sorted(maps.Keys(reg.Mains)) {
 		ports := reg.Mains[key].Ports
 		if ports == nil {
@@ -335,22 +414,17 @@ func mainEntries(reg *Registry, all bool, repos *[][]worktreeInfo) (entries []en
 		}
 		// Lstat, as check does: a main key that is a link is not followed (worktree keys keep their older os.Stat).
 		usable := validKey(key) && isDir(key)
-		ri, ok := attributeMain(key, *repos)
-		if !ok && all && usable && gitInRegistryDirs {
-			if l, err := listWorktrees(key, registryPathOK); err == nil && len(l) > 0 {
-				*repos = append(*repos, l)
-				ri, ok = attributeMain(key, *repos)
-			}
-		}
-		switch {
-		case ok && (all || ri == 0):
-			entries = append(entries, buildMainEntry(key, ports, (*repos)[ri][0], usable))
-		case ok:
-		case all && usable:
-			entries = append(entries, entry{Kind: kindMain, Dir: key, Ports: ports, State: stateUnattributed})
-		case all:
-			entries = append(entries, entry{Kind: kindMain, Dir: key, Ports: ports, State: stateStale})
-		case !usable:
+		isUsable := func() bool { return usable }
+		ri, _, p := v.place(key, isUsable, isUsable, func(k string, repos [][]worktreeInfo) (int, int, bool) {
+			ri, ok := attributeMain(k, repos)
+			return ri, 0, ok
+		})
+		switch p {
+		case placeListed:
+			entries = append(entries, buildMainEntry(key, ports, v.repos[ri][0], usable))
+		case placeUnattributed, placeStale:
+			entries = append(entries, unlisted(kindMain, key, ports, p))
+		case placeHidden:
 			hidden++
 		}
 	}
@@ -527,9 +601,7 @@ func cmdPs(args []string) error {
 	if !noDocker {
 		fillDockerStates(entries)
 	}
-	if hidden > 0 {
-		fmt.Fprintf(stderr, "note: registry entries not listed: %d (gone or invalid, they still hold their ports); use --all\n", hidden)
-	}
+	noteHidden(hidden)
 	if asJSON {
 		b, err := json.MarshalIndent(entries, "", "  ")
 		if err != nil {

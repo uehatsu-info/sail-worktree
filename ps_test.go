@@ -1087,3 +1087,70 @@ func TestPsMainKeysAreUntrusted(t *testing.T) {
 		}
 	}
 }
+
+// countGitRuns counts the runs of `git worktree list` in other repositories' directories, per directory.
+func countGitRuns(t *testing.T) map[string]int {
+	t.Helper()
+	runs := map[string]int{}
+	old := worktreeLister
+	worktreeLister = func(dir string, usable func(string) bool) ([]worktreeInfo, error) {
+		runs[dir]++
+		return old(dir, usable)
+	}
+	t.Cleanup(func() { worktreeLister = old })
+	return runs
+}
+
+func TestPsAllRunsGitOncePerDirectory(t *testing.T) {
+	withGitInRegistryDirs(t, true)
+	_, wt := setupWorktreeRepo(t)
+	_, otherWt := newRepoWithWorktree(t, realTempDir(t), "other", "x")
+	plain := filepath.Join(realTempDir(t), "plain") // git fails here (outside any repository)
+	if err := os.Mkdir(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Both directories are recorded twice, as a worktree and as a main.
+	writeRegistryWithMains(t,
+		map[string]map[string]int{wt: {"APP_PORT": 81}, otherWt: {"APP_PORT": 82}, plain: {"APP_PORT": 83}},
+		map[string]MainRecord{otherWt: viewMain(map[string]int{"APP_PORT": 84}), plain: viewMain(map[string]int{"APP_PORT": 85})})
+	runs := countGitRuns(t)
+	got := map[string]entry{}
+	for _, e := range psJSON(t, "--all") {
+		got[e.Kind+" "+e.Dir] = e
+	}
+	if runs[plain] != 1 || runs[otherWt] != 1 {
+		t.Errorf("git runs = %v", runs)
+	}
+	// The output stays what it was: only the worktree record of the other repository is attributed.
+	if len(got) != 5 || got["worktree "+otherWt].Worktree != "other-x" || got["worktree "+plain].State != stateUnattributed ||
+		got["main "+otherWt].State != stateUnattributed || got["main "+plain].State != stateUnattributed {
+		t.Errorf("entries = %+v", got)
+	}
+}
+
+func TestRegistryViewListsARepositoryOnce(t *testing.T) {
+	withGitInRegistryDirs(t, true)
+	_, otherWt := newRepoWithWorktree(t, realTempDir(t), "other", "x")
+	sub := filepath.Join(otherWt, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runs := countGitRuns(t)
+	yes := func() bool { return true }
+	v := &registryView{all: true}
+	if _, wi, p := v.place(otherWt, yes, yes, attribute); p != placeListed || wi != 1 {
+		t.Fatalf("worktree record: wi=%d placement=%d", wi, p)
+	}
+	// A main record in a linked worktree is not attributed, so git runs in its directory and lists the same
+	// repository again.
+	mainOnly := func(k string, repos [][]worktreeInfo) (int, int, bool) {
+		ri, ok := attributeMain(k, repos)
+		return ri, 0, ok
+	}
+	if _, _, p := v.place(sub, yes, yes, mainOnly); p != placeUnattributed {
+		t.Errorf("main record: placement=%d", p)
+	}
+	if len(v.repos) != 1 || runs[otherWt] != 1 || runs[sub] != 1 {
+		t.Errorf("listings = %d, git runs = %v", len(v.repos), runs)
+	}
+}
