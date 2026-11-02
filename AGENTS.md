@@ -194,17 +194,25 @@ These come from deliberate decisions; change them only on purpose and update the
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
   `check` record it again. Ports follow one rule (`portsFromEnv`): a valid value in the main's `.env`, the default when
   the key is absent or empty or there is no `.env`, nothing for an invalid value. The value is read with `portValue`
-  (quotes, inline comments, the last line of a duplicated key), as compose and Sail's bash do; `Get` keeps comments
-  and reads the first line, because `up` writes its result back and collapses duplicates to the first line. A
-  default counts only if it is 1 to 65535 (`validPort`), so a hand-edited recorded default outside that reserves nothing
-  (`loadConfig` already refuses one in the configuration; the check stays for the registry). A main directory that does
-  not exist is never recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file
-  is not read for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record
-  reserves nothing. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias
+  (quotes, inline comments, the last line of a duplicated key), as compose and Sail's bash do; `Get` keeps comments and
+  reads the first line, because `up` writes its result back and collapses duplicates to the first line. A default counts
+  only if it is 1 to 65535 (`validPort`), so a hand-edited recorded default outside that reserves nothing (`loadConfig`
+  already refuses one in the configuration; the check stays for the registry). A main directory that does not exist is
+  never recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file is not read
+  for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves
+  nothing. The variables are those of the run's configuration (`cfg.PortVars`), which may be a branch's, so `recordMain`
+  merges: a variable of the old record's `defaults` that the run does not know keeps its recorded default and port. Only
+  a `check` run in the main worktree itself (`checkTarget.inMain`) replaces the record, so a variable that left the
+  project is dropped only there (or by hand); until then it keeps its port reserved, and a variable that only a branch
+  has is dropped there and comes back with that branch's next `up` or `check`. A kept value is not refreshed by `up`
+  (which reads only the run's variables) or by a `check` in the project directory of a linked worktree of the same
+  repository (which records its main from that read and drops its pre-lock read of the current main), however often they
+  run; a `check` in the main worktree re-records or drops it, and a `check` anywhere else (`refreshMains`) re-reads it.
+  An unreadable `.env`, or a record that another run changed while this run waited for the lock, keeps the whole record,
+  `inMain` included. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias
   paths in a record's `worktrees` list are folded like the top-level `worktrees` keys: by `migrate` (saved by `up` and
   `rm`; only in the current main's list, so an alias in another main's list is not folded by it), and by `check` in
-  memory only (`foldKey`, the key `ofMain` looks a worktree up by); an entry that fails
-  `validKey` is never resolved.
+  memory only (`foldKey`, the key `ofMain` looks a worktree up by); an entry that fails `validKey` is never resolved.
 - **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once,
   so nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`,
   fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the process
@@ -212,6 +220,9 @@ These come from deliberate decisions; change them only on purpose and update the
   rows are probed like any row that is not `running`, and count in `CONFLICT` (`portsOf`), so `ports --all` agrees with
   `check` on conflicts, except that stale or unattributed rows count here and only give a warning in `check`. The JSON
   fields of `ports`, `process` and `pid` included, are a public contract too.
+  A recorded value that fails `validPort` (a hand-edited registry) is `host` `invalid` (`hostInvalid`, decided before
+  `running` and the probe cache): never probed (binding 0 picks a random port) nor given to `lsof`, and left out of
+  `CONFLICT`, as `check` ignores it. `invalid` is a value added to `host`; the existing values keep their meanings.
 - **`ps --all` attribution.** With `--all` an entry is attributed to the longest listed worktree that contains it, so an
   independent repository nested inside a listed worktree is attributed to the outer one when that one is already known.
   A main record is attributed only to the main (first) worktree of a listing (`attributeMain`). On Windows only the
@@ -334,7 +345,8 @@ These come from deliberate decisions; change them only on purpose and update the
 - **Ports.** A new port is searched from default+1 upwards (the default is left to the main worktree), skipping ports
   of other worktrees, ports recorded for any main worktree (`used` includes `mains`, so `up` moves a worktree off a
   main's port and says so) and ports in use. A port counts as free only if it binds on all interfaces and on `127.0.0.1`;
-  `loopbackBindBlocked` decides how a failure on `127.0.0.1` is treated per OS.
+  `loopbackBindBlocked` decides how a failure on `127.0.0.1` is treated per OS. A current assignment is kept only if
+  `validPort` holds; otherwise a new port is searched, so a hand-edited out-of-range value is not written back to `.env`.
 - **Sail sources `.env`.** `vendor/bin/sail` runs `source ./.env` (or `.env.$APP_ENV`), so `.env` is executed as shell
   code. `stop` does not refuse a symlinked `.env` for this reason: calling `sail` directly has the same exposure.
 - **`SANCTUM_STATEFUL_DOMAINS`.** Only when `up` rewrites `APP_URL` and `.env` sets the key, `addStatefulDomain`

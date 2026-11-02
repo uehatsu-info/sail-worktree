@@ -339,10 +339,13 @@ func cmdUp(args []string) error {
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		if p, ok := previous[n]; ok && p != ports[n] {
-			fmt.Fprintf(stdout, "  %s=%d (was %d, which is used elsewhere)\n", cell(n), ports[n], p)
-		} else {
+		switch p, ok := previous[n]; {
+		case !ok || p == ports[n]:
 			fmt.Fprintf(stdout, "  %s=%d\n", cell(n), ports[n])
+		case !validPort(p):
+			fmt.Fprintf(stdout, "  %s=%d (was %d, which is not a valid port)\n", cell(n), ports[n], p)
+		default:
+			fmt.Fprintf(stdout, "  %s=%d (was %d, which is used elsewhere)\n", cell(n), ports[n], p)
 		}
 	}
 	if statefulAdded != "" {
@@ -381,6 +384,7 @@ func mainPorts(dir string, vars []PortVar) (ports, defaults map[string]int, envO
 type mainRead struct {
 	ports, defaults, basePorts, baseDefaults map[string]int
 	envOK, baseHad                           bool
+	inMain                                   bool // check runs in the main worktree (recordMain's inMain); up never does
 }
 
 // recordMainRead records m under the lock by the rule refreshMains follows: the read is applied only while the record is
@@ -391,7 +395,7 @@ type mainRead struct {
 func (r *Registry) recordMainRead(main, worktree string, m mainRead) bool {
 	rec, had := r.Mains[main]
 	current := !had || m.baseHad && sameBase(rec, m.basePorts, m.baseDefaults)
-	return r.recordMain(main, worktree, m.ports, m.defaults, m.envOK && current)
+	return r.recordMain(main, worktree, m.ports, m.defaults, m.envOK && current, m.inMain)
 }
 
 // readMainEnv reads the .env of a main worktree's project directory without following a link. env is nil when there

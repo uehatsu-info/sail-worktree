@@ -298,23 +298,43 @@ func loadRegistry() (*Registry, error) {
 	return r, nil
 }
 
-// recordMain stores the ports of the main worktree main. ok=false (its .env could not be read) keeps the ports and
-// defaults of an existing record; a new record then reserves nothing. worktree, when not empty, is added to its linked worktrees.
-// It reports whether the record changed.
-func (r *Registry) recordMain(main, worktree string, ports, defaults map[string]int, ok bool) bool {
+// recordMain stores the ports of the main worktree main, read for the port variables of the run's configuration
+// (defaults' keys). It reports whether the record changed. worktree, when not empty, is added to its linked worktrees.
+//   - ok=false (its .env could not be read, or recordMainRead found a newer record) keeps the ports and defaults of an
+//     existing record, also for inMain; a new record then reserves nothing.
+//   - inMain (check runs in the main worktree itself) replaces them: the main's own configuration decides, so a
+//     variable that left it is dropped here.
+//   - Otherwise the run may be on a branch whose configuration lacks a variable the main still uses, so a variable of
+//     the old record's defaults that the run does not know keeps its recorded default and port. They are not re-read
+//     here: recordMain reads no .env, and check drops its pre-lock read of the current main. A check run outside the
+//     repository's project directory re-reads them (refreshMains), and one run in the main worktree re-records or
+//     drops them.
+func (r *Registry) recordMain(main, worktree string, ports, defaults map[string]int, ok, inMain bool) bool {
 	if r.Mains == nil {
 		r.Mains = map[string]MainRecord{}
 	}
 	old, had := r.Mains[main]
 	rec := MainRecord{Ports: old.Ports, Defaults: old.Defaults, Worktrees: append([]string(nil), old.Worktrees...)}
-	if ok || !had {
-		rec.Ports, rec.Defaults = ports, defaults
+	replaced := ok || !had
+	if replaced {
+		rec.Ports, rec.Defaults = maps.Clone(ports), maps.Clone(defaults)
 	}
 	if rec.Ports == nil {
 		rec.Ports = map[string]int{}
 	}
 	if rec.Defaults == nil {
 		rec.Defaults = map[string]int{}
+	}
+	if replaced && !inMain {
+		for name, def := range old.Defaults {
+			if _, known := defaults[name]; known {
+				continue
+			}
+			rec.Defaults[name] = def
+			if p, recorded := old.Ports[name]; recorded {
+				rec.Ports[name] = p
+			}
+		}
 	}
 	if worktree != "" && !slices.Contains(rec.Worktrees, worktree) {
 		rec.Worktrees = append(rec.Worktrees, worktree)

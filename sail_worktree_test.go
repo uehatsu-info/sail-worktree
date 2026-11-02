@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -53,6 +54,13 @@ func TestAllocate(t *testing.T) {
 	got, _ = allocatePorts(vars, map[string]int{"DB": 3310}, map[int]bool{3310: true}, func(int) bool { return true })
 	if got["DB"] != 3307 {
 		t.Errorf("got %v", got)
+	}
+	// An assignment that is not a port number (a hand-edited registry) is replaced, not written to .env again.
+	for _, bad := range []int{0, -1, 65536, 70000} {
+		got, _ = allocatePorts(vars, map[string]int{"APP_PORT": bad}, nil, func(int) bool { return true })
+		if got["APP_PORT"] != 81 {
+			t.Errorf("current %d: got %v", bad, got)
+		}
 	}
 }
 
@@ -1309,6 +1317,54 @@ func TestUpKeepsIPv6BracketsInAppURL(t *testing.T) {
 	port, _ := e.Get("APP_PORT")
 	if v, _ := e.Get("APP_URL"); v != "http://[::1]:"+port {
 		t.Errorf("APP_URL=%q", v)
+	}
+}
+
+func TestUpReplacesAnInvalidRecordedPort(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(main, ".env"), "APP_NAME=x\n")
+	reg := &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 0}}}
+	if err := reg.save(); err != nil {
+		t.Fatal(err)
+	}
+	captureRunner(t)
+	out := captureStdout(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	e, _ := readEnv(filepath.Join(wt, ".env"))
+	v, _ := e.Get("APP_PORT")
+	if p, err := strconv.Atoi(v); err != nil || !validPort(p) {
+		t.Fatalf("APP_PORT=%q", v)
+	}
+	if want := "  APP_PORT=" + v + " (was 0, which is not a valid port)\n"; !strings.Contains(out.String(), want) {
+		t.Errorf("output does not contain %q:\n%s", want, out)
+	}
+}
+
+// A branch whose configuration lacks a variable must not free the main worktree's port for it.
+func TestUpKeepsAMainVariableUnknownToTheBranch(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8080\n")
+	rec := MainRecord{Ports: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6380},
+		Defaults: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6379}}
+	if err := (&Registry{Worktrees: map[string]map[string]int{}, Mains: map[string]MainRecord{main: rec}}).save(); err != nil {
+		t.Fatal(err)
+	}
+	captureRunner(t)
+	captureStdout(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := loadRegistry()
+	got := reg.Mains[main]
+	if got.Ports["APP_PORT"] != 8080 || got.Ports["FORWARD_REDIS_PORT"] != 6380 || got.Defaults["FORWARD_REDIS_PORT"] != 6379 {
+		t.Errorf("main record = %+v", got)
+	}
+	if !reg.used("")[6380] {
+		t.Error("the kept port is not avoided")
 	}
 }
 

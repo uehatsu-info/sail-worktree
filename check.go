@@ -40,6 +40,7 @@ type checkTarget struct {
 	main, worktree  string
 	ports, defaults map[string]int
 	envOK           bool
+	inMain          bool // check runs in the main worktree, whose configuration decides the record's variables
 }
 
 // currentMain finds the main worktree to record. Outside a repository or a project there is none, which is only a
@@ -68,8 +69,8 @@ func currentMain(r *report) checkTarget {
 	if !envOK {
 		r.warn("%s", mainEnvUnreadable(c.main))
 	}
-	cur := checkTarget{main: c.main, ports: ports, defaults: defaults, envOK: envOK}
-	if !c.isMain() {
+	cur := checkTarget{main: c.main, ports: ports, defaults: defaults, envOK: envOK, inMain: c.isMain()}
+	if !cur.inMain {
 		cur.worktree = c.root
 	}
 	return cur
@@ -116,7 +117,7 @@ func checkRecord(r *report) (*Registry, error) {
 		}
 		base, baseHad := pre.Mains[cur.main] // pre was read before the .env, so a newer record never passes for the base
 		changed = reg.recordMainRead(cur.main, wt, mainRead{ports: cur.ports, defaults: cur.defaults, envOK: cur.envOK,
-			basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad})
+			inMain: cur.inMain, basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad})
 		delete(fresh, cur.main) // currentMain read the same .env after readMains
 	}
 	if refreshMains(reg, fresh) {
