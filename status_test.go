@@ -114,6 +114,10 @@ func TestStatusProblems(t *testing.T) {
 		{"port held by another entry", func(t *testing.T, _, wt string) {
 			writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}, filepath.Join(realTempDir(t), "elsewhere"): {"FORWARD_PORT": 81}})
 		}, "port 81 (APP_PORT) is also recorded for"},
+		{"port held by a main worktree", func(t *testing.T, _, wt string) {
+			writeRegistryWithMains(t, map[string]map[string]int{wt: {"APP_PORT": 81}},
+				map[string]MainRecord{filepath.Join(realTempDir(t), "gone-main"): viewMain(map[string]int{"FORWARD_PORT": 81})})
+		}, "port 81 (APP_PORT) is also recorded for main worktree"},
 		{"APP_URL uses another port", func(t *testing.T, _, wt string) {
 			setEnv(t, wt, "APP_URL", "http://localhost:9000")
 		}, "does not use APP_PORT 81"},
@@ -243,6 +247,22 @@ func TestStatusEscapesUntrustedText(t *testing.T) {
 	_, wt := statusSetup(t, "")
 	setEnv(t, wt, "APP_PORT", "8\x1b[31m0\u202e")
 	out, _, _ := runStatus(t)
+	for _, bad := range []string{"\x1b", "\u202e"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("output contains %q:\n%q", bad, out)
+		}
+	}
+}
+
+func TestStatusEscapesMainWorktreeKeys(t *testing.T) {
+	_, wt := statusSetup(t, "")
+	evil := filepath.Join(string(filepath.Separator), "x", "a\u202eb\x1b[31m")
+	writeRegistryWithMains(t, map[string]map[string]int{wt: {"APP_PORT": 81}},
+		map[string]MainRecord{evil: viewMain(map[string]int{"EVIL\x1b_PORT": 81})})
+	out, _, err := runStatus(t)
+	if err == nil || !strings.Contains(out, "also recorded for main worktree") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
 	for _, bad := range []string{"\x1b", "\u202e"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("output contains %q:\n%q", bad, out)

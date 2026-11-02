@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +22,7 @@ import (
 
 // entry is one registry entry as ps shows it. The JSON field names are a public contract.
 type entry struct {
+	Kind     string         `json:"kind"`     // kindWorktree or kindMain
 	Dir      string         `json:"dir"`      // project directory (the registry key)
 	Worktree string         `json:"worktree"` // name of the worktree root
 	Subdir   string         `json:"subdir"`   // project directory below the worktree root, "." at the root
@@ -28,6 +31,12 @@ type entry struct {
 	Name     string         `json:"name"`  // compose project name
 	State    string         `json:"state"` // one of the state constants below
 }
+
+// Kinds of an entry: a worktree record (registry "worktrees") or a main worktree record ("mains").
+const (
+	kindWorktree = "worktree"
+	kindMain     = "main"
+)
 
 // States of an entry. stateNone means that nothing was checked for it.
 const (
@@ -223,20 +232,22 @@ func attribute(key string, repos [][]worktreeInfo) (repo, wt int, ok bool) {
 	return
 }
 
-func buildEntry(key string, ports map[string]int, l []worktreeInfo, wt int) entry {
-	w := l[wt]
-	rel, err := filepath.Rel(w.Path, key)
+// placeIn fills the columns that the listed worktree w gives an entry for key.
+func placeIn(e *entry, w worktreeInfo) {
+	rel, err := filepath.Rel(w.Path, e.Dir)
 	if err != nil {
 		rel = "?"
 	}
-	branch := w.Branch
+	e.Worktree, e.Subdir, e.Branch = filepath.Base(w.Path), filepath.ToSlash(rel), w.Branch
 	if w.Detached {
-		branch = "(detached)"
+		e.Branch = "(detached)"
 	}
-	e := entry{
-		Dir: key, Worktree: filepath.Base(w.Path), Subdir: filepath.ToSlash(rel), Branch: branch,
-		Ports: ports, Name: projectName(l[0].Path, w.Path, key), State: stateNone,
-	}
+}
+
+func buildEntry(key string, ports map[string]int, l []worktreeInfo, wt int) entry {
+	w := l[wt]
+	e := entry{Kind: kindWorktree, Dir: key, Ports: ports, Name: projectName(l[0].Path, w.Path, key), State: stateNone}
+	placeIn(&e, w)
 	// Nothing is recorded for the main worktree (up refuses it), so an entry there is not valid either.
 	if wt == 0 || w.Prunable || !pathExists(w.Path) || !pathExists(key) {
 		e.State = stateStale
@@ -300,14 +311,67 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 			entries = append(entries, buildEntry(key, ports, repos[ri], wi))
 		case ok:
 		case all && validKey(key) && pathExists(key):
-			entries = append(entries, entry{Dir: key, Ports: ports, State: stateUnattributed})
+			entries = append(entries, entry{Kind: kindWorktree, Dir: key, Ports: ports, State: stateUnattributed})
 		case all:
-			entries = append(entries, entry{Dir: key, Ports: ports, State: stateStale})
+			entries = append(entries, entry{Kind: kindWorktree, Dir: key, Ports: ports, State: stateStale})
 		case !validKey(key) || !pathExists(key):
 			hidden++
 		}
 	}
-	return entries, hidden, nil
+	mains, mainHidden := mainEntries(reg, all, &repos)
+	// Mains first; never nil, so that an empty list is [] in JSON.
+	return append(append(make([]entry, 0, len(mains)+len(entries)), mains...), entries...), hidden + mainHidden, nil
+}
+
+// mainEntries lists the main worktree records: the current repository's main without all, every record with all.
+// They show the recorded ports, which up avoids, and never read the main's .env. The compose project name and the
+// docker state are left out: the name comes from that .env or the directory, so it would only be a guess.
+// A listing it runs is added to repos, as collectEntries does with its own.
+func mainEntries(reg *Registry, all bool, repos *[][]worktreeInfo) (entries []entry, hidden int) {
+	for _, key := range slices.Sorted(maps.Keys(reg.Mains)) {
+		ports := reg.Mains[key].Ports
+		if ports == nil {
+			ports = map[string]int{}
+		}
+		// Lstat, as check does: a main key that is a link is not followed (worktree keys keep their older os.Stat).
+		usable := validKey(key) && isDir(key)
+		ri, ok := attributeMain(key, *repos)
+		if !ok && all && usable && gitInRegistryDirs {
+			if l, err := listWorktrees(key, registryPathOK); err == nil && len(l) > 0 {
+				*repos = append(*repos, l)
+				ri, ok = attributeMain(key, *repos)
+			}
+		}
+		switch {
+		case ok && (all || ri == 0):
+			entries = append(entries, buildMainEntry(key, ports, (*repos)[ri][0], usable))
+		case ok:
+		case all && usable:
+			entries = append(entries, entry{Kind: kindMain, Dir: key, Ports: ports, State: stateUnattributed})
+		case all:
+			entries = append(entries, entry{Kind: kindMain, Dir: key, Ports: ports, State: stateStale})
+		case !usable:
+			hidden++
+		}
+	}
+	return entries, hidden
+}
+
+// attributeMain finds the repository whose main worktree holds key, which must not be inside one of its linked
+// worktrees (such a record would not be a main's).
+func attributeMain(key string, repos [][]worktreeInfo) (repo int, ok bool) {
+	ri, wi, ok := attribute(key, repos)
+	return ri, ok && wi == 0
+}
+
+// buildMainEntry is the entry of a main record that a listing places; it has no compose project name (see mainEntries).
+func buildMainEntry(key string, ports map[string]int, w worktreeInfo, usable bool) entry {
+	e := entry{Kind: kindMain, Dir: key, Ports: ports, State: stateNone}
+	placeIn(&e, w)
+	if !usable {
+		e.State = stateStale
+	}
+	return e
 }
 
 // jsonEscape writes the runes that strconv.IsPrint rejects (DEL, format characters such as U+202E, ...) as \uXXXX
@@ -336,6 +400,17 @@ func cell(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// worktreeCell marks a main worktree's row, so the tables need no new column.
+func worktreeCell(kind, name string) string {
+	if kind != kindMain {
+		return cell(name)
+	}
+	if name == "" {
+		return "(main)"
+	}
+	return cell(name) + " (main)"
 }
 
 func portsCell(ports map[string]int) string {
@@ -402,7 +477,7 @@ func fillDockerStates(entries []entry) {
 	asked := false
 	for i := range entries {
 		e := &entries[i]
-		if e.State != stateNone {
+		if e.State != stateNone || e.Kind == kindMain { // docker is not asked about a main: its name is unknown
 			continue
 		}
 		if e.Name == "" { // not reachable for a valid entry; never report "-" as if docker had been skipped
@@ -425,7 +500,7 @@ func renderPs(w io.Writer, entries []entry) {
 	tw := tabwriter.NewWriter(w, 0, 8, 2, ' ', 0)
 	fmt.Fprintln(tw, "WORKTREE\tSUBDIR\tBRANCH\tPORTS\tSTATE\tDIR")
 	for _, e := range entries {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", cell(e.Worktree), cell(e.Subdir), cell(e.Branch),
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", worktreeCell(e.Kind, e.Worktree), cell(e.Subdir), cell(e.Branch),
 			cell(portsCell(e.Ports)), cell(e.State), cell(e.Dir))
 	}
 	tw.Flush()

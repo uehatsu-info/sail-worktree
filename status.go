@@ -215,7 +215,7 @@ func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) 
 		if !haveEnv {
 			port = regPort
 		}
-		for _, other := range otherHolders(view, c.root, port) {
+		for _, other := range otherHolders(view, reg.Mains, c.root, port) {
 			r.problem("port %d (%s) is also recorded for %s", port, v.Name, other)
 		}
 		host, blocked := hostState(port, state)
@@ -233,8 +233,10 @@ func parsePort(s string) (int, bool) {
 	return p, err == nil && validPort(p)
 }
 
-// otherHolders lists, sorted, the registry entries other than self that record port, as "dir (VARIABLE)".
-func otherHolders(view map[string]map[string]int, self string, port int) []string {
+// otherHolders lists, sorted, the registry entries other than self that record port, as "dir (VARIABLE)", and then
+// the main worktree records that do, as `main worktree "dir" (VARIABLE)`. Every main record counts, also one of a
+// directory that is gone, because up avoids them all and would move this port on its next run.
+func otherHolders(view map[string]map[string]int, mains map[string]MainRecord, self string, port int) []string {
 	if port == 0 {
 		return nil
 	}
@@ -250,7 +252,16 @@ func otherHolders(view map[string]map[string]int, self string, port int) []strin
 		}
 	}
 	sort.Strings(out)
-	return out
+	var ofMains []string
+	for dir, rec := range mains {
+		for name, p := range rec.Ports {
+			if p == port {
+				ofMains = append(ofMains, fmt.Sprintf("main worktree %q (%s)", dir, name))
+			}
+		}
+	}
+	sort.Strings(ofMains)
+	return append(out, ofMains...)
 }
 
 func portText(p int, ok bool) string {

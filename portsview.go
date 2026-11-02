@@ -14,6 +14,7 @@ import (
 
 // portRow is one registry port as `ports` shows it. The JSON field names are a public contract.
 type portRow struct {
+	Kind     string `json:"kind"` // the kind of the entry, as in ps
 	Port     int    `json:"port"`
 	Variable string `json:"variable"`
 	Worktree string `json:"worktree"`
@@ -83,21 +84,21 @@ func parseLsof(out string) (name string, pid int, ok bool) {
 	return name, pid, true
 }
 
-// portsOf lists the rows of the entries, sorted by port. A port recorded more than once (by two entries, or by two
-// variables of one) marks all its rows as a conflict.
+// portsOf lists the rows of the entries, sorted by port. A port recorded more than once (by two entries, a main
+// worktree's included, or by two variables of one) marks all its rows as a conflict.
 func portsOf(entries []entry) []portRow {
 	var rows []portRow
 	count := map[int]int{}
 	for _, e := range entries {
 		for name, p := range e.Ports {
-			rows = append(rows, portRow{Port: p, Variable: name, Worktree: e.Worktree, Subdir: e.Subdir, State: e.State})
+			rows = append(rows, portRow{Kind: e.Kind, Port: p, Variable: name, Worktree: e.Worktree, Subdir: e.Subdir, State: e.State})
 			count[p]++
 		}
 	}
 	for i := range rows {
 		rows[i].Conflict = count[rows[i].Port] > 1
 	}
-	sort.Slice(rows, func(i, j int) bool {
+	sort.SliceStable(rows, func(i, j int) bool { // equal rows (two mains named alike) keep the entries' order
 		a, b := rows[i], rows[j]
 		if a.Port != b.Port {
 			return a.Port < b.Port
@@ -236,7 +237,7 @@ func renderPorts(rows []portRow) {
 		if r.Conflict {
 			conflict = "yes"
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", r.Port, cell(r.Variable), cell(r.Worktree), cell(r.Subdir),
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", r.Port, cell(r.Variable), worktreeCell(r.Kind, r.Worktree), cell(r.Subdir),
 			cell(r.State), cell(hostCell(r)), cell(conflict))
 	}
 	tw.Flush()

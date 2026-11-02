@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -924,5 +925,165 @@ func TestPsAllRunsGitInOtherRepositoriesOnlyWhenAllowed(t *testing.T) {
 	withGitInRegistryDirs(t, false)
 	if e := other(); asked != 0 || e.State != stateUnattributed || e.Worktree != "" || e.Ports["APP_PORT"] != 82 {
 		t.Errorf("without git: asked=%d entry=%+v", asked, e)
+	}
+}
+
+// writeRegistryWithMains writes the registry with worktree records and main worktree records.
+func writeRegistryWithMains(t *testing.T, wts map[string]map[string]int, mains map[string]MainRecord) {
+	t.Helper()
+	b, err := json.Marshal(Registry{Worktrees: wts, Mains: mains})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, mustRegistryPath(t), string(b))
+}
+
+func viewMain(ports map[string]int) MainRecord {
+	return MainRecord{Ports: ports, Defaults: map[string]int{}}
+}
+
+func TestPsListsMainWorktreeRecords(t *testing.T) {
+	withGitInRegistryDirs(t, true)
+	main, wt := setupWorktreeRepo(t)
+	otherMain, _ := newRepoWithWorktree(t, realTempDir(t), "other", "x")
+	gone := filepath.Join(realTempDir(t), "gone")
+	writeRegistryWithMains(t, map[string]map[string]int{wt: {"APP_PORT": 81}}, map[string]MainRecord{
+		main:      viewMain(map[string]int{"APP_PORT": 80}),
+		otherMain: viewMain(map[string]int{"APP_PORT": 8080}),
+		gone:      viewMain(map[string]int{"APP_PORT": 90}),
+	})
+
+	out, errOut, err := runPs(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "app (main)") || strings.Contains(out, "8080") || strings.Contains(out, "APP_PORT=90") {
+		t.Errorf("table:\n%s", out)
+	}
+	if !strings.Contains(errOut, "registry entries not listed: 1") { // the gone main still holds its port
+		t.Errorf("stderr = %q", errOut)
+	}
+	es := psJSON(t)
+	if len(es) != 2 {
+		t.Fatalf("entries = %+v", es)
+	}
+	want := entry{Kind: kindMain, Dir: main, Worktree: "app", Subdir: ".", Branch: "main",
+		Ports: map[string]int{"APP_PORT": 80}, State: stateNone}
+	if e := es[0]; e.Kind != want.Kind || e.Dir != want.Dir || e.Worktree != want.Worktree || e.Subdir != want.Subdir ||
+		e.Branch != want.Branch || e.Name != "" || e.State != want.State || e.Ports["APP_PORT"] != 80 {
+		t.Errorf("main entry = %+v", e)
+	}
+	if es[1].Kind != kindWorktree || es[1].Dir != wt {
+		t.Errorf("worktree entry = %+v", es[1])
+	}
+
+	all := psJSON(t, "--all")
+	got := map[string]entry{}
+	for _, e := range all {
+		got[e.Kind+" "+e.Dir] = e
+	}
+	if len(all) != 4 || got["main "+gone].State != stateStale || got["main "+otherMain].Worktree != "other" ||
+		got["main "+otherMain].State != stateNone || got["worktree "+wt].State != stateNone {
+		t.Errorf("--all entries = %+v", all)
+	}
+	for i, e := range all { // main rows come first
+		if (e.Kind == kindMain) != (i < 3) {
+			t.Errorf("order: %+v", all)
+		}
+	}
+}
+
+func TestPsMainOfAnotherRepositoryWithoutGit(t *testing.T) {
+	withGitInRegistryDirs(t, false) // as on Windows
+	setupWorktreeRepo(t)
+	otherMain, _ := newRepoWithWorktree(t, realTempDir(t), "other", "x")
+	writeRegistryWithMains(t, nil, map[string]MainRecord{otherMain: viewMain(map[string]int{"APP_PORT": 80})})
+	es := psJSON(t, "--all")
+	if len(es) != 1 || es[0].Kind != kindMain || es[0].State != stateUnattributed || es[0].Worktree != "" {
+		t.Errorf("entries = %+v", es)
+	}
+	out, _, _ := runPs(t, "--all")
+	if !strings.Contains(out, "(main)") {
+		t.Errorf("table:\n%s", out)
+	}
+}
+
+func TestPsJSONKeepsTheFieldsOfWorktreeRows(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeRegistryWithMains(t, map[string]map[string]int{wt: {"APP_PORT": 81}},
+		map[string]MainRecord{main: viewMain(map[string]int{"APP_PORT": 80})})
+	out, _, err := runPs(t, "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %v", rows)
+	}
+	want := []string{"branch", "dir", "kind", "name", "ports", "state", "subdir", "worktree"}
+	for _, r := range rows {
+		if keys := slices.Sorted(maps.Keys(r)); !slices.Equal(keys, want) {
+			t.Errorf("keys = %v, want %v", keys, want)
+		}
+	}
+	w := rows[1]
+	if w["kind"] != "worktree" || w["dir"] != wt || w["worktree"] != "app-feat" || w["subdir"] != "." ||
+		w["branch"] != "feat" || w["name"] != projectName(main, wt, wt) || w["state"] != "-" {
+		t.Errorf("worktree row = %v", w)
+	}
+	if rows[0]["kind"] != "main" || rows[0]["name"] != "" {
+		t.Errorf("main row = %v", rows[0])
+	}
+}
+
+func TestPsDoesNotAskDockerAboutMains(t *testing.T) {
+	main, _ := setupWorktreeRepo(t)
+	writeRegistryWithMains(t, nil, map[string]MainRecord{main: viewMain(map[string]int{"APP_PORT": 80})})
+	calls := useDocker(t, `[{"Name":"app","Status":"running(1)"}]`, nil)
+	es := psJSON(t)
+	if len(es) != 1 || es[0].State != stateNone || len(*calls) != 0 {
+		t.Errorf("entries = %+v, docker calls = %v", es, *calls)
+	}
+}
+
+func TestPsMainKeysAreUntrusted(t *testing.T) {
+	withGitInRegistryDirs(t, true)
+	setupWorktreeRepo(t)
+	evil := filepath.Join(string(filepath.Separator), "x", "a\u202eb\nc\x1b[31m")
+	writeRegistryWithMains(t, nil, map[string]MainRecord{
+		evil:            viewMain(map[string]int{"EVIL\x1b_PORT": 81}),
+		"relative/path": viewMain(map[string]int{"APP_PORT": 82}),
+		"":              viewMain(nil),
+	})
+	out, errOut, err := runPs(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out) != "no registry entries" || !strings.Contains(errOut, "registry entries not listed: 3") {
+		t.Errorf("stdout = %q, stderr = %q", out, errOut)
+	}
+	out, _, err = runPs(t, "--all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"\u202e", "\x1b"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("output contains %q:\n%q", bad, out)
+		}
+	}
+	if len(strings.Split(strings.TrimSpace(out), "\n")) != 4 {
+		t.Errorf("output = %q", out)
+	}
+	js, _, err := runPs(t, "--all", "--json")
+	if err != nil || strings.Contains(js, "\u202e") || !strings.Contains(js, `\u202e`) {
+		t.Errorf("JSON = %q, %v", js, err)
+	}
+	for _, e := range psJSON(t, "--all") {
+		if e.Kind != kindMain || e.State != stateStale || e.Worktree != "" || e.Ports == nil {
+			t.Errorf("entry = %+v", e)
+		}
 	}
 }

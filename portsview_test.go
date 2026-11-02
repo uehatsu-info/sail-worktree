@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -414,5 +416,94 @@ func TestPortsMixedStatesOnOnePort(t *testing.T) {
 	}
 	if len(*probes) != 1 {
 		t.Errorf("probes = %v", *probes)
+	}
+}
+
+func TestPortsListsMainWorktreeRecords(t *testing.T) {
+	main, wt, other := portsSetup(t)
+	otherMain, _ := newRepoWithWorktree(t, realTempDir(t), "foreign2", "y")
+	writeRegistryWithMains(t, map[string]map[string]int{wt: {"APP_PORT": 81}, other: {"APP_PORT": 82}},
+		map[string]MainRecord{
+			main:      viewMain(map[string]int{"APP_PORT": 81, "FORWARD_DB_PORT": 3306}),
+			otherMain: viewMain(map[string]int{"APP_PORT": 82}),
+		})
+	probes, _ := portsFakes(t, nil, nil)
+	rows := portsJSON(t)
+	if len(rows) != 4 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	for _, r := range rows {
+		wantKind := kindWorktree
+		if r.Worktree == "app" {
+			wantKind = kindMain
+		}
+		if r.Kind != wantKind || r.Conflict != (r.Port == 81) || r.Host != hostFree {
+			t.Errorf("row %+v", r)
+		}
+	}
+	if !slices.Contains(*probes, 3306) {
+		t.Errorf("the main's port was not probed: %v", *probes)
+	}
+	out, _, _ := runPorts(t)
+	if strings.Count(out, "yes") != 2 || !strings.Contains(out, "app (main)") {
+		t.Errorf("table:\n%s", out)
+	}
+
+	// With --all, another repository's main holds 82 as well: ports agrees with check.
+	for _, r := range portsJSON(t, "--all") {
+		if r.Conflict != (r.Port == 81 || r.Port == 82) {
+			t.Errorf("--all row %+v", r)
+		}
+	}
+	if rows := portsJSON(t, "3306"); len(rows) != 1 || rows[0].Kind != kindMain || rows[0].Variable != "FORWARD_DB_PORT" {
+		t.Errorf("filtered rows = %+v", rows)
+	}
+}
+
+func TestPortsJSONKeepsTheFieldsOfWorktreeRows(t *testing.T) {
+	portsSetup(t)
+	portsFakes(t, nil, nil)
+	out, _, err := runPorts(t, "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(out), &rows); err != nil || len(rows) == 0 {
+		t.Fatalf("rows = %v, %v", rows, err)
+	}
+	want := []string{"conflict", "host", "kind", "pid", "port", "process", "state", "subdir", "variable", "worktree"}
+	for _, r := range rows {
+		if keys := slices.Sorted(maps.Keys(r)); !slices.Equal(keys, want) || r["kind"] != "worktree" {
+			t.Errorf("row = %v", r)
+		}
+	}
+}
+
+func TestPortsEscapesMainWorktreeRecords(t *testing.T) {
+	setupWorktreeRepo(t)
+	evil := filepath.Join(string(filepath.Separator), "x", "a\u202eb\nc\x1b[31m")
+	writeRegistryWithMains(t, nil, map[string]MainRecord{evil: viewMain(map[string]int{"EVIL\x1b\u202e_PORT": 81})})
+	portsFakes(t, nil, nil)
+	out, _, err := runPorts(t, "--all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, _, err := runPorts(t, "--all", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{out, js} {
+		for _, bad := range []string{"\u202e", "\x1b"} {
+			if strings.Contains(s, bad) {
+				t.Errorf("output contains %q:\n%q", bad, s)
+			}
+		}
+	}
+	if !strings.Contains(out, `EVIL\x1b\u202e_PORT`) || !strings.Contains(out, "(main)") ||
+		len(strings.Split(strings.TrimSpace(out), "\n")) != 2 {
+		t.Errorf("table = %q", out)
+	}
+	if rows := portsJSON(t, "--all"); len(rows) != 1 || rows[0].Kind != kindMain || rows[0].State != stateStale {
+		t.Errorf("rows = %+v", rows)
 	}
 }

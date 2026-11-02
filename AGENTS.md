@@ -121,7 +121,12 @@ These come from deliberate decisions; change them only on purpose and update the
   `cleanEnv(nil)` in the system temp directory); a failure is the state `unknown`, never an error, and a test that does
   not fake `output` must pass `--no-docker`. Every untrusted string is printed through `cell`/`escapeControl`. The JSON
   field names of `ps` are a public contract (`--json` goes through `jsonEscape`). Output goes to the package `stdout`,
-  never `fmt.Println`. `status` reuses `checkOwnEnv`, `upOverrideKeys`, `projectName` and `addStatefulDomain` (on a copy
+  never `fmt.Println`. Main worktree records (`mains`) are shown too (`kind` `main`, before the worktree rows;
+  `mainEntries`) with their recorded `Ports`, never a read of the main's `.env`; a main key is used as a directory
+  (`isDir`, git) only after `validKey`, docker is never asked about it (its compose project name depends on that `.env`,
+  so `name` is empty and `state` is `-`, `stale` or `unattributed`), and `status` counts every main record as another
+  holder (`otherHolders`), as `used` does. The `kind` field was added to both JSON outputs; existing fields keep their
+  names and meanings. `status` reuses `checkOwnEnv`, `upOverrideKeys`, `projectName` and `addStatefulDomain` (on a copy
   of `.env`) instead of re-implementing them, prints only an allow-list of facts (never other `.env` values, and not
   even an invalid port value, because a port variable name may be any key; `APP_URL` without credentials, query and
   fragment), never reads a symlinked `.env`, and exits 1 after the report when it found a problem (warnings do not).
@@ -171,12 +176,15 @@ These come from deliberate decisions; change them only on purpose and update the
   never resolved.
 - **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once,
   so nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`,
-  fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the
-  process called itself: it is printed through `cell`/`jsonEscape`. The port argument is digits only, 1 to 65535. The
-  JSON fields of `ports`, `process` and `pid` included, are a public contract too.
-- **`ps --all` attribution.** With `--all` an entry is attributed to the longest listed worktree that contains it, so
-  an independent repository nested inside a listed worktree is attributed to the outer one when that one is already
-  known. On Windows only the current repository's worktrees are listed (`gitInRegistryDirs`).
+  fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the process
+  called itself: it is printed through `cell`/`jsonEscape`. The port argument is digits only, 1 to 65535. Main worktree
+  rows are probed like any row that is not `running`, and count in `CONFLICT` (`portsOf`), so `ports --all` agrees with
+  `check` on conflicts, except that stale or unattributed rows count here and only give a warning in `check`. The JSON
+  fields of `ports`, `process` and `pid` included, are a public contract too.
+- **`ps --all` attribution.** With `--all` an entry is attributed to the longest listed worktree that contains it, so an
+  independent repository nested inside a listed worktree is attributed to the outer one when that one is already known.
+  A main record is attributed only to the main (first) worktree of a listing (`attributeMain`). On Windows only the
+  current repository's worktrees are listed (`gitInRegistryDirs`).
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
   case-insensitively) from the environment passed to `sail` and `docker`. It must never return `nil`: a `nil`
   `exec.Cmd.Env` inherits the whole parent environment.
