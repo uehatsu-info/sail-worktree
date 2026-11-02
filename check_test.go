@@ -610,3 +610,18 @@ func TestCheckAtTheRootOfASubdirectoryProjectSaysWhereToRun(t *testing.T) {
 		t.Errorf("mains = %+v", reg.Mains)
 	}
 }
+
+func TestCheckInABareLayoutRecordsNoMain(t *testing.T) {
+	bare, _, _ := setupBareWorktreeRepo(t)
+	out, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "is bare, so there is no main worktree checkout") || strings.Contains(out, "recorded main worktree") {
+		t.Errorf("output:\n%s", out)
+	}
+	reg, _ := loadRegistry()
+	if _, ok := reg.Mains[bare]; ok || len(reg.Mains) != 0 {
+		t.Errorf("mains = %v", reg.Mains)
+	}
+}

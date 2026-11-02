@@ -50,6 +50,10 @@ func currentMain(r *report) checkTarget {
 			"the project directory or below it", err)
 		return checkTarget{}
 	}
+	if c.bare {
+		r.warn("no main worktree was recorded: the repository %q is bare, so there is no main worktree checkout", c.mainTop)
+		return checkTarget{}
+	}
 	cfg, err := c.config()
 	if err != nil {
 		r.warn("no main worktree was recorded: %v", err)

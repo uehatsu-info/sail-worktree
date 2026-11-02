@@ -29,11 +29,11 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | File | Role |
 |---|---|
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
-| `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv` (a main worktree's ports), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
+| `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv` (a main worktree's ports), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
-| `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
+| `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
@@ -215,7 +215,9 @@ These come from deliberate decisions; change them only on purpose and update the
   failure included, and adds a repository's listing once (`registryView.list`), since each run may take its timeout.
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
   case-insensitively) from the environment passed to `sail` and `docker`. It must never return `nil`: a `nil`
-  `exec.Cmd.Env` inherits the whole parent environment.
+  `exec.Cmd.Env` inherits the whole parent environment. A port variable named `COMPOSE_X_PORT` (allowed, as it is no
+  compose setting) is removed on both counts and reaches compose only through the `.env` that `up` writes, as every
+  port variable does; a `DOCKER_X_PORT` is removed as a port variable, while `DOCKER_HOST` and the like are kept.
 - **Paths are real paths.** The worktree root, the main worktree and the project directory are resolved through
   symlinks, because the project name contains a hash of the project directory. `Registry.migrate` merges keys an older
   version recorded under a symlinked path, and replaces aliases of root in the `mains` worktree lists (a changed list is
@@ -242,6 +244,10 @@ These come from deliberate decisions; change them only on purpose and update the
     formula). Only a slug that is empty after trimming becomes `fallbackSlug` (`wt`), because compose refuses a name
     that does not start with `[a-z0-9]`. Production code calls `ctx.projectName()`.
   - `isMain` decides on the worktree roots, with the project directories compared as well (defense in depth).
+  - A bare first entry of `git worktree list` (`ctx.bare`) means there is no main worktree checkout: `mainTop` is the
+    bare directory (it still gives the project name's slug), `ctx.main` is empty and `counterpart` is not called,
+    `isMain` is false in every worktree, `up` and `check` record no main, and `up` copies `.env` from the worktree's own
+    `.env.example` (`readOwnEnvExample`: a regular file only, since it comes from the branch checked out there).
   - The main worktree's counterpart (`counterpart`) is the same relative path there. It may not exist, but it must not
     resolve outside the main worktree, because `up` copies `.env` from it and Sail sources it. Only the directory is
     contained: the `.env` file in it may still be a link, as for a root project. A missing path is checked only
@@ -261,8 +267,9 @@ These come from deliberate decisions; change them only on purpose and update the
   - A configuration error is kept in `ctx.cfgErr` and returned by `ctx.config()` after the main-worktree refusal; no
     command reads `ctx.cfg` directly. `stop` fails on it too, as it did with a broken file. The exception: `stop` and
     `rm` take a reserved name found by detection (`reservedPortVarError`, through `ctx.teardownConfig()`): they write no
-    port variable, and detection yields only `*PORT` names, so the name cannot be `DOCKER_HOST` or `PATH`. Port
-    variables are required only for `up` and only when detected (a file with `port_vars: []` still works).
+    port variable, and detection yields only `*PORT` names, so the name cannot be `DOCKER_HOST` or `PATH`. No reserved
+    name ends in `PORT` today (a test pins it), so this exception is a guard for a future one. Port variables are
+    required only for `up` and only when detected (a file with `port_vars: []` still works).
   - `up`'s order: main refusal, configuration, detected port variables, the existing `.env` checks and port
     allocation, then `sailPath` right before the first write, so nothing is written without Sail and the order of the
     existing refusals stays the same.
@@ -341,13 +348,15 @@ These come from deliberate decisions; change them only on purpose and update the
   including on Windows forms such as `C:x`, `\\srv\x` and `/x`. That check only reads the string; `rm` also checks the
   real path with `composeInsideProject` (see "`rm` is guarded"). Each `port_vars` entry must have a `shellName` name and
   a `validPort` default (`validatePortVars`), because `up` writes `NAME=port` into `.env`; the names are not held to the
-  detection rule, so a hand-added variable may use any name compose does. A name `reservedPortVar` lists (keys `up`
-  writes, `COMPOSE_*`, `SAIL_FILES`, `DOCKER_*`, a few shell and Sail names; case-insensitive, as `cleanEnv` drops them)
-  is refused, by `detectConfig` too, so `init` never writes a file that `loadConfig` refuses (`up` and `init` fail on a
-  detected one; `stop` and `rm` do not, see the configuration error rule above). Keep the list short, and add a key
-  there when `up` starts to write it. A repeated name (also compared case-insensitively) is refused, because `up` would
-  assign two ports and `Set` keeps only the first line; `detectPortVars` yields each name once (`composePortRe` matches
-  upper-case names only), and a test pins that.
+  detection rule, so a hand-added variable may use any name compose does. A name in `reservedNames` (keys `up`
+  writes, the `COMPOSE_*` and `DOCKER_*` settings docker compose and the docker CLI document, sources in the comment,
+  `SAIL_FILES`, a few shell and Sail names; case-insensitive, as `cleanEnv` drops them) is refused, by `detectConfig`
+  too, so `init` never writes a file that `loadConfig` refuses (none ends in `PORT`, so detection finds none today; see
+  the configuration error rule above). Other `COMPOSE_*` and `DOCKER_*` names, such as `DOCKER_WEB_PORT`, are allowed
+  on purpose: v0.8.1 handled them (#74). Keep the shell and Sail part short, add a key there when `up` starts to write
+  it, and add a compose or docker setting when they start to read one. A repeated name (also compared
+  case-insensitively) is refused, because `up` would assign two ports and `Set` keeps only the first line;
+  `detectPortVars` yields each name once (`composePortRe` matches upper-case names only), and a test pins that.
 
 ## Testing notes
 
