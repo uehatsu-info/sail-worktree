@@ -285,9 +285,9 @@ func cmdUp(args []string) error {
 	sort.Strings(names)
 	for _, n := range names {
 		if p, ok := previous[n]; ok && p != ports[n] {
-			fmt.Fprintf(stdout, "  %s=%d (was %d, which is used elsewhere)\n", n, ports[n], p)
+			fmt.Fprintf(stdout, "  %s=%d (was %d, which is used elsewhere)\n", cell(n), ports[n], p)
 		} else {
-			fmt.Fprintf(stdout, "  %s=%d\n", n, ports[n])
+			fmt.Fprintf(stdout, "  %s=%d\n", cell(n), ports[n])
 		}
 	}
 	if statefulAdded != "" {
@@ -300,10 +300,10 @@ func cmdUp(args []string) error {
 }
 
 // mainPorts returns the ports that the main worktree's project directory dir uses for vars: the value in its .env
-// when it is a port number, the compose default when .env does not set the variable (or there is no .env), nothing
-// for an invalid value. envOK is false when .env exists but is not a regular file that can be read (a link is never
-// followed); found is false when dir is not a directory (the main worktree may lack the project), and then nothing
-// is recorded.
+// when it is a port number, the compose default when .env does not set the variable, sets it empty or does not exist,
+// nothing for an invalid value. envOK is false when .env exists but is not a regular file that can be read (a link is
+// never followed); found is false when dir is not a directory (the main worktree may lack the project), and then
+// nothing is recorded.
 func mainPorts(dir string, vars []PortVar) (ports, defaults map[string]int, envOK, found bool) {
 	if !isDir(dir) {
 		return nil, nil, false, false
@@ -333,13 +333,14 @@ func readMainEnv(dir string) (env *envFile, ok bool) {
 	return readEnvIfRegular(envPath)
 }
 
-// portsFromEnv applies the rule of mainPorts to the variables of defaults; env may be nil (no .env). A default outside
-// 1-65535 (a hand-edited registry) reserves nothing.
+// portsFromEnv applies the rule of mainPorts to the variables of defaults; env may be nil (no .env). A value is read
+// with portValue, so an inline comment is dropped and an empty value counts as absent, as compose's ${VAR:-default}
+// does. A default outside 1-65535 (a hand-edited registry) reserves nothing.
 func portsFromEnv(env *envFile, defaults map[string]int) map[string]int {
 	out := map[string]int{}
 	for name, def := range defaults {
 		if env != nil {
-			if s, ok := env.Get(name); ok {
+			if s, ok := env.portValue(name); ok && s != "" {
 				if p, ok := parsePort(s); ok {
 					out[name] = p
 				}

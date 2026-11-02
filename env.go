@@ -121,6 +121,38 @@ func (e *envFile) Get(key string) (string, bool) {
 	return strings.Trim(strings.TrimSpace(v), `"'`), ok
 }
 
+// portValue reads a main worktree's port as compose and Sail's bash read it: a quoted value ends at its closing quote,
+// and an unquoted one at a "#" that follows a space or tab; spaces around it are dropped. An empty result means the
+// compose default applies, like an absent key. Where the two read a form differently, the result is the value one of
+// them uses ('3307'#x, and "= 3307", which bash does not assign) or not a port ("33"07), which reserves nothing, as
+// before. Like Get it reads the first line of key (bash and compose use the last), and it does not expand variables.
+// Only the main's ports use it; Get keeps comments because up writes what it returns back to .env (APP_URL).
+func (e *envFile) portValue(key string) (string, bool) {
+	raw, ok := e.Raw(key)
+	if !ok {
+		return "", false
+	}
+	if v := strings.TrimLeft(raw, " \t"); v != "" && (v[0] == '"' || v[0] == '\'') {
+		end := strings.IndexByte(v[1:], v[0])
+		if end < 0 {
+			return v, true // no closing quote: not a port
+		}
+		// After the quote only a comment may follow; bash joins other text to the value.
+		if rest := strings.TrimLeft(v[2+end:], " \t"); rest != "" && rest[0] != '#' {
+			return v, true
+		}
+		return v[1 : 1+end], true
+	}
+	// raw starts right after "=", so a "#" there is part of the value, as in bash.
+	for i := 1; i < len(raw); i++ {
+		if raw[i] == '#' && (raw[i-1] == ' ' || raw[i-1] == '\t') {
+			raw = raw[:i]
+			break
+		}
+	}
+	return strings.Trim(raw, " \t"), true
+}
+
 // Set replaces the first line of the key and removes later duplicates (Sail uses the last value and Laravel's
 // Dotenv the first, so leftover duplicates would make them disagree). If the key is missing it is appended.
 func (e *envFile) Set(key, value string) {

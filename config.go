@@ -38,7 +38,26 @@ func loadConfig(root string) (*Config, error) {
 	if unsafeComposePath(c.Compose) {
 		return nil, fmt.Errorf("compose (%q) in %s must be a relative path inside the project directory", c.Compose, configName)
 	}
+	if err := validatePortVars(c.PortVars); err != nil {
+		return nil, err
+	}
 	return &c, nil
+}
+
+// validatePortVars refuses entries that up cannot write as NAME=port: a name with "=", a newline or a space would add
+// or change other lines of .env, which Sail sources as shell code, and a default outside 1-65535 would start the port
+// search at 1 or bind :0. Names are held to shellName, not to the detection rule, because a hand-added variable may be
+// any name the compose file uses. Detected variables always pass.
+func validatePortVars(vars []PortVar) error {
+	for i, v := range vars {
+		if !shellName.MatchString(v.Name) {
+			return fmt.Errorf("port_vars[%d] (%q): name in %s must be a shell variable name (letters, digits and _, not starting with a digit)", i, v.Name, configName)
+		}
+		if !validPort(v.Default) {
+			return fmt.Errorf("port_vars[%d] (%q): default (%d) in %s must be 1 to 65535 (a missing default is 0)", i, v.Name, v.Default, configName)
+		}
+	}
+	return nil
 }
 
 // maxSmallFile bounds what readSmallFile reads from a compose file or .sail-worktree.json.

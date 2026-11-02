@@ -267,6 +267,47 @@ func TestPortsFromEnv(t *testing.T) {
 	}
 }
 
+func TestPortsFromEnvReadsLikeCompose(t *testing.T) {
+	cases := map[string]int{ // 0: nothing reserved
+		"3307 # mine":     3307,
+		"3307\t# mine":    3307,
+		" 3307 ":          3307,
+		`"3307" # quoted`: 3307,
+		`'3307'  # x`:     3307,
+		`'3307'#x`:        3307, // bash reads 3307#x: the value compose uses is reserved
+		"":                3306, // empty counts as absent
+		`""`:              3306,
+		" # comment":      3306,
+		"#3307":           0, // a value, not a comment, right after "="
+		"3307#x":          0, // a "#" inside a word is not a comment
+		`"3307`:           0, // no closing quote
+		`"33"07`:          0, // bash reads 3307, not 33: such a value reserves nothing, as before
+		`"3307" x`:        0,
+		"abc # x":         0,
+	}
+	defaults := map[string]int{"FORWARD_DB_PORT": 3306}
+	for value, want := range cases {
+		for _, prefix := range []string{"", "export "} {
+			e, err := parseEnv(strings.NewReader(prefix + "FORWARD_DB_PORT=" + value + "\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := portsFromEnv(e, defaults)
+			if p, ok := got["FORWARD_DB_PORT"]; (want == 0 && ok) || (want != 0 && p != want) {
+				t.Errorf("%sFORWARD_DB_PORT=%q: got %v, want %d", prefix, value, got, want)
+			}
+		}
+	}
+	// Get is unchanged: up writes what it returns back to .env.
+	e, err := parseEnv(strings.NewReader("APP_URL=http://localhost # mine\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := e.Get("APP_URL"); v != "http://localhost # mine" {
+		t.Errorf("Get = %q", v)
+	}
+}
+
 func TestWindowsDriveKey(t *testing.T) {
 	refused := []string{`\??\UNC\h\s\x`, `\??\C:\x`, `\\?\C:\x`, `\\?\UNC\h\s\x`, `\\.\pipe\x`, `\\h\s\x`,
 		`//h/s/x`, `\/h\s\x`, `\x`, `C:x`, `1:\x`, `C:`, ""}

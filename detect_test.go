@@ -376,6 +376,32 @@ func TestLoadConfigDisappeared(t *testing.T) {
 	}
 }
 
+func TestLoadConfigValidatesPortVars(t *testing.T) {
+	dir := realTempDir(t)
+	cfg := filepath.Join(dir, configName)
+	for _, tc := range []struct{ vars, want string }{
+		{`{"name":"","default":80}`, `port_vars[0] (""): name in`},
+		{`{"name":"1_PORT","default":80}`, `port_vars[0] ("1_PORT"): name in`},
+		{`{"name":"A=B","default":80}`, `port_vars[0] ("A=B"): name in`},
+		{`{"name":"A\nB_PORT","default":80}`, `port_vars[0] ("A\nB_PORT"): name in`},
+		{`{"name":"A B","default":80}`, `port_vars[0] ("A B"): name in`},
+		{`{"name":"APP_PORT","default":80},{"name":"X-PORT","default":80}`, `port_vars[1] ("X-PORT"): name in`},
+		{`{"name":"APP_PORT"}`, `port_vars[0] ("APP_PORT"): default (0)`},
+		{`{"name":"APP_PORT","default":-1}`, `port_vars[0] ("APP_PORT"): default (-1)`},
+		{`{"name":"APP_PORT","default":65536}`, `port_vars[0] ("APP_PORT"): default (65536)`},
+	} {
+		writeFile(t, cfg, `{"compose":"compose.yaml","port_vars":[`+tc.vars+`]}`)
+		if _, err := loadConfig(dir); err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+			t.Errorf("%s: error = %v, want prefix %s", tc.vars, err, tc.want)
+		}
+	}
+	// A hand-added variable need not follow the detection rule; the bounds themselves are ports.
+	writeFile(t, cfg, `{"compose":"compose.yaml","port_vars":[{"name":"vite_port","default":1},{"name":"_X","default":65535}]}`)
+	if c, err := loadConfig(dir); err != nil || len(c.PortVars) != 2 {
+		t.Errorf("valid port_vars: %+v, %v", c, err)
+	}
+}
+
 // captureStdoutFile redirects os.Stdout (init prints with fmt.Printf) and returns a function that reads what was
 // written.
 func captureStdoutFile(t *testing.T) func() string {
