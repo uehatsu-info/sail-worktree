@@ -1458,11 +1458,12 @@ func TestUpReplacesAnInvalidRecordedPort(t *testing.T) {
 	}
 }
 
-// A branch whose configuration lacks a variable must not free the main worktree's port for it.
+// A branch whose configuration lacks a variable must not free the main worktree's port for it, and the port follows
+// the main's .env (#88).
 func TestUpKeepsAMainVariableUnknownToTheBranch(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	writeFakeSail(t, wt)
-	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8080\n")
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8080\nFORWARD_REDIS_PORT=6390\n")
 	rec := MainRecord{Ports: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6380},
 		Defaults: map[string]int{"APP_PORT": 80, "FORWARD_REDIS_PORT": 6379}}
 	if err := (&Registry{Worktrees: map[string]map[string]int{}, Mains: map[string]MainRecord{main: rec}}).save(); err != nil {
@@ -1475,11 +1476,41 @@ func TestUpKeepsAMainVariableUnknownToTheBranch(t *testing.T) {
 	}
 	reg, _ := loadRegistry()
 	got := reg.Mains[main]
-	if got.Ports["APP_PORT"] != 8080 || got.Ports["FORWARD_REDIS_PORT"] != 6380 || got.Defaults["FORWARD_REDIS_PORT"] != 6379 {
+	if got.Ports["APP_PORT"] != 8080 || got.Ports["FORWARD_REDIS_PORT"] != 6390 || got.Defaults["FORWARD_REDIS_PORT"] != 6379 {
 		t.Errorf("main record = %+v", got)
 	}
-	if !reg.used("")[6380] {
+	if !reg.used("")[6390] {
 		t.Error("the kept port is not avoided")
+	}
+}
+
+// A record that another run changed while up waited for the lock keeps its kept variable as it is, but the value this
+// up read is still avoided, as the configuration's own ports are.
+func TestUpAvoidsTheKeptPortItReadWhenTheRecordChanged(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	// The branch's configuration also has REDIS_PORT, so up allocates it; its default is 6389, so the first free
+	// port it tries is 6390, the main's FORWARD_REDIS_PORT.
+	cfg := `{"compose":"compose.yaml","port_vars":[{"name":"APP_PORT","default":80},{"name":"REDIS_PORT","default":6389}]}`
+	writeFile(t, filepath.Join(wt, configName), cfg)
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8080\nREDIS_PORT=6389\nFORWARD_REDIS_PORT=6390\n")
+	rec := func(p int) MainRecord {
+		return MainRecord{Ports: map[string]int{"APP_PORT": p, "REDIS_PORT": 6389, "FORWARD_REDIS_PORT": 6380},
+			Defaults: map[string]int{"APP_PORT": 80, "REDIS_PORT": 6389, "FORWARD_REDIS_PORT": 6379}}
+	}
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{main: rec(80)}})
+	betweenUpReadAndLock(t, func() { saveRegistry(t, &Registry{Mains: map[string]MainRecord{main: rec(81)}}) })
+	captureRunner(t)
+	captureStdout(t)
+	if err := cmdUp(nil); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := loadRegistry()
+	if got := reg.Mains[main].Ports["FORWARD_REDIS_PORT"]; got != 6380 {
+		t.Errorf("FORWARD_REDIS_PORT recorded = %d, want 6380 (the record changed meanwhile)", got)
+	}
+	if got := reg.Worktrees[wt]["REDIS_PORT"]; got == 6389 || got == 6390 || got == 6380 {
+		t.Errorf("worktree REDIS_PORT = %d, want none of the main's ports", got)
 	}
 }
 

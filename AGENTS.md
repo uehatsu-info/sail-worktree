@@ -29,7 +29,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | File | Role |
 |---|---|
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
-| `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv` (a main worktree's ports), `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
+| `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
@@ -227,10 +227,11 @@ These come from deliberate decisions; change them only on purpose and update the
   merges: a variable of the old record's `defaults` that the run does not know keeps its recorded default and port. Only
   a `check` run in the main worktree itself (`checkTarget.inMain`) replaces the record, so a variable that left the
   project is dropped only there (or by hand); until then it keeps its port reserved, and a variable that only a branch
-  has is dropped there and comes back with that branch's next `up` or `check`. A kept value is not refreshed by `up`
-  (which reads only the run's variables) or by a `check` in the project directory of a linked worktree of the same
-  repository (which records its main from that read and drops its pre-lock read of the current main), however often they
-  run; a `check` in the main worktree re-records or drops it, and a `check` anywhere else (`refreshMains`) re-reads it.
+  has is dropped there and comes back with that branch's next `up` or `check`. A kept value is refreshed from a read
+  before the lock for the record's `defaults` (`mainRead.kept`: `readMains`' read of the current main in `check`,
+  `mainEnvPorts` in `up`), only when that read succeeded (`keptOK`) and the record is still its base; otherwise it stays
+  as recorded. A `check` in the main worktree re-records or drops it, and a `check` anywhere else (`refreshMains`)
+  re-reads it.
   An unreadable `.env`, or a record that another run changed while this run waited for the lock, keeps the whole record,
   `inMain` included. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias
   paths in a record's `worktrees` list are folded like the top-level `worktrees` keys: by `migrate` (saved by `up` and
@@ -346,11 +347,11 @@ These come from deliberate decisions; change them only on purpose and update the
   next to it, `O_EXCL`, mode 0600, pid inside; the file is closed at once because Windows cannot remove an open file).
   `up` reads the main's `.env` (`mainPorts`) before it, after a registry read that is used only as the base of that
   main's record (`recordMainRead`, the rule of `check`; the ports it read are also avoided by this allocation, since a
-  record kept as newer may come from an older read) and to find alias keys (`aliasesOf`); it also reads the source of a
-  new `.env` before it (`readCopySource`; the worktree's own `.env` is still read under it, and if that is gone by then
-  the source is read there), and takes it after the `.env` checks and before `loadRegistry`, so reading,
-  `allocatePorts`, writing `.env` and `save` are one step, and releases it right after `save` and before `runSail`;
-  `rm` takes it after docker; `check`
+  record kept as newer may come from an older read; this includes the kept variables it read) and to find alias keys
+  (`aliasesOf`); it also reads the source of a new `.env` before it (`readCopySource`; the worktree's own `.env` is
+  still read under it, and if that is gone by then the source is read there), and takes it after the `.env` checks
+  and before `loadRegistry`, so reading, `allocatePorts`, writing `.env` and `save` are one step, and releases it
+  right after `save` and before `runSail`; `rm` takes it after docker; `check`
   reads the mains' `.env` before it and holds it to read the registry again, record, refresh and save (what it read
   before locking only decides which records may be refreshed; the registry it saves is the one read after locking). If
   `check` times out on a lock that another run holds (`errLockHeld`), it warns and reports on the registry read without

@@ -10,12 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -243,6 +245,14 @@ func cmdUp(args []string) error {
 			warnMainEnv(c.main)
 		}
 	}
+	// The variables the record keeps although this configuration lacks them are read with the record's defaults, so
+	// that recordMainRead can refresh them too. It is a second read of the same .env, made only when there are such
+	// variables; both reads come after pre.
+	var kept map[string]int
+	keptOK := false
+	if mainFound && baseHad && hasOtherKeys(base.Defaults, mainDefaults) {
+		kept, _, keptOK = mainEnvPorts(c.main, base.Defaults)
+	}
 	aliases := pre.aliasesOf(c.root, c.main)
 	// The source of a new .env is read before the lock too. The worktree's own .env is still read under it, so a
 	// concurrent up in this worktree is not overwritten; if it is gone by then, the source is read there after all. An
@@ -272,7 +282,7 @@ func cmdUp(args []string) error {
 	// layout: mainFound stays false there).
 	if mainFound {
 		reg.recordMainRead(c.main, c.root, mainRead{ports: mainP, defaults: mainDefaults, envOK: mainEnvOK,
-			basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad})
+			basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad, kept: kept, keptOK: keptOK})
 	}
 	src := envOwn
 	env, err := readEnv(envPath)
@@ -293,6 +303,9 @@ func cmdUp(args []string) error {
 	// what this run read of the main's .env is avoided as well; it is not recorded.
 	used := reg.used(c.root)
 	for _, p := range mainP {
+		used[p] = true
+	}
+	for _, p := range kept {
 		used[p] = true
 	}
 	ports, err := allocatePorts(cfg.PortVars, reg.Worktrees[c.root], used, portFree)
@@ -385,17 +398,59 @@ type mainRead struct {
 	ports, defaults, basePorts, baseDefaults map[string]int
 	envOK, baseHad                           bool
 	inMain                                   bool // check runs in the main worktree (recordMain's inMain); up never does
+	// kept holds the ports read for every variable of baseDefaults; keptOK is false when that read failed (or was not
+	// made), which is not the same as a variable missing from kept (an invalid value).
+	kept   map[string]int
+	keptOK bool
 }
 
 // recordMainRead records m under the lock by the rule refreshMains follows: the read is applied only while the record is
 // still the one it was based on. A record that another run changed meanwhile (or that appeared) is newer and keeps its
 // ports and defaults; this relies on recordMain keeping them for ok=false, and worktree is still added. A record that
-// is gone (pruned meanwhile) is recorded from the read, which is then all there is to know. It reports whether the
-// record changed.
+// is gone (pruned meanwhile) is recorded from the read, which is then all there is to know. A record that is still the
+// base also has the variables it keeps for a run that lacks them (see recordMain) refreshed from kept, unless check
+// runs in the main worktree, which drops them. It reports whether the record changed.
 func (r *Registry) recordMainRead(main, worktree string, m mainRead) bool {
 	rec, had := r.Mains[main]
 	current := !had || m.baseHad && sameBase(rec, m.basePorts, m.baseDefaults)
-	return r.recordMain(main, worktree, m.ports, m.defaults, m.envOK && current, m.inMain)
+	ports, defaults := m.ports, m.defaults
+	if had && current && m.envOK && m.keptOK && !m.inMain {
+		ports, defaults = maps.Clone(ports), maps.Clone(defaults)
+		for name, def := range m.baseDefaults {
+			if _, known := m.defaults[name]; known {
+				continue
+			}
+			defaults[name] = def
+			if p, ok := m.kept[name]; ok {
+				ports[name] = p
+			}
+		}
+	}
+	return r.recordMain(main, worktree, ports, defaults, m.envOK && current, m.inMain)
+}
+
+// hasOtherKeys reports whether a has a key that b lacks.
+func hasOtherKeys(a, b map[string]int) bool {
+	for k := range a {
+		if _, ok := b[k]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// mainEnvPorts reads the ports of the main worktree's project directory dir for the variables of defaults
+// (portsFromEnv), and the variables its .env sets on more than one line. ok is false when its .env cannot be read.
+// The caller checks dir first.
+func mainEnvPorts(dir string, defaults map[string]int) (ports map[string]int, duplicates []string, ok bool) {
+	env, ok := readMainEnv(dir)
+	if !ok {
+		return nil, nil, false
+	}
+	if env != nil {
+		duplicates = env.duplicateKeys(slices.Collect(maps.Keys(defaults)))
+	}
+	return portsFromEnv(env, defaults), duplicates, true
 }
 
 // readMainEnv reads the .env of a main worktree's project directory without following a link. env is nil when there

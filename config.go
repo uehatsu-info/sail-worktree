@@ -369,10 +369,8 @@ func loadRegistry() (*Registry, error) {
 //   - inMain (check runs in the main worktree itself) replaces them: the main's own configuration decides, so a
 //     variable that left it is dropped here.
 //   - Otherwise the run may be on a branch whose configuration lacks a variable the main still uses, so a variable of
-//     the old record's defaults that the run does not know keeps its recorded default and port. They are not re-read
-//     here: recordMain reads no .env, and check drops its pre-lock read of the current main. A check run outside the
-//     repository's project directory re-reads them (refreshMains), and one run in the main worktree re-records or
-//     drops them.
+//     the old record's defaults that the run does not know keeps its recorded default and port. recordMain reads no
+//     .env: recordMainRead passes such variables in ports and defaults when the run read them before the lock.
 func (r *Registry) recordMain(main, worktree string, ports, defaults map[string]int, ok, inMain bool) bool {
 	if r.Mains == nil {
 		r.Mains = map[string]MainRecord{}

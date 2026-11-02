@@ -116,8 +116,12 @@ func checkRecord(r *report) (*Registry, error) {
 			wt = cur.worktree
 		}
 		base, baseHad := pre.Mains[cur.main] // pre was read before the .env, so a newer record never passes for the base
+		// readMains read the current main for the base's defaults: that read refreshes the variables the record keeps
+		// for a configuration that lacks them, and currentMain's newer read the others (the next check catches up).
+		kept, keptOK := fresh[cur.main]
 		changed = reg.recordMainRead(cur.main, wt, mainRead{ports: cur.ports, defaults: cur.defaults, envOK: cur.envOK,
-			inMain: cur.inMain, basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad})
+			inMain: cur.inMain, basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad,
+			kept: kept.ports, keptOK: keptOK})
 		delete(fresh, cur.main) // currentMain read the same .env after readMains
 	}
 	if refreshMains(reg, fresh) {
@@ -152,15 +156,11 @@ func readMains(reg *Registry) map[string]mainRefresh {
 		if !usableDir(k) {
 			continue
 		}
-		env, ok := readMainEnv(k)
+		ports, duplicates, ok := mainEnvPorts(k, rec.Defaults)
 		if !ok {
 			continue
 		}
-		f := mainRefresh{ports: portsFromEnv(env, rec.Defaults), basePorts: rec.Ports, baseDefaults: rec.Defaults}
-		if env != nil {
-			f.duplicates = env.duplicateKeys(slices.Collect(maps.Keys(rec.Defaults)))
-		}
-		out[k] = f
+		out[k] = mainRefresh{ports: ports, basePorts: rec.Ports, baseDefaults: rec.Defaults, duplicates: duplicates}
 	}
 	return out
 }

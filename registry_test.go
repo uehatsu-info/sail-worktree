@@ -715,3 +715,40 @@ func TestMigrateAliasesResolvesOnlyTheFoundPaths(t *testing.T) {
 		t.Errorf("a refused key was folded: %v %q", r.Worktrees, r.Mains["/m"].Worktrees)
 	}
 }
+
+// recordMainRead refreshes the variables a record keeps for a configuration that lacks them only from a read that
+// succeeded, of a record that is still the base, outside the main worktree (#88).
+func TestRecordMainReadRefreshesKeptVariables(t *testing.T) {
+	base := MainRecord{Ports: map[string]int{"APP_PORT": 80, "REDIS": 6380}, Defaults: map[string]int{"APP_PORT": 80, "REDIS": 6379}}
+	for _, tc := range []struct {
+		name      string
+		kept      map[string]int
+		keptOK    bool
+		inMain    bool
+		changed   bool // the record changed meanwhile
+		wantPort  int  // REDIS; 0 means none
+		wantKnown bool // REDIS in defaults
+	}{
+		{name: "refreshed", kept: map[string]int{"APP_PORT": 8080, "REDIS": 6390}, keptOK: true, wantPort: 6390, wantKnown: true},
+		{name: "invalid value", kept: map[string]int{"APP_PORT": 8080}, keptOK: true, wantKnown: true},
+		{name: "read failed", wantPort: 6380, wantKnown: true},
+		{name: "record changed", kept: map[string]int{"REDIS": 6390}, keptOK: true, changed: true, wantPort: 6381, wantKnown: true},
+		{name: "in the main", kept: map[string]int{"REDIS": 6390}, keptOK: true, inMain: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := base
+			if tc.changed {
+				now = MainRecord{Ports: map[string]int{"APP_PORT": 80, "REDIS": 6381}, Defaults: base.Defaults}
+			}
+			r := &Registry{Mains: map[string]MainRecord{"/m": now}}
+			r.recordMainRead("/m", "", mainRead{ports: map[string]int{"APP_PORT": 8080}, defaults: map[string]int{"APP_PORT": 80},
+				envOK: true, inMain: tc.inMain, basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: true,
+				kept: tc.kept, keptOK: tc.keptOK})
+			got := r.Mains["/m"]
+			p, hasPort := got.Ports["REDIS"]
+			if _, known := got.Defaults["REDIS"]; known != tc.wantKnown || p != tc.wantPort || hasPort != (tc.wantPort != 0) {
+				t.Errorf("record = %+v", got)
+			}
+		})
+	}
+}
