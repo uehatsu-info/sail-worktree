@@ -8,7 +8,7 @@ Guidance for AI coding agents (and humans) working on this repository.
 Laravel Sail project run side by side. For each worktree it creates or updates `.env` and assigns ports that do not
 collide with other worktrees or with the host.
 
-Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `version`. See `README.md` for the user-facing behavior.
+Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `check`, `version`. See `README.md` for the user-facing behavior.
 
 - Module: `github.com/uehatsu-info/sail-worktree` (Go version is set by `go.mod`)
 - Install: `go install github.com/uehatsu-info/sail-worktree@latest`, or the binaries attached to each GitHub release
@@ -29,19 +29,20 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `v
 | File | Role |
 |---|---|
 | `main.go` | Command dispatch, usage text, `version`, `printErr`/`escapeControl` |
-| `cmd.go` | `init`, `up`, `stop`, `rm`, error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
+| `cmd.go` | `init`, `up`, `stop`, `rm`, `mainPorts`/`portsFromEnv` (a main worktree's ports), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
-| `config.go` | `.sail-worktree.json` (project config), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
+| `config.go` | `.sail-worktree.json` (project config), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`, `foldRegistry` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
+| `check.go` | `check`: `checkRecord` (records the main worktree), `checkConflicts`, `holder`, `mainPortsNow`, `suggestion` |
 | `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `lockTiming` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
 | `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `sanctumUnquote`, `statefulDisabled`, `addStatefulDomain` |
-| `sail_worktree_test.go`, `project_test.go`, `detect_test.go`, `sanctum_test.go`, `ps_test.go`, `registry_test.go`, `lock_test.go`, `status_test.go`, `portsview_test.go`, `links_unix_test.go` | Tests |
+| `sail_worktree_test.go`, `project_test.go`, `detect_test.go`, `sanctum_test.go`, `ps_test.go`, `registry_test.go`, `lock_test.go`, `status_test.go`, `portsview_test.go`, `check_test.go`, `links_unix_test.go` | Tests |
 | `.github/workflows/ci.yml`, `release.yml`, `.github/dependabot.yml`, `.goreleaser.yaml` | CI and release |
 
 State outside the repository: the port registry is `os.UserConfigDir()/sail-worktree/registry.json`. The project
@@ -116,6 +117,24 @@ These come from deliberate decisions; change them only on purpose and update the
   `.env`) instead of re-implementing them, prints only an allow-list of facts (never other `.env` values, and not even
   an invalid port value, because a port variable name may be any key; `APP_URL` without credentials, query and
   fragment), never reads a symlinked `.env`, and exits 1 after the report when it found a problem (warnings do not).
+- **`check` writes only the registry.** It records the current repository's main worktree (`checkRecord`) and then
+  reports conflicts over the whole registry; it never writes `.env` or `.sail-worktree.json`, never sources `.env`,
+  and runs neither sail nor docker (git only through `loadCtx` in the cwd). `mainPorts` reads the main's `.env` before
+  the lock; the registry is read after `lockRegistry` and saved only when `recordMain` reports a change. A `loadCtx`
+  or configuration error is a warning, so `check` works outside a repository. In the report, a `mains` key is used as a
+  directory only after `validKey`, its `.env` only through `readEnvIfRegular` (`mainPortsNow`), and only valid port
+  numbers are printed. Records of missing directories or invalid keys are warnings, never conflicts, so a deleted
+  clone cannot make `check` fail for ever. A conflict is fixed by the user: a worktree by `up`, a main worktree by
+  hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`). Exit 1 only for a
+  conflict (`report.finish`, shared with `status`).
+- **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
+  (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
+  (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
+  `check` record it again. Ports follow one rule (`portsFromEnv`): a valid value in the main's `.env`, the default when
+  the key is absent or there is no `.env`, nothing for an invalid value. A main directory that does not exist is never
+  recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file is not read for
+  the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves
+  nothing. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference.
 - **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once,
   so nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`,
   fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the
@@ -191,11 +210,13 @@ These come from deliberate decisions; change them only on purpose and update the
 - **Registry handling in `rm`.** Read the registry once before the prompt (to fail early on a broken file) and again
   after `docker` (so an update made meanwhile by another `up` is not lost); release the worktree only after docker
   succeeds. The lock is taken after docker and before the second read (never while docker runs); if it cannot be taken
-  the error says that docker finished and that rm can be run again (`down` is idempotent).
-- **The registry lock.** `up` and `rm` update the registry under `lockRegistry` (`registry.json.lock` next to it,
+  the error says that docker finished and that rm can be run again (`down` is idempotent). The main worktree's record
+  stays; only the worktree leaves its `worktrees` list (`forgetWorktree`).
+- **The registry lock.** `up`, `rm` and `check` update the registry under `lockRegistry` (`registry.json.lock` next to it,
   `O_EXCL`, mode 0600, pid inside; the file is closed at once because Windows cannot remove an open file). `up` takes
   it after the `.env` checks and before `loadRegistry`, so reading, `allocatePorts`, writing `.env` and `save` are one
-  step, and releases it right after `save` and before `runSail`; `rm` takes it after docker. Never hold it while sail
+  step, and releases it right after `save` and before `runSail`; `rm` takes it after docker; `check` holds it only to
+  read, record and save. Never hold it while sail
   or docker runs, and read the registry after locking. `ps`, `ports` and `status` never lock (the atomic save keeps
   them consistent). A lock whose mtime is older than `lockTiming.stale` or more than 5 seconds in the future is
   abandoned: `claimStale` renames it to a unique name, checks that it is the file that was judged (same file and same
@@ -207,7 +228,8 @@ These come from deliberate decisions; change them only on purpose and update the
   rule and the hand recovery in the error message, and a run suspended for longer than `stale` can lose its lock to
   the next one. Do not "improve" this into a lock held during `sail up`.
 - **Ports.** A new port is searched from default+1 upwards (the default is left to the main worktree), skipping ports
-  of other worktrees and ports in use. A port counts as free only if it binds on all interfaces and on `127.0.0.1`;
+  of other worktrees, ports recorded for any main worktree (`used` includes `mains`, so `up` moves a worktree off a
+  main's port and says so) and ports in use. A port counts as free only if it binds on all interfaces and on `127.0.0.1`;
   `loopbackBindBlocked` decides how a failure on `127.0.0.1` is treated per OS.
 - **Sail sources `.env`.** `vendor/bin/sail` runs `source ./.env` (or `.env.$APP_ENV`), so `.env` is executed as shell
   code. `stop` does not refuse a symlinked `.env` for this reason: calling `sail` directly has the same exposure.
