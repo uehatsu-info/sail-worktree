@@ -296,10 +296,13 @@ func cmdUp(args []string) error {
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		if p, ok := previous[n]; ok && p != ports[n] {
-			fmt.Fprintf(stdout, "  %s=%d (was %d, which is used elsewhere)\n", cell(n), ports[n], p)
-		} else {
+		switch p, ok := previous[n]; {
+		case !ok || p == ports[n]:
 			fmt.Fprintf(stdout, "  %s=%d\n", cell(n), ports[n])
+		case !validPort(p):
+			fmt.Fprintf(stdout, "  %s=%d (was %d, which is not a valid port)\n", cell(n), ports[n], p)
+		default:
+			fmt.Fprintf(stdout, "  %s=%d (was %d, which is used elsewhere)\n", cell(n), ports[n], p)
 		}
 	}
 	if statefulAdded != "" {

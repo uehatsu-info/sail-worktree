@@ -69,7 +69,7 @@ sail-worktree up -d
   - A value that is not a plain list (a variable such as `${APP_URL}`, a comment, a quote inside, a space outside quotes, ...), or an `APP_URL` host that is not a plain host name or IP address (other characters, an IPv6 zone, an IPv4-mapped IPv6 address), is left alone with a warning that says what to add. The warning repeats on every `up` until the value contains that entry as an element of its own (add it by hand inside the quotes of a quoted value with no comment after them, or to an unquoted value that has no spaces, tabs, `#` or quotes at all) or, for a host warning, until `APP_URL` changes.
   - Existing entries are never removed: an entry for an older port stays, and entries for other ports (such as the Vite port) are not updated.
 - Shell variables with the same names as the port variables, every `COMPOSE_*` variable and `SAIL_FILES` are removed from the environment passed to `sail` (also for `stop`) and to `docker compose` in `rm`, because they take precedence over `.env`. `DOCKER_HOST` and `DOCKER_CONTEXT` are kept on purpose.
-- Assigned ports are reused on subsequent runs.
+- Assigned ports are reused on subsequent runs. A recorded value that is not a port number (1 to 65535, from a hand-edited registry) is replaced by a new port.
 - Finally, it runs `vendor/bin/sail up <args>`.
 
 ### 3. `sail-worktree stop`

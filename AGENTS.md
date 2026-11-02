@@ -317,7 +317,8 @@ These come from deliberate decisions; change them only on purpose and update the
 - **Ports.** A new port is searched from default+1 upwards (the default is left to the main worktree), skipping ports
   of other worktrees, ports recorded for any main worktree (`used` includes `mains`, so `up` moves a worktree off a
   main's port and says so) and ports in use. A port counts as free only if it binds on all interfaces and on `127.0.0.1`;
-  `loopbackBindBlocked` decides how a failure on `127.0.0.1` is treated per OS.
+  `loopbackBindBlocked` decides how a failure on `127.0.0.1` is treated per OS. A current assignment is kept only if
+  `validPort` holds; otherwise a new port is searched, so a hand-edited out-of-range value is not written back to `.env`.
 - **Sail sources `.env`.** `vendor/bin/sail` runs `source ./.env` (or `.env.$APP_ENV`), so `.env` is executed as shell
   code. `stop` does not refuse a symlinked `.env` for this reason: calling `sail` directly has the same exposure.
 - **`SANCTUM_STATEFUL_DOMAINS`.** Only when `up` rewrites `APP_URL` and `.env` sets the key, `addStatefulDomain`
