@@ -184,14 +184,13 @@ func (h holder) String() string {
 // are not absolute clean paths) are left out with a warning: up still keeps their ports free, but they cannot be in
 // use, and a deleted clone must not make check fail for ever.
 func checkConflicts(r *report, reg *Registry) {
-	reserved := map[int]bool{} // every recorded port, stale records included, as up's used() sees them
+	// A suggestion must avoid every port up treats as taken: alias keys and stale records included. used returns a
+	// fresh map, so suggestion can add to it.
+	reserved := reg.used("")
 	var holders []holder
 	mains := slices.Sorted(maps.Keys(reg.Mains))
 	for _, k := range mains {
 		rec := reg.Mains[k]
-		for _, p := range rec.Ports {
-			reserved[p] = true
-		}
 		if !validKey(k) || !isDir(k) {
 			r.warn("the record of main worktree %q keeps ports free, but it is not a usable local directory: %s", k, cell(portsCell(rec.Ports)))
 			continue
@@ -209,9 +208,6 @@ func checkConflicts(r *report, reg *Registry) {
 	view := foldRegistry(reg)
 	wts := slices.Sorted(maps.Keys(view))
 	for _, k := range wts {
-		for _, p := range view[k] {
-			reserved[p] = true
-		}
 		if !validKey(k) || !isDir(k) {
 			r.warn("the record of worktree %q keeps ports free, but it is not a usable local directory: %s", k, cell(portsCell(view[k])))
 			continue
