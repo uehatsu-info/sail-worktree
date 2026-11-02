@@ -33,11 +33,12 @@ func cmdCheck(args []string) error {
 	return r.finish()
 }
 
-// checkTarget is the main worktree that check records: the one of the repository it runs in, if any.
+// checkTarget is the main worktree that check records: the one of the repository it runs in, if any (main is empty
+// when there is none).
 type checkTarget struct {
-	main, worktree    string
-	ports, defaults   map[string]int
-	envOK, recordable bool
+	main, worktree  string
+	ports, defaults map[string]int
+	envOK           bool
 }
 
 // currentMain finds the main worktree to record. Outside a repository or a project there is none, which is only a
@@ -61,7 +62,7 @@ func currentMain(r *report) checkTarget {
 	if !envOK {
 		r.warn("%s", mainEnvUnreadable(c.main))
 	}
-	cur := checkTarget{main: c.main, ports: ports, defaults: defaults, envOK: envOK, recordable: true}
+	cur := checkTarget{main: c.main, ports: ports, defaults: defaults, envOK: envOK}
 	if !c.isMain() {
 		cur.worktree = c.root
 	}
@@ -102,7 +103,7 @@ func checkRecord(r *report) (*Registry, error) {
 		return nil, err
 	}
 	changed := false
-	if cur.recordable {
+	if cur.main != "" {
 		wt := ""
 		if _, ok := reg.Worktrees[cur.worktree]; ok && cur.worktree != "" {
 			wt = cur.worktree
@@ -121,7 +122,7 @@ func checkRecord(r *report) (*Registry, error) {
 		}
 	}
 	unlock()
-	if cur.recordable {
+	if cur.main != "" {
 		r.line("recorded main worktree: %q", cur.main)
 	}
 	return reg, nil
