@@ -322,8 +322,24 @@ func TestNameMismatchErrorGuidance(t *testing.T) {
 	}
 }
 
+// A long worktree name makes a long project name; it is still a name projectName made, so the recovery command is
+// shown for it, up to the longest name projectName can make (#63). Only strings are used: such directories would not
+// fit in a Windows path.
+func TestNameMismatchErrorGuidesLongNames(t *testing.T) {
+	got := projectName(filepath.Join("base", strings.Repeat("m", 255)), filepath.Join("base", strings.Repeat("w", 255)), "/p")
+	if len(got) != 518 || !safeProjectName.MatchString(got) {
+		t.Fatalf("projectName = %q (%d bytes), want a long name the hint accepts", got, len(got))
+	}
+	short := projectName(filepath.Join("base", "app"), filepath.Join("base", "app-"+strings.Repeat("feature-", 10)), "/p")
+	for _, name := range []string{got, short, strings.Repeat("a", 600)} {
+		if msg := nameMismatchError(name, "app-feat-abc123").Error(); !strings.Contains(msg, "docker compose -p "+name+" down") {
+			t.Errorf("no recovery command for %q (%d bytes): %s", name, len(name), msg)
+		}
+	}
+}
+
 func TestNameMismatchErrorEscapesUntrustedNames(t *testing.T) {
-	for _, bad := range []string{"x; rm -rf ~", "$(id)", "a`id`", "line1\nline2", "esc\x1b[31m", "-rf", "UPPER", "\u540d\u524d", "", strings.Repeat("a", 65)} {
+	for _, bad := range []string{"x; rm -rf ~", "$(id)", "a`id`", "line1\nline2", "esc\x1b[31m", "-rf", "UPPER", "\u540d\u524d", "", strings.Repeat("a", 601)} {
 		msg := nameMismatchError(bad, "app-feat-abc123").Error()
 		if strings.Contains(msg, "docker compose -p") {
 			t.Errorf("%q produced a command: %s", bad, msg)

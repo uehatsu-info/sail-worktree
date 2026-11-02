@@ -428,8 +428,11 @@ var (
 )
 
 // safeProjectName is a name that may be embedded in a recovery command. Values in .env are untrusted, so only
-// characters that the shell or docker cannot interpret as options are allowed (alphanumeric first, length limit).
-var safeProjectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+// characters that the shell cannot interpret are allowed, with an alphanumeric first one so that docker does not take
+// the name for an option. The length limit only bounds what is printed. It leaves room above the longest name
+// projectName makes, 255 + "-" + 255 + "-" + 6 hex digits = 518 bytes (base names of at most 255 bytes; non-ASCII runs
+// become one "-"), so every legitimate name gets the hint.
+var safeProjectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,599}$`)
 
 // nameMismatchError is the error when rm refuses. The first line gives the main remedy (set .env back to the
 // worktree's own name). The name in .env (got) is untrusted, so it is shown with %+q and only a got made of safe
