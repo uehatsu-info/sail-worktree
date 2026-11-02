@@ -197,7 +197,7 @@ func TestRegistryMainsLoadAndSave(t *testing.T) {
 		if reg.Mains == nil {
 			t.Fatalf("%s: Mains is nil", content)
 		}
-		reg.used("")
+		reg.used("") // must not panic on a null record
 		reg.forgetWorktree("/m", "/wt")
 		reg.recordMain("/m", "/wt", nil, nil, false)
 		if rec := reg.Mains["/m"]; rec.Ports == nil || rec.Defaults == nil || len(rec.Worktrees) != 1 {
@@ -247,5 +247,21 @@ func TestRecordMainAndForgetWorktree(t *testing.T) {
 	reg.forgetWorktree("/m", "/wt/a")
 	if rec := reg.Mains["/m"]; len(rec.Worktrees) != 1 || rec.Worktrees[0] != "/wt/b" || rec.Ports["APP_PORT"] != 81 {
 		t.Errorf("after forgetWorktree: %+v", rec)
+	}
+}
+
+func TestPortsFromEnv(t *testing.T) {
+	defaults := map[string]int{"APP_PORT": 80, "FORWARD_DB_PORT": 3306, "VITE_PORT": 5173}
+	e, err := parseEnv(strings.NewReader("APP_PORT=8080\nFORWARD_DB_PORT=abc\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := portsFromEnv(e, defaults)
+	// A valid value is used, an invalid one reserves nothing, an absent key falls back to the compose default.
+	if len(got) != 2 || got["APP_PORT"] != 8080 || got["VITE_PORT"] != 5173 {
+		t.Errorf("with .env: %v", got)
+	}
+	if got := portsFromEnv(nil, defaults); len(got) != 3 || got["FORWARD_DB_PORT"] != 3306 {
+		t.Errorf("without .env: %v", got)
 	}
 }

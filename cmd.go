@@ -255,6 +255,7 @@ func cmdUp(args []string) error {
 	if src != envOwn {
 		fmt.Fprintln(stdout, "created .env (copied from the main worktree)")
 	}
+	previous := reg.Worktrees[c.root]
 	reg.Worktrees[c.root] = ports
 	if err := reg.save(); err != nil {
 		return err
@@ -266,7 +267,11 @@ func cmdUp(args []string) error {
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		fmt.Fprintf(stdout, "  %s=%d\n", n, ports[n])
+		if p, ok := previous[n]; ok && p != ports[n] {
+			fmt.Fprintf(stdout, "  %s=%d (was %d, which another worktree or a main worktree uses)\n", n, ports[n], p)
+		} else {
+			fmt.Fprintf(stdout, "  %s=%d\n", n, ports[n])
+		}
 	}
 	if statefulAdded != "" {
 		fmt.Fprintf(stdout, "  %s: added %s\n", sanctumKey, statefulAdded)
@@ -324,7 +329,13 @@ func portsFromEnv(env *envFile, defaults map[string]int) map[string]int {
 }
 
 func warnMainEnv(main string) {
-	fmt.Fprintf(stderr, "warning: the .env of the main worktree's project directory %q is not a regular file, so its ports are not recorded\n", main)
+	fmt.Fprintf(stderr, "warning: %s\n", mainEnvUnreadable(main))
+}
+
+// mainEnvUnreadable is the warning when mainPorts cannot read the main's .env. A link is not followed here although
+// up copies .env through one: only reading ports into the shared registry is held to the read-only commands' rule.
+func mainEnvUnreadable(main string) string {
+	return fmt.Sprintf("%q is not a regular file or cannot be read, so the main worktree's ports are not recorded", filepath.Join(main, ".env"))
 }
 
 // envSource is where up took .env from. It is remembered to tailor the guidance in the refusal error.

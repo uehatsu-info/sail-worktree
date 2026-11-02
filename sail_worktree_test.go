@@ -1276,12 +1276,16 @@ func TestUpRecordsMainPortsAndKeepsThemFree(t *testing.T) {
 		t.Fatal(err)
 	}
 	captureRunner(t)
+	out := captureStdout(t)
 	if err := cmdUp(nil); err != nil {
 		t.Fatal(err)
 	}
 	e, _ := readEnv(filepath.Join(wt, ".env"))
 	if v, _ := e.Get("APP_PORT"); v == "8123" || v == "" {
 		t.Errorf("the worktree kept the main worktree's port: APP_PORT=%q", v)
+	}
+	if !strings.Contains(out.String(), "(was 8123,") {
+		t.Errorf("the move is not reported:\n%s", out)
 	}
 	reg, _ = loadRegistry()
 	rec, ok := reg.Mains[main]
@@ -1321,7 +1325,7 @@ func TestUpDoesNotReadSymlinkedMainEnvForTheRecord(t *testing.T) {
 	if got := reg.Mains[main].Ports["APP_PORT"]; got != 8200 {
 		t.Errorf("the record was replaced through a link: APP_PORT=%d", got)
 	}
-	if !strings.Contains(errOut.String(), "not a regular file") {
+	if !strings.Contains(errOut.String(), mainEnvUnreadable(main)) {
 		t.Errorf("no warning: %q", errOut.String())
 	}
 }

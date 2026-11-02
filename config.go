@@ -164,8 +164,8 @@ func loadRegistry() (*Registry, error) {
 	return r, nil
 }
 
-// recordMain stores the ports of the main worktree main. ok=false (its .env could not be read) keeps the ports of an
-// existing record; a new record then reserves nothing. worktree, when not empty, is added to its linked worktrees.
+// recordMain stores the ports of the main worktree main. ok=false (its .env could not be read) keeps the ports and
+// defaults of an existing record; a new record then reserves nothing. worktree, when not empty, is added to its linked worktrees.
 // It reports whether the record changed.
 func (r *Registry) recordMain(main, worktree string, ports, defaults map[string]int, ok bool) bool {
 	if r.Mains == nil {

@@ -52,7 +52,7 @@ func checkRecord(r *report) error {
 		return nil
 	}
 	if !envOK {
-		r.warn("the .env of the main worktree's project directory %q is not a regular file, so its ports are not recorded", c.main)
+		r.warn("%s", mainEnvUnreadable(c.main))
 	}
 	// Read the main's .env before locking, then read the registry after locking, as up does.
 	unlock, err := lockRegistry()
