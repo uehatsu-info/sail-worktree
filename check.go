@@ -69,9 +69,8 @@ func currentMain(r *report) checkTarget {
 	if !envOK {
 		r.warn("%s", mainEnvUnreadable(c.main))
 	}
-	cur := checkTarget{main: c.main, ports: ports, defaults: defaults, envOK: envOK}
-	cur.inMain = c.isMain()
-	if !c.isMain() {
+	cur := checkTarget{main: c.main, ports: ports, defaults: defaults, envOK: envOK, inMain: c.isMain()}
+	if !cur.inMain {
 		cur.worktree = c.root
 	}
 	return cur
