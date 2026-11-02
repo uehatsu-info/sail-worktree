@@ -262,7 +262,8 @@ func TestPortsFilter(t *testing.T) {
 	}
 	// Nobody records 4000, but the host is still examined.
 	rows = portsJSON(t, "4000")
-	if len(rows) != 1 || rows[0].Port != 4000 || rows[0].Variable != "" || rows[0].Host != hostUnavailable || rows[0].Process != "node" {
+	if len(rows) != 1 || rows[0].Kind != kindNone || rows[0].State != stateNone || rows[0].Port != 4000 || rows[0].Variable != "" ||
+		rows[0].Worktree != "" || rows[0].Subdir != "" || rows[0].Host != hostUnavailable || rows[0].Process != "node" {
 		t.Errorf("unrecorded port: %+v", rows)
 	}
 	out, _, err := runPorts(t, "4000")
@@ -270,7 +271,7 @@ func TestPortsFilter(t *testing.T) {
 		t.Errorf("table: %v\n%s", err, out)
 	}
 	// A port of another repository is not shown without --all, and is examined as unrecorded.
-	if rows = portsJSON(t, "90"); len(rows) != 1 || rows[0].Variable != "" {
+	if rows = portsJSON(t, "90"); len(rows) != 1 || rows[0].Variable != "" || rows[0].Kind != kindNone || rows[0].State != stateNone {
 		t.Errorf("foreign port without --all: %+v", rows)
 	}
 	if rows = portsJSON(t, "90", "--all"); len(rows) != 1 || rows[0].Variable != "APP_PORT" {
