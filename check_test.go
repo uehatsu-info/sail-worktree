@@ -326,3 +326,115 @@ func TestCheckDropsInvalidRecordedDefaults(t *testing.T) {
 		t.Errorf("defaults after check = %v", rec.Defaults)
 	}
 }
+
+func TestCheckReportsWithoutTheLock(t *testing.T) {
+	isolatedRegistry(t)
+	fastLock(t, 50*time.Millisecond, time.Hour)
+	captureStderr(t)
+	a, b := realTempDir(t), realTempDir(t)
+	// Refreshing would move b to 8090; without the lock the record (80) is reported as it is.
+	writeFile(t, filepath.Join(b, ".env"), "APP_PORT=8090\n")
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{a: mainRec(80), b: mainRec(80)}})
+	p := mustRegistryPath(t)
+	before, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := plantLock(t, 0)
+	out, err := runCheck(t)
+	if err == nil || !strings.Contains(err.Error(), "found 1 problem") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"registry: 2 main worktree record(s)",
+		"port 80:",
+		"report may be based on records that refreshing would have changed",
+		"the registry is locked by another sail-worktree run",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if after, _ := os.ReadFile(p); string(after) != string(before) {
+		t.Error("the registry was written without the lock")
+	}
+	if _, err := os.Lstat(lock); err != nil {
+		t.Errorf("the other run's lock is gone: %v", err)
+	}
+
+	// A registry broken while check waits for the lock is still an error.
+	betweenReadAndLock(t, func() { writeFile(t, p, "{") })
+	if out, err := runCheck(t); err == nil || strings.Contains(err.Error(), "problem") {
+		t.Errorf("a broken registry is accepted without the lock: %v\n%s", err, out)
+	}
+}
+
+// betweenReadAndLock runs fn after check has read the mains' .env and before it takes the lock.
+func betweenReadAndLock(t *testing.T, fn func()) {
+	t.Helper()
+	old := checkLock
+	checkLock = func() (func(), error) {
+		fn()
+		return lockRegistry()
+	}
+	t.Cleanup(func() { checkLock = old })
+}
+
+func TestCheckReadsMainEnvBeforeTheLock(t *testing.T) {
+	isolatedRegistry(t)
+	m := realTempDir(t)
+	writeFile(t, filepath.Join(m, ".env"), "APP_PORT=8090\n")
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(80)}})
+	// A change after the read is not seen by this run: the .env is not read again under the lock.
+	betweenReadAndLock(t, func() { writeFile(t, filepath.Join(m, ".env"), "APP_PORT=8091\n") })
+	if out, err := runCheck(t); err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, _ := loadRegistry()
+	if got := reg.Mains[m].Ports["APP_PORT"]; got != 8090 {
+		t.Errorf("APP_PORT = %d, want 8090 (the read before the lock)", got)
+	}
+}
+
+func TestCheckDoesNotRefreshARecordChangedBeforeTheLock(t *testing.T) {
+	isolatedRegistry(t)
+	m := realTempDir(t)
+	writeFile(t, filepath.Join(m, ".env"), "APP_PORT=8090\n")
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(80)}})
+	// Another run records 9000 after check read the .env (8090): that record is newer and must stay.
+	betweenReadAndLock(t, func() { saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(9000)}}) })
+	if out, err := runCheck(t); err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, _ := loadRegistry()
+	if got := reg.Mains[m].Ports["APP_PORT"]; got != 9000 {
+		t.Errorf("APP_PORT = %d, want 9000 (the record changed meanwhile)", got)
+	}
+}
+
+func TestCheckFindsTheMainOfAWorktreeListedUnderAnAlias(t *testing.T) {
+	real, links := newLinkedDir(t, "alias")
+	main, wt2 := realTempDir(t), realTempDir(t)
+	unclean := wt2 + string(filepath.Separator) + "." // fails validKey: must not be resolved to wt2
+	reg := &Registry{
+		Worktrees: map[string]map[string]int{real: {"APP_PORT": 8123}, wt2: {"APP_PORT": 8123}},
+		Mains: map[string]MainRecord{main: {Ports: map[string]int{"APP_PORT": 8123}, Defaults: map[string]int{},
+			Worktrees: []string{links[0], unclean}}},
+	}
+	b := captureStdout(t)
+	checkConflicts(&report{w: stdout}, reg)
+	out := b.String()
+	if want := fmt.Sprintf("worktree %q APP_PORT (of %q)", real, main); !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
+	}
+	if want := fmt.Sprintf("worktree %q APP_PORT", wt2); !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
+	}
+	if bad := fmt.Sprintf("worktree %q APP_PORT (of", wt2); strings.Contains(out, bad) {
+		t.Errorf("an invalid list entry was resolved:\n%s", out)
+	}
+	// The fold is a view: the record itself is not changed.
+	if got := reg.Mains[main].Worktrees; len(got) != 2 || got[0] != links[0] || got[1] != unclean {
+		t.Errorf("the record was changed: %q", got)
+	}
+}
