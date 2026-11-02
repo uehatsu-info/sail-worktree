@@ -28,6 +28,8 @@ Usage:
   sail-worktree check           record this repository's main worktree and report ports used more than once by
                                 main worktrees and worktrees of every repository (writes only the registry; exit 1
                                 if any)
+  sail-worktree prune [-y]      remove registry records of directories that no longer exist or of invalid keys
+                                (writes only the registry; containers, networks and volumes are not touched)
   sail-worktree version         print the version (the tag for go install ...@vX.Y.Z; (devel) or a pseudo-version for a local build)
 
 Run the commands in your Laravel project's directory (the one with artisan and the compose file) or below it.
@@ -65,6 +67,8 @@ func main() {
 		err = cmdPs(args)
 	case "check":
 		err = cmdCheck(args)
+	case "prune":
+		err = cmdPrune(args)
 	case "version", "--version":
 		fmt.Println(version())
 		return
