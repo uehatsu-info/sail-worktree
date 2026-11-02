@@ -301,8 +301,7 @@ func loadRegistry() (*Registry, error) {
 // recordMain stores the ports of the main worktree main, read for the port variables of the run's configuration
 // (defaults' keys). It reports whether the record changed. worktree, when not empty, is added to its linked worktrees.
 //   - ok=false (its .env could not be read, or recordMainRead found a newer record) keeps the ports and defaults of an
-//     existing record, also for inMain; a new
-//     record then reserves nothing.
+//     existing record, also for inMain; a new record then reserves nothing.
 //   - inMain (check runs in the main worktree itself) replaces them: the main's own configuration decides, so a
 //     variable that left it is dropped here.
 //   - Otherwise the run may be on a branch whose configuration lacks a variable the main still uses, so a variable of
