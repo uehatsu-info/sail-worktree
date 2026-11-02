@@ -34,7 +34,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate`, `replacedMain`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry) |
-| `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
+| `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart (`counterpart`, `isProjectDir`) |
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
@@ -198,8 +198,7 @@ These come from deliberate decisions; change them only on purpose and update the
   names through `cell`. A directory that is only out of reach for the moment counts as missing. So removing the record
   of a project that is still in use (one on a disk that is out of reach for the moment, on Windows one run from a UNC
   path or through a link to one, which is not a usable key, or a main whose checkout has no project markers at the
-  moment while a main record with markers lies below it: a branch without the project there, or a feature branch that
-  moved the project from `laravel/` to the root, whose `up` records the root as the counterpart) frees its ports in the
+  moment while a main record with markers lies below it: a branch without the project there) frees its ports in the
   registry until `up`, or for a main worktree also `check` in its project directory, records it again; a port bound at
   that moment is still skipped by `up`'s `portFree`. The prompt lists the records first.
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
@@ -211,8 +210,10 @@ These come from deliberate decisions; change them only on purpose and update the
   reads the first line, because `up` writes its result back and collapses duplicates to the first line. A default counts
   only if it is 1 to 65535 (`validPort`), so a hand-edited recorded default outside that reserves nothing (`loadConfig`
   already refuses one in the configuration; the check stays for the registry). A main directory that does not exist is
-  never recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file is not read
-  for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves
+  never recorded (`counterpart` may return a lexical path), nor one that is not a project directory by `lookupProject`'s
+  rule (`isProjectDir`, `configOrLaravel`; stricter than prune's `projectMarkers` on purpose), as such a main never
+  runs; `check`'s "has no project directory" warning covers both. A `.env` that is a link or not a regular file is not
+  read for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves
   nothing. The variables are those of the run's configuration (`cfg.PortVars`), which may be a branch's, so `recordMain`
   merges: a variable of the old record's `defaults` that the run does not know keeps its recorded default and port. Only
   a `check` run in the main worktree itself (`checkTarget.inMain`) replaces the record, so a variable that left the
