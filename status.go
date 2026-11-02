@@ -194,6 +194,7 @@ func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) 
 		return
 	}
 	view := foldRegistry(reg)
+	mains := foldMains(reg)
 	mine := view[c.root]
 	if len(vars) > 0 {
 		r.line("ports:")
@@ -224,7 +225,7 @@ func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) 
 		if !haveEnv {
 			port = regPort
 		}
-		for _, other := range otherHolders(view, reg.Mains, c.root, port) {
+		for _, other := range otherHolders(view, mains, c.root, port) {
 			r.problem("port %d (%s) is also recorded for %s", port, v.Name, other)
 		}
 		host, blocked := hostState(port, state)
@@ -258,9 +259,10 @@ func parsePort(s string) (int, bool) {
 
 // otherHolders lists, sorted, the registry entries other than self that record port, and then the main worktree
 // records that do, with check's labels (holder.String). Every main record counts, also one of a directory that is gone,
-// because up avoids them all and would move this port on its next run. A worktree's main is not named: the line is
-// about this worktree's port, and the holder's own directory already tells which record to look at.
-func otherHolders(view map[string]map[string]int, mains map[string]MainRecord, self string, port int) []string {
+// because up avoids them all and would move this port on its next run; one that another record replaced says so. A
+// worktree's main is not named: the line is about this worktree's port, and the holder's own directory already tells
+// which record to look at.
+func otherHolders(view map[string]map[string]int, mains map[string]mainView, self string, port int) []string {
 	// A value that is not a port number holds nothing, as in check and ports. The callers pass a valid port or 0, and
 	// an equal recorded value is then valid too.
 	if !validPort(port) {
@@ -277,10 +279,10 @@ func otherHolders(view map[string]map[string]int, mains map[string]MainRecord, s
 			}
 		}
 	}
-	for dir, rec := range mains {
-		for name, p := range rec.Ports {
+	for dir, m := range mains {
+		for name, p := range m.rec.Ports {
 			if p == port {
-				hs = append(hs, holder{main: true, dir: dir, name: name, port: p})
+				hs = append(hs, holder{main: true, dir: dir, name: name, port: p, replacedBy: m.replacedBy})
 			}
 		}
 	}

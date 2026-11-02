@@ -1166,3 +1166,81 @@ func TestPsMarksInvalidRecordedPorts(t *testing.T) {
 		t.Errorf("portsCell = %q, want the value as it is (check's warnings)", got)
 	}
 }
+
+// foldMains folds a usable alias main key into its real path only when that path has no record of its own; an alias
+// of a recorded path, and a directory that a project below it replaced, keep their keys and are marked (#96).
+func TestFoldMains(t *testing.T) {
+	alias, real := aliasMain(t)
+	root, sub := movedRoot(t)
+	base := filepath.Dir(filepath.Dir(real)) // real is base/data/app, alias base/work/app
+	symlinkOrSkip(t, filepath.Join(base, "data"), filepath.Join(base, "work2"))
+	alias2 := filepath.Join(base, "work2", "app")
+	other := projectDir(t, mustMkdir(t, filepath.Join(realTempDir(t), "x", "app")))
+	otherAlias := filepath.Join(filepath.Dir(filepath.Dir(other)), "y", "app")
+	symlinkOrSkip(t, filepath.Dir(other), filepath.Dir(otherAlias))
+	for _, tc := range []struct {
+		name  string
+		mains map[string]MainRecord
+		want  map[string]string // view key -> replacedBy
+		from  map[string]int    // view key -> the APP_PORT of the record shown there
+	}{
+		{"alias without a record of its real path", map[string]MainRecord{alias: mainRec(81)},
+			map[string]string{real: ""}, map[string]int{real: 81}},
+		{"two aliases: the smallest is folded, the other is kept", map[string]MainRecord{alias2: mainRec(82), alias: mainRec(81)},
+			map[string]string{real: "", alias2: ""}, map[string]int{real: 81, alias2: 82}},
+		{"alias of a recorded path is replaced", map[string]MainRecord{alias: mainRec(81), real: mainRec(80)},
+			map[string]string{alias: real, real: ""}, map[string]int{alias: 81, real: 80}},
+		{"moved root is replaced", map[string]MainRecord{root: mainRec(81), sub: mainRec(80)},
+			map[string]string{root: sub, sub: ""}, map[string]int{root: 81, sub: 80}},
+		{"invalid key is kept", map[string]MainRecord{"relative/key": mainRec(81), otherAlias: mainRec(83)},
+			map[string]string{"relative/key": "", other: ""}, map[string]int{"relative/key": 81, other: 83}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := foldMains(&Registry{Mains: tc.mains})
+			if len(got) != len(tc.want) {
+				t.Fatalf("view = %+v", got)
+			}
+			for k, by := range tc.want {
+				v, ok := got[k]
+				if !ok || v.replacedBy != by || v.rec.Ports["APP_PORT"] != tc.from[k] {
+					t.Errorf("view[%q] = %+v, %v; want replaced by %q, port %d", k, v, ok, by, tc.from[k])
+				}
+			}
+		})
+	}
+}
+
+// ps finds the current repository's main under an alias key (folded in memory only), and marks a replaced main record
+// with --all, as check warns about it.
+func TestPsFoldsMainKeysAndMarksReplacedRecords(t *testing.T) {
+	main, _ := setupWorktreeRepo(t)
+	link := filepath.Join(realTempDir(t), "link")
+	symlinkOrSkip(t, filepath.Dir(main), link)
+	mainAlias := filepath.Join(link, filepath.Base(main))
+	withGitInRegistryDirs(t, false)
+	stale, live := aliasMain(t)
+	writeRegistryWithMains(t, nil, map[string]MainRecord{
+		mainAlias: viewMain(map[string]int{"APP_PORT": 80}),
+		stale:     viewMain(map[string]int{"APP_PORT": 90}),
+		live:      viewMain(map[string]int{"APP_PORT": 90}),
+	})
+	before, _ := os.ReadFile(mustRegistryPath(t))
+	es := psJSON(t)
+	if len(es) != 1 || es[0].Dir != main || es[0].Kind != kindMain || es[0].Worktree != filepath.Base(main) {
+		t.Errorf("entries = %+v", es)
+	}
+	got := map[string]entry{}
+	for _, e := range psJSON(t, "--all") {
+		got[e.Dir] = e
+	}
+	if len(got) != 3 || got[stale].State != stateReplaced || got[live].State != stateUnattributed || got[main].State != stateNone {
+		t.Errorf("--all entries = %+v", got)
+	}
+	out, _, _ := runPs(t, "--all")
+	if !strings.Contains(out, "replaced") {
+		t.Errorf("table:\n%s", out)
+	}
+	if after, _ := os.ReadFile(mustRegistryPath(t)); string(after) != string(before) {
+		t.Errorf("the registry changed:\n%s\n---\n%s", before, after)
+	}
+}

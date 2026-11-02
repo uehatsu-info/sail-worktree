@@ -23,7 +23,7 @@ import (
 // entry is one registry entry as ps shows it. The JSON field names are a public contract.
 type entry struct {
 	Kind     string         `json:"kind"`     // kindWorktree or kindMain
-	Dir      string         `json:"dir"`      // project directory (the registry key)
+	Dir      string         `json:"dir"`      // project directory (the registry key, or its real path when folded)
 	Worktree string         `json:"worktree"` // name of the worktree root
 	Subdir   string         `json:"subdir"`   // project directory below the worktree root, "." at the root
 	Branch   string         `json:"branch"`
@@ -43,6 +43,7 @@ const (
 	stateNone         = "-"
 	stateStale        = "stale"        // the worktree or directory is gone, or the key is invalid
 	stateUnattributed = "unattributed" // the directory exists but no listed worktree holds it
+	stateReplaced     = "replaced"     // a main record that another record replaced (replacedMain)
 	// docker's view of the compose project.
 	stateRunning = "running" // at least one container runs
 	stateStopped = "stopped" // containers exist, none runs
@@ -200,6 +201,37 @@ func foldRegistry(r *Registry) map[string]map[string]int {
 			}
 		}
 		out[rp] = r.Worktrees[pick]
+	}
+	return out
+}
+
+// mainView is a main worktree record as the read-only views show it.
+type mainView struct {
+	rec        MainRecord
+	replacedBy string // the record that replaces it (replacedMain), or ""
+}
+
+// foldMains returns the main records keyed as the read-only views show them; it is never saved. A record that another
+// replaces (replacedMain, which check warns about) keeps its key and is marked. Otherwise a usable alias key whose real
+// path has no record of its own is shown under that real path (the smallest alias, as in foldRegistry), so that it is
+// attributed to its repository. A further alias of the same path keeps its key instead of being dropped as
+// foldRegistry drops one: check counts every main record as a holder, and the views must find the same conflicts.
+func foldMains(r *Registry) map[string]mainView {
+	out := make(map[string]mainView, len(r.Mains))
+	for _, k := range slices.Sorted(maps.Keys(r.Mains)) {
+		v := mainView{rec: r.Mains[k]}
+		key := k
+		if by, _ := r.replacedMain(k); by != "" {
+			v.replacedBy = by
+		} else if usableDir(k) { // validKey first, so an invalid key is never resolved
+			if rp, err := realPath(k); err == nil && rp != k {
+				_, recorded := r.Mains[rp]
+				if _, taken := out[rp]; !recorded && !taken {
+					key = rp
+				}
+			}
+		}
+		out[key] = v
 	}
 	return out
 }
@@ -403,8 +435,9 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 // They show the recorded ports, which up avoids, and never read the main's .env. The compose project name and the
 // docker state are left out: the name comes from that .env or the directory, so it would only be a guess.
 func mainEntries(reg *Registry, v *registryView) (entries []entry, hidden int) {
-	for _, key := range slices.Sorted(maps.Keys(reg.Mains)) {
-		ports := reg.Mains[key].Ports
+	mains := foldMains(reg)
+	for _, key := range slices.Sorted(maps.Keys(mains)) {
+		ports := mains[key].rec.Ports
 		if ports == nil {
 			ports = map[string]int{}
 		}
@@ -415,14 +448,22 @@ func mainEntries(reg *Registry, v *registryView) (entries []entry, hidden int) {
 			ri, ok := attributeMain(k, repos)
 			return ri, 0, ok
 		})
+		var e entry
 		switch p {
 		case placeListed:
-			entries = append(entries, buildMainEntry(key, ports, v.repos[ri][0], usable))
+			e = buildMainEntry(key, ports, v.repos[ri][0], usable)
 		case placeUnattributed, placeStale:
-			entries = append(entries, unlisted(kindMain, key, ports, p))
+			e = unlisted(kindMain, key, ports, p)
 		case placeHidden:
 			hidden++
+			continue
+		default: // placeSkipped: another repository's record, left out without all
+			continue
 		}
+		if mains[key].replacedBy != "" { // replacedMain needs a usable key, so the entry is never stale
+			e.State = stateReplaced
+		}
+		entries = append(entries, e)
 	}
 	return entries, hidden
 }

@@ -490,7 +490,7 @@ func TestStatusOtherHoldersUseCheckLabels(t *testing.T) {
 // A value that is not a port number holds nothing, as in check and ports, even if two records share it.
 func TestOtherHoldersIgnoreInvalidPorts(t *testing.T) {
 	view := map[string]map[string]int{"/a": {"APP_PORT": 70000}, "/b": {"APP_PORT": 70000}}
-	mains := map[string]MainRecord{"/m": viewMain(map[string]int{"APP_PORT": 70000})}
+	mains := map[string]mainView{"/m": {rec: viewMain(map[string]int{"APP_PORT": 70000})}}
 	for _, port := range []int{0, -1, 70000} {
 		if got := otherHolders(view, mains, "/a", port); got != nil {
 			t.Errorf("otherHolders(%d) = %q, want none", port, got)
@@ -498,5 +498,18 @@ func TestOtherHoldersIgnoreInvalidPorts(t *testing.T) {
 	}
 	if got := otherHolders(map[string]map[string]int{"/b": {"APP_PORT": 81}}, nil, "/a", 81); len(got) != 1 {
 		t.Errorf("otherHolders(81) = %q", got)
+	}
+}
+
+// status still counts a replaced main record as another holder (up avoids its ports), and says that it is replaced.
+func TestStatusLabelsReplacedMainHolders(t *testing.T) {
+	_, wt := statusSetup(t, "")
+	stale, live := aliasMain(t)
+	writeRegistryWithMains(t, map[string]map[string]int{wt: {"APP_PORT": 81}},
+		map[string]MainRecord{stale: viewMain(map[string]int{"APP_PORT": 81}), live: viewMain(map[string]int{"APP_PORT": 82})})
+	out, _, err := runStatus(t)
+	want := fmt.Sprintf("port 81 (APP_PORT) is also recorded for main worktree %q APP_PORT (replaced by %q)", stale, live)
+	if err == nil || !strings.Contains(out, want) {
+		t.Errorf("err = %v; missing %q in:\n%s", err, want, out)
 	}
 }
