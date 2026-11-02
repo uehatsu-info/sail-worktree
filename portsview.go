@@ -178,10 +178,7 @@ func cmdPorts(args []string) error {
 	if !noDocker {
 		fillDockerStates(entries)
 	}
-	if hidden > 0 {
-		fmt.Fprintf(stderr, "note: registry entries not listed: %d (gone or invalid, they still hold their ports); "+
-			"use --all\n", hidden)
-	}
+	noteHidden(hidden)
 	rows := portsOf(entries)
 	if filter != 0 {
 		var kept []portRow
