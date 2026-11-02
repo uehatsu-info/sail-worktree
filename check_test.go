@@ -142,7 +142,7 @@ func TestCheckDoesNotUseALinkedKeyAsADirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a linked key took part in a conflict: %v\n%s", err, out)
 	}
-	if want := fmt.Sprintf("the record of main worktree %q keeps ports free, but it is not an existing directory", link); !strings.Contains(out, want) {
+	if want := fmt.Sprintf("the record of main worktree %q keeps ports free, but it is not a usable local directory", link); !strings.Contains(out, want) {
 		t.Errorf("missing %q in:\n%s", want, out)
 	}
 	reg, _ := loadRegistry()
@@ -215,7 +215,7 @@ func TestCheckIgnoresMissingDirectoriesAndRemovedKeys(t *testing.T) {
 		t.Fatalf("err = %v\n%s", err, out)
 	}
 	for _, want := range []string{
-		fmt.Sprintf("the record of main worktree %q keeps ports free, but it is not an existing directory: APP_PORT=80", gone),
+		fmt.Sprintf("the record of main worktree %q keeps ports free, but it is not a usable local directory: APP_PORT=80", gone),
 		fmt.Sprintf("the record of main worktree %q keeps ports free", "relative/key"),
 		fmt.Sprintf("the record of worktree %q keeps ports free", filepath.Join(gone, "wt")),
 		"no port is used more than once",

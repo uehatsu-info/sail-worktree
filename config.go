@@ -275,14 +275,33 @@ func writeFileAtomic(path string, data []byte) error {
 	return err
 }
 
+// validKey reports whether a registry key may be used as a directory: an absolute, clean path, and on Windows a path
+// that starts with a drive letter. Keys are untrusted, and on Windows looking at a UNC or device path (\\host\share,
+// \\?\, \??\, \\.\) can open a network connection that sends the user's credentials.
+func validKey(k string) bool {
+	return k != "" && filepath.IsAbs(k) && filepath.Clean(k) == k && windowsDriveKey(k, runtime.GOOS)
+}
+
+// windowsDriveKey reports whether k starts with a drive letter, a colon and a separator, which is the only form
+// accepted on Windows (an allow-list: Go parses several device prefixes, so refusing known forms would miss some).
+// On other systems it is always true.
+func windowsDriveKey(k, goos string) bool {
+	if goos != "windows" {
+		return true
+	}
+	return len(k) >= 3 && isASCIILetter(k[0]) && k[1] == ':' && (k[2] == '\\' || k[2] == '/')
+}
+
+func isASCIILetter(b byte) bool { return 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' }
+
 // migrate merges keys that are aliases of root (recorded by an older version under a symlinked path) into root.
 // It only changes memory; the caller saves on success. An existing entry for root wins; otherwise the entry of the
 // alias with the smallest key (lexicographically) is adopted. The ports of dropped aliases are not left in used.
-// Keys whose path cannot be resolved (it no longer exists) are left alone.
+// Keys whose path cannot be resolved (it no longer exists) and keys that fail validKey are left alone.
 func (r *Registry) migrate(root string) {
 	var aliases []string
 	for k := range r.Worktrees {
-		if k == root {
+		if k == root || !validKey(k) {
 			continue
 		}
 		if rp, err := realPath(k); err == nil && rp == root {

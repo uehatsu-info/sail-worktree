@@ -31,7 +31,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `main.go` | Command dispatch, usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, `mainPorts`/`readMainEnv`/`portsFromEnv` (a main worktree's ports), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
-| `config.go` | `.sail-worktree.json` (project config), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
+| `config.go` | `.sail-worktree.json` (project config), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
@@ -106,7 +106,9 @@ These come from deliberate decisions; change them only on purpose and update the
   files this tool writes (`.env`, `.sail-worktree.json`), and only on Unix.
 - **`ps`, `ports` and `status` only read.** They never `save` or `migrate` the registry (`foldRegistry` folds symlink aliases
   in a copy), never write `.env` or `.sail-worktree.json`, and never source `.env`. Registry keys are untrusted: a key
-  that is not an absolute clean path is never used as a directory; git runs in registry directories only through
+  that fails `validKey` (absolute and clean, and on Windows a drive-letter path, an allow-list, because a UNC or device
+  path such as `\\host\share`, `\\?\` or `\??\` can open a network connection) is never used as a directory, by any
+  command (`migrate` in `up` and `rm` included); git runs in registry directories only through
   `listWorktrees` (`worktree list` with `core.fsmonitor=false`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and
   `GIT_COMMON_DIR` removed). External queries go through `runOutput` (explicit env, timeout, no stdin, stdout capped
   while read). docker is asked once (`dockerProjects`, through the replaceable `output`, with `cleanEnv(nil)` in the
@@ -125,9 +127,9 @@ These come from deliberate decisions; change them only on purpose and update the
   cwd). `mainPorts` reads the current main's `.env` before the lock; the registry is read after `lockRegistry`,
   `refreshMains` reads the other mains' `.env` under the lock, and the registry is saved only when `recordMain` or
   `refreshMains` reports a change. A `loadCtx` or configuration error is a warning, so `check` works outside a
-  repository. A `mains` key is used as a directory only after `validKey` and `isDir` (`Lstat` on the key; a link as
-  its last element is not followed), its `.env` only through `readMainEnv`. Conflict lines print only valid port
-  numbers. Records of missing directories or invalid keys are warnings (their recorded ports printed as they are),
+  repository. A `mains` key is used as a directory only after `validKey` (see the read-only rule above) and `isDir`
+  (`Lstat` on the key; a link as its last element is not followed), its `.env` only through `readMainEnv`. Conflict
+  lines print only valid port numbers. Records of missing directories or invalid keys are warnings (their recorded ports printed as they are),
   never conflicts, so a deleted clone cannot make `check` fail for ever. A conflict is fixed by the user: a worktree
   by `up`, a main worktree by hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching
   `shellName`). Exit 1 only for a conflict (`report.finish`, shared with `status`).

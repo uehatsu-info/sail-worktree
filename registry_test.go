@@ -265,3 +265,46 @@ func TestPortsFromEnv(t *testing.T) {
 		t.Errorf("without .env: %v", got)
 	}
 }
+
+func TestWindowsDriveKey(t *testing.T) {
+	refused := []string{`\??\UNC\h\s\x`, `\??\C:\x`, `\\?\C:\x`, `\\?\UNC\h\s\x`, `\\.\pipe\x`, `\\h\s\x`,
+		`//h/s/x`, `\/h\s\x`, `\x`, `C:x`, `1:\x`, `C:`, ""}
+	for _, k := range refused {
+		if windowsDriveKey(k, "windows") {
+			t.Errorf("windows accepts %q", k)
+		}
+		if !windowsDriveKey(k, "linux") {
+			t.Errorf("linux refuses %q", k)
+		}
+	}
+	for _, k := range []string{`C:\x`, `c:\x`, `C:/x`, `z:\`} {
+		if !windowsDriveKey(k, "windows") {
+			t.Errorf("windows refuses %q", k)
+		}
+	}
+}
+
+func TestValidKeyOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the drive-letter rule applies only on Windows")
+	}
+	for _, k := range []string{`\??\UNC\h\s\x`, `\??\C:\x`, `\\?\C:\x`, `\\?\UNC\h\s\x`, `\\.\pipe\x`, `\\h\s\x`, `//h/s/x`, `C:/x`} {
+		if validKey(k) {
+			t.Errorf("validKey accepts %q", k)
+		}
+	}
+	if !validKey(`C:\x`) {
+		t.Error(`validKey refuses C:\x`)
+	}
+}
+
+func TestMigrateLeavesInvalidKeysAlone(t *testing.T) {
+	// A key that is not clean resolves to root, but an invalid key is never looked at as a path.
+	root := realTempDir(t)
+	unclean := root + string(filepath.Separator) + "."
+	r := &Registry{Worktrees: map[string]map[string]int{unclean: {"APP_PORT": 8123}}}
+	r.migrate(root)
+	if _, ok := r.Worktrees[unclean]; !ok || len(r.Worktrees) != 1 {
+		t.Errorf("an invalid key was migrated: %v", r.Worktrees)
+	}
+}
