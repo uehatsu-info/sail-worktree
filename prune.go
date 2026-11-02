@@ -131,9 +131,10 @@ func (l pruneList) empty() bool {
 	return len(l.worktrees) == 0 && len(l.mains) == 0 && len(l.linked) == 0
 }
 
-// staleWorktreeKey reports whether a worktrees key is unusable. An alias that an older version recorded under a
-// symlinked path counts as the directory it resolves to, as in foldRegistry and checkConflicts (so prune removes
-// what check warns about): it still holds the ports of a live worktree, and the next up there folds it into the real path.
+// staleWorktreeKey reports whether a worktrees key, or an entry of a main worktree's list, is unusable. An alias that
+// an older version recorded under a symlinked path counts as the directory it resolves to, as in foldRegistry and
+// checkConflicts (so prune removes what check warns about): it still names a live worktree (and a key still holds its
+// ports), and the next up there folds it into the real path.
 func staleWorktreeKey(k string) bool {
 	if !validKey(k) {
 		return true
@@ -144,8 +145,9 @@ func staleWorktreeKey(k string) bool {
 	return !isDir(k)
 }
 
-// findPrunable lists the unusable records of reg. Main worktree keys and their lists are recorded as real paths, so
-// they are checked without following links; a replaced main record takes its list with it.
+// findPrunable lists the unusable records of reg. Main worktree keys are recorded as real paths and never folded, so
+// they are checked without following links; the entries of their lists are folded like worktrees keys (an older
+// version recorded aliases there too). A replaced main record takes its list with it.
 func findPrunable(reg *Registry) pruneList {
 	var l pruneList
 	for _, k := range slices.Sorted(maps.Keys(reg.Worktrees)) {
@@ -164,7 +166,7 @@ func findPrunable(reg *Registry) pruneList {
 			continue
 		}
 		for _, w := range slices.Sorted(slices.Values(reg.Mains[k].Worktrees)) {
-			if !usableDir(w) {
+			if staleWorktreeKey(w) {
 				l.linked = append(l.linked, linkedEntry{main: k, worktree: w})
 			}
 		}
@@ -206,7 +208,7 @@ func (r *Registry) prune(list pruneList) (done pruneList, kept []string) {
 		if !ok || !slices.Contains(rec.Worktrees, l.worktree) {
 			continue
 		}
-		if usableDir(l.worktree) {
+		if !staleWorktreeKey(l.worktree) {
 			kept = append(kept, fmt.Sprintf("linked worktree %q in the record of main worktree %q", l.worktree, l.main))
 			continue
 		}

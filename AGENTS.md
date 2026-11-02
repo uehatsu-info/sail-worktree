@@ -165,16 +165,17 @@ These come from deliberate decisions; change them only on purpose and update the
   through `readMainEnv`. Conflict lines print only valid port numbers. Records of missing directories or invalid keys,
   and main records that another record replaced (`replacedMain`, see the `prune` rule), are warnings (their recorded
   ports printed as they are), never conflicts, so a deleted clone or a moved project cannot make `check` fail for ever.
-  An entry of a holder main's `worktrees` list that fails `usableDir` (prune's test) is a warning too, although it holds
-  no ports, so that `prune` removes only what `check` warns about. A conflict is fixed by the user: a worktree by `up`,
-  a main worktree by hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`).
-  Exit 1 only for a conflict (`report.finish`, shared with `status`) or an error; an error still prints the warnings
-  collected so far (`printWarnings`). A variable of a record's `defaults` that the main's `.env` sets on more than one
-  line is a warning (`warnDuplicates`, from the `.env` that `readMains` already read, so a main recorded by this run is
-  checked from the next one; the name through `cell`, never a value). `duplicateKeys` reads line by line, as `portValue`
-  does, so a line inside a multi-line quoted value counts: a documented limit, because only the warning could skip such
-  lines (it would then disagree with the port read) and a quote-aware `Set` would lose every key after an unclosed
-  quote.
+  An entry of a holder main's `worktrees` list that is stale by `staleWorktreeKey` (prune's test, so an alias of a live
+  worktree is folded, not warned about) is a warning too, although it holds no ports, so that `prune` removes only what
+  `check` warns about; a worktree's `(of ...)` comes only from holder mains' lists. A conflict is fixed by the user: a
+  worktree by `up`, a main worktree by hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching
+  `shellName`). Exit 1 only for a conflict (`report.finish`, shared with `status`) or an error; an error still prints
+  the warnings collected so far (`printWarnings`). A variable of a record's `defaults` that the main's `.env` sets on
+  more than one line is a warning (`warnDuplicates`, from the `.env` that `readMains` already read, so a main recorded
+  by this run is checked from the next one; the name through `cell`, never a value). `duplicateKeys` reads line by line,
+  as `portValue` does, so a line inside a multi-line quoted value counts: a documented limit, because only the warning
+  could skip such lines (it would then disagree with the port read) and a quote-aware `Set` would lose every key after
+  an unclosed quote.
 - **`prune` writes only the registry.** It removes what `check` warns about: a `worktrees` key that fails `validKey` or
   does not resolve to a directory (`staleWorktreeKey`, the `foldRegistry` rule, so an alias key of a live worktree is
   kept: it still holds that worktree's ports, and the next `up` there folds it with `migrate`, not `prune`), a `mains`
@@ -185,14 +186,15 @@ These come from deliberate decisions; change them only on purpose and update the
   `artisan` and a compose file, looked at with `Lstat` only, a link counts, an error other than not-exist counts as
   present) while a usable key that is its own real path and has markers lies strictly below it; a `realPath` failure
   keeps the record, and a main without such a second record keeps its ports; git is not asked), and entries of a kept
-  main's `worktrees` list that fail `usableDir`. `validKey` always comes first, so an invalid key is never looked at (on
-  Windows its walk reads only the elements and links on the way, up to the first refused link). It lists and asks
-  (package `stdin`/`stdout`, `-y` skips) without the lock, then takes `lockRegistry`, reads the registry again and
-  removes only listed records that are still recorded and still unusable (with the same per-kind test), saving only when
-  something was removed; records that became unusable after the prompt are left for the next run, because the user did
-  not confirm them. A replaced main is tested again after the prompt and before the lock (`recheckReplaced`, so that the
-  lock is not held while it reads the filesystem) and under the lock only compared in the registry (`stillPrunable`: its
-  record equals the listed one, and the record that replaces it is still there). It never writes `.env` or
+  main's `worktrees` list that are stale by `staleWorktreeKey` (the rule of `worktrees` keys: an older version recorded
+  aliases there too, and one of a live worktree is kept). `validKey` always comes first, so an invalid key is never
+  looked at (on Windows its walk reads only the elements and links on the way, up to the first refused link). It lists
+  and asks (package `stdin`/`stdout`, `-y` skips) without the lock, then takes `lockRegistry`, reads the registry again
+  and removes only listed records that are still recorded and still unusable (with the same per-kind test), saving only
+  when something was removed; records that became unusable after the prompt are left for the next run, because the user
+  did not confirm them. A replaced main is tested again after the prompt and before the lock (`recheckReplaced`, so that
+  the lock is not held while it reads the filesystem) and under the lock only compared in the registry (`stillPrunable`:
+  its record equals the listed one, and the record that replaces it is still there). It never writes `.env` or
   `.sail-worktree.json` and runs neither docker, sail nor git: the containers, networks and volumes of a removed
   worktree are left alone and the output says so (`docker compose ls -a`). Untrusted keys are printed with `%q` and port
   names through `cell`. A directory that is only out of reach for the moment counts as missing. So removing the record
@@ -225,7 +227,8 @@ These come from deliberate decisions; change them only on purpose and update the
   `inMain` included. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias
   paths in a record's `worktrees` list are folded like the top-level `worktrees` keys: by `migrate` (saved by `up` and
   `rm`; only in the current main's list, so an alias in another main's list is not folded by it), and by `check` in
-  memory only (`foldKey`, the key `ofMain` looks a worktree up by); an entry that fails `validKey` is never resolved.
+  memory only (`foldKey`, the key `ofMain` looks a worktree up by), and `prune` keeps them (`staleWorktreeKey`); an
+  entry that fails `validKey` is never resolved.
 - **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once,
   so nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`,
   fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the process
