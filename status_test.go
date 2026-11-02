@@ -232,7 +232,7 @@ func TestStatusInTheMainWorktree(t *testing.T) {
 	main, _ := statusSetup(t, "")
 	t.Chdir(main)
 	out, _, err := runStatus(t)
-	if err != nil || !strings.Contains(out, "this is the main worktree") {
+	if err != nil || !strings.Contains(out, "this is the main worktree") || !strings.Contains(out, "check records its ports") {
 		t.Errorf("err = %v\n%s", err, out)
 	}
 }

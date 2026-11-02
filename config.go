@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -115,6 +117,18 @@ func composeInsideProject(root, rel string) (string, error) {
 // directories; the JSON name "worktrees" is kept for files written by older versions.
 type Registry struct {
 	Worktrees map[string]map[string]int `json:"worktrees"`
+	// Mains records the main worktrees, which up never assigns ports to, keyed by their project directory, so that
+	// their ports are kept free too. It is a cache: an older version drops it when it saves, and up and check record
+	// it again.
+	Mains map[string]MainRecord `json:"mains,omitempty"`
+}
+
+// MainRecord is what the registry knows about a main worktree: the ports it uses, the compose defaults of its port
+// variables (used when its .env no longer sets one) and its linked worktrees that have a port record.
+type MainRecord struct {
+	Ports     map[string]int `json:"ports"`
+	Defaults  map[string]int `json:"defaults"`
+	Worktrees []string       `json:"worktrees,omitempty"`
 }
 
 func registryPath() (string, error) {
@@ -130,7 +144,7 @@ func loadRegistry() (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Registry{Worktrees: map[string]map[string]int{}}
+	r := &Registry{Worktrees: map[string]map[string]int{}, Mains: map[string]MainRecord{}}
 	b, err := os.ReadFile(p)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -144,7 +158,48 @@ func loadRegistry() (*Registry, error) {
 	if r.Worktrees == nil {
 		r.Worktrees = map[string]map[string]int{}
 	}
+	if r.Mains == nil {
+		r.Mains = map[string]MainRecord{}
+	}
 	return r, nil
+}
+
+// recordMain stores the ports of the main worktree main. ok=false (its .env could not be read) keeps the ports and
+// defaults of an existing record; a new record then reserves nothing. worktree, when not empty, is added to its linked worktrees.
+// It reports whether the record changed.
+func (r *Registry) recordMain(main, worktree string, ports, defaults map[string]int, ok bool) bool {
+	if r.Mains == nil {
+		r.Mains = map[string]MainRecord{}
+	}
+	old, had := r.Mains[main]
+	rec := MainRecord{Ports: old.Ports, Defaults: old.Defaults, Worktrees: append([]string(nil), old.Worktrees...)}
+	if ok || !had {
+		rec.Ports, rec.Defaults = ports, defaults
+	}
+	if rec.Ports == nil {
+		rec.Ports = map[string]int{}
+	}
+	if rec.Defaults == nil {
+		rec.Defaults = map[string]int{}
+	}
+	if worktree != "" && !slices.Contains(rec.Worktrees, worktree) {
+		rec.Worktrees = append(rec.Worktrees, worktree)
+		sort.Strings(rec.Worktrees)
+	}
+	r.Mains[main] = rec
+	return !had || !maps.Equal(old.Ports, rec.Ports) || !maps.Equal(old.Defaults, rec.Defaults) ||
+		!slices.Equal(old.Worktrees, rec.Worktrees)
+}
+
+// forgetWorktree removes worktree from the linked worktrees of main. The main's record itself stays: its ports still
+// have to be kept free.
+func (r *Registry) forgetWorktree(main, worktree string) {
+	rec, ok := r.Mains[main]
+	if !ok {
+		return
+	}
+	rec.Worktrees = slices.DeleteFunc(append([]string(nil), rec.Worktrees...), func(w string) bool { return w == worktree })
+	r.Mains[main] = rec
 }
 
 func (r *Registry) save() error {
@@ -243,7 +298,7 @@ func (r *Registry) migrate(root string) {
 	}
 }
 
-// used returns the set of ports assigned to worktrees other than except.
+// used returns the set of ports assigned to worktrees other than except, and the ports of every main worktree.
 func (r *Registry) used(except string) map[int]bool {
 	m := map[int]bool{}
 	for wt, ports := range r.Worktrees {
@@ -251,6 +306,11 @@ func (r *Registry) used(except string) map[int]bool {
 			continue
 		}
 		for _, p := range ports {
+			m[p] = true
+		}
+	}
+	for _, rec := range r.Mains {
+		for _, p := range rec.Ports {
 			m[p] = true
 		}
 	}

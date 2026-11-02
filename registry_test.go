@@ -178,3 +178,90 @@ func TestRegistrySaveIsNeverSeenPartially(t *testing.T) {
 		t.Errorf("a reader saw a partial registry: %v", err)
 	}
 }
+
+func TestRegistryMainsLoadAndSave(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AppData", t.TempDir())
+	p, err := registryPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A file of an older version has no mains; a hand-written null record must not break anything.
+	for _, content := range []string{`{"worktrees":{}}`, `{"worktrees":{},"mains":null}`, `{"worktrees":{},"mains":{"/m":null}}`} {
+		writeFile(t, p, content)
+		reg, err := loadRegistry()
+		if err != nil {
+			t.Fatalf("%s: %v", content, err)
+		}
+		if reg.Mains == nil {
+			t.Fatalf("%s: Mains is nil", content)
+		}
+		reg.used("") // must not panic on a null record
+		reg.forgetWorktree("/m", "/wt")
+		reg.recordMain("/m", "/wt", nil, nil, false)
+		if rec := reg.Mains["/m"]; rec.Ports == nil || rec.Defaults == nil || len(rec.Worktrees) != 1 {
+			t.Errorf("%s: record = %+v", content, rec)
+		}
+	}
+	reg := &Registry{Worktrees: map[string]map[string]int{}, Mains: map[string]MainRecord{
+		"/m": {Ports: map[string]int{"APP_PORT": 8080}, Defaults: map[string]int{"APP_PORT": 80}, Worktrees: []string{"/wt"}},
+	}}
+	if err := reg.save(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := got.Mains["/m"]; rec.Ports["APP_PORT"] != 8080 || rec.Defaults["APP_PORT"] != 80 || len(rec.Worktrees) != 1 {
+		t.Errorf("mains not kept by save: %+v", got.Mains)
+	}
+	if !got.used("")[8080] {
+		t.Error("a main worktree's port is not counted as used")
+	}
+}
+
+func TestRecordMainAndForgetWorktree(t *testing.T) {
+	reg := &Registry{Worktrees: map[string]map[string]int{}}
+	ports, defaults := map[string]int{"APP_PORT": 81}, map[string]int{"APP_PORT": 80}
+	if !reg.recordMain("/m", "/wt/b", ports, defaults, true) {
+		t.Error("a new record is not reported as a change")
+	}
+	reg.recordMain("/m", "/wt/a", ports, defaults, true)
+	if reg.recordMain("/m", "/wt/a", ports, defaults, true) {
+		t.Error("an identical record is reported as a change")
+	}
+	if got := reg.Mains["/m"].Worktrees; len(got) != 2 || got[0] != "/wt/a" || got[1] != "/wt/b" {
+		t.Errorf("worktrees = %v", got)
+	}
+	// .env could not be read: the recorded ports stay.
+	if reg.recordMain("/m", "", nil, defaults, false) || reg.Mains["/m"].Ports["APP_PORT"] != 81 {
+		t.Errorf("ports of an unreadable .env replaced the record: %+v", reg.Mains["/m"])
+	}
+	// A new record from an unreadable .env reserves nothing.
+	reg.recordMain("/n", "", nil, defaults, false)
+	if rec := reg.Mains["/n"]; len(rec.Ports) != 0 {
+		t.Errorf("new record = %+v", rec)
+	}
+	reg.forgetWorktree("/m", "/wt/a")
+	if rec := reg.Mains["/m"]; len(rec.Worktrees) != 1 || rec.Worktrees[0] != "/wt/b" || rec.Ports["APP_PORT"] != 81 {
+		t.Errorf("after forgetWorktree: %+v", rec)
+	}
+}
+
+func TestPortsFromEnv(t *testing.T) {
+	defaults := map[string]int{"APP_PORT": 80, "FORWARD_DB_PORT": 3306, "VITE_PORT": 5173}
+	e, err := parseEnv(strings.NewReader("APP_PORT=8080\nFORWARD_DB_PORT=abc\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := portsFromEnv(e, defaults)
+	// A valid value is used, an invalid one reserves nothing, an absent key falls back to the compose default.
+	if len(got) != 2 || got["APP_PORT"] != 8080 || got["VITE_PORT"] != 5173 {
+		t.Errorf("with .env: %v", got)
+	}
+	if got := portsFromEnv(nil, defaults); len(got) != 3 || got["FORWARD_DB_PORT"] != 3306 {
+		t.Errorf("without .env: %v", got)
+	}
+}

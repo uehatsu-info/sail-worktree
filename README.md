@@ -89,11 +89,11 @@ Prints the version (the tag for `go install ...@vX.Y.Z`; a local `go build` prin
 
 ## Inspecting worktrees
 
-`ps`, `ports` and `status` only read. They never write `.env`, `.sail-worktree.json` or the registry, and never source `.env`.
+`ps`, `ports` and `status` only read. They never write `.env`, `.sail-worktree.json` or the registry, and never source `.env`. `check` writes only the registry.
 
 ### `sail-worktree ps [--all] [--json] [--no-docker]`
 
-Lists the worktrees recorded in the port registry, which is a view of `registry.json` and not `docker ps`. The main worktree is not listed, because `up` refuses to run there and records nothing for it.
+Lists the worktrees recorded in the port registry, which is a view of `registry.json` and not `docker ps`. The main worktree is not listed, because `up` refuses to run there (its ports are recorded separately; see [`check`](#sail-worktree-check)).
 
 ```
 WORKTREE  SUBDIR  BRANCH  PORTS                             STATE    DIR
@@ -107,7 +107,7 @@ myapp-x   .       feat-x  APP_PORT=81 FORWARD_DB_PORT=3307  running  /work/myapp
 
 ### `sail-worktree status [--no-docker]`
 
-Shows how the current worktree is set up and reports what is wrong with it. Run it in the project directory (or below it), like `up`; it works in the main worktree too, where it only says that `up`, `stop` and `rm` do not run there and nothing is recorded for it.
+Shows how the current worktree is set up and reports what is wrong with it. Run it in the project directory (or below it), like `up`; it works in the main worktree too, where it only says that `up`, `stop` and `rm` do not run there and that `check` records its ports.
 
 ```
 project directory: "/work/myapp-x"
@@ -140,9 +140,33 @@ PORT  VARIABLE         WORKTREE  SUBDIR  STATE    HOST                       CON
 
 - `HOST` is `free`, `unavailable` (the port cannot be bound: in use, or not allowed to bind) or `in use by this project` (docker says the project runs, so its own port is not probed). For an unavailable port, on Unix and if `lsof` can see it, the name and pid of the first listening process are added (`lsof` is only called for such ports; without it, or on Windows, you get plain `unavailable`; `status` calls the same condition `cannot bind`). Every port is bound for an instant and closed again; nothing is written to disk, but a firewall may notice the bind.
 - `STATE` is the one `ps` shows (including `stale` for entries whose worktree is gone, which still hold their ports); `--no-docker` does not ask docker, so a running project's own ports are probed too and may show as `unavailable`.
-- `CONFLICT` is `yes` when the port is recorded more than once, by two entries or by two variables of one entry. `up` never assigns the same port twice, so this points at a hand-edited registry or an alias that was not merged.
+- `CONFLICT` is `yes` when the port is recorded more than once, by two entries or by two variables of one entry. `up` never assigns the same port twice, so this points at a hand-edited registry or an alias that was not merged. `ports` and `status` see only worktrees; `check` also compares the main worktrees' ports.
 - With `PORT` (digits only, 1 to 65535) only that port is shown; if nothing records it (also when only another repository does, without `--all`), one row without a variable (empty strings in `--json`) still tells whether the host can bind it.
 - `--json` prints an array of objects with the fields `port`, `variable`, `worktree`, `subdir`, `state`, `host` (the three values above), `process` (empty when unknown), `pid` (0 when unknown) and `conflict`.
+
+### `sail-worktree check`
+
+Records the main worktree of the repository you are in, then reports ports that more than one main worktree or worktree uses, across every repository in the registry. Run it anywhere inside the repository, in the main worktree or in a linked one: this is how a repository that you use only in its main worktree becomes known. Outside a repository it records no main worktree of its own (a warning says why), but still updates the recorded ones as described below.
+
+```
+recorded main worktree: "/work/shop"
+registry: 2 main worktree record(s), 1 worktree record(s)
+conflicts:
+  port 80: main worktree "/work/blog" APP_PORT, main worktree "/work/shop" APP_PORT
+    keeps it: main worktree "/work/blog" APP_PORT
+    fix: set APP_PORT=82 in the .env of "/work/shop"
+problems:
+  - port 80 is used 2 times
+error: found 1 problem(s)
+```
+
+- It writes only the registry: under the same lock as `up`, replaced atomically, and only when the record changed. It never writes `.env` or `.sail-worktree.json`, never sources `.env`, and runs neither docker nor sail.
+- What is recorded for a main worktree: for each port variable, the value in its `.env`, or the compose default when `.env` does not set it (or there is no `.env`); an invalid value reserves nothing. A `.env` that is a link or not a regular file is not read, and the previous record is kept (a warning says so for the repository you are in). The main worktree must have the project directory at the same relative path. `up` records the same, when it runs in a linked worktree.
+- The first holder keeps the port: main worktrees before worktrees, each in path order. For a worktree, the fix is to run `sail-worktree up` in it (it assigns another port). For a main worktree, `check` proposes a port that no record uses and that this host can bind (bound for an instant and closed again); set it in that `.env` yourself and restart its containers. A variable name that is not a plain shell name is only quoted.
+- On every run `check` also updates every recorded main worktree from its `.env` (links are not followed), so a port changed there since is seen, and `up` avoids it from then on. A port variable added to the configuration is seen after the next `up` or `check` in that repository.
+- Two repositories whose main worktrees both use the compose defaults (`APP_PORT` 80, `FORWARD_DB_PORT` 3306 and so on) conflict: they cannot run at the same time. Give one of them other ports if you run them together; if you never do, the report is expected.
+- A record whose directory no longer exists (or whose key is not an absolute path) is listed under `warnings:` and is not a conflict; `up` still keeps its ports free. There is no command to drop such a record yet; edit the registry.
+- The exit status is 1 when there is a conflict (`error: found N problem(s)`); warnings do not change it.
 
 ## Project directory
 
@@ -187,9 +211,9 @@ sail-worktree up -d
 - A compose file that is a hard link to a file outside the project directory is not detected, by choice: only a link count could reveal one, and that count would also flag files that are shared through a hard link on purpose, so `rm` does not check it for `compose`. A plain checkout cannot create a hard link (git stores none), but a script or you can. (`.env` is different: `up` and `rm` refuse a hard-linked `.env`, on Unix only. `init` likewise refuses to write `.sail-worktree.json` through a symbolic link, or through a hard link on Unix.)
 - To replace a `compose` link, or a hard link that `rm` does not detect, with a real copy, follow "Replacing a linked `compose` file" below.
 - A port is considered free only if it can be bound on all interfaces and on `127.0.0.1` (a permission error on `127.0.0.1` is ignored only on macOS, which does not let an unprivileged user bind a privileged port there although Docker can; a `127.0.0.1` that does not exist at all is also treated as free). Ports below 1024 can be assigned on macOS, but are skipped on Linux for an unprivileged user (the search then continues from 1024). On Windows `O_NOFOLLOW` is not available, so only the symlink check applies.
-- Ports in the main worktree's own `.env` are not in the registry. The search starts at the default value + 1, so give the main worktree a port that is not default + 1 (for example `APP_PORT=8080`), or start it first.
+- Ports in a main worktree's own `.env` are recorded in the registry (under `mains`) when `up` runs in one of its linked worktrees or `check` runs anywhere in the repository. `up` never assigns them, and moves a worktree off such a port (it prints `(was N, ...)`). A repository where neither has run is not known, so run `check` once in each repository you use only in its main worktree.
 - Port assignments are stored in `os.UserConfigDir()/sail-worktree/registry.json` (macOS: `~/Library/Application Support/sail-worktree/registry.json`). The file is replaced atomically, so a reader never sees half of it.
-- Several `up` commands (and `rm`) can run at the same time: while one reads the registry, chooses ports, writes `.env` and saves, the others wait on a lock file, `registry.json.lock` next to the registry (they print `waiting for another sail-worktree run ...` after a second). The lock is released before `sail up` starts and is not held while `rm` runs docker. `ps`, `ports` and `status` never take it. If a run was killed and left the lock behind, the next run removes it once it is 60 seconds old; before that, and only if no sail-worktree is running, you can delete the file yourself (the error message names it). A run that is suspended for over a minute while it holds the lock (a sleeping laptop, for example) can lose it to the next run. What remains is a short window between saving the ports and the containers binding them, in which another program can still take a port.
+- Several `up` commands (and `rm` and `check`) can run at the same time: while one reads the registry, chooses ports, writes `.env` and saves, the others wait on a lock file, `registry.json.lock` next to the registry (they print `waiting for another sail-worktree run ...` after a second). The lock is released before `sail up` starts and is not held while `rm` runs docker. `ps`, `ports` and `status` never take it. If a run was killed and left the lock behind, the next run removes it once it is 60 seconds old; before that, and only if no sail-worktree is running, you can delete the file yourself (the error message names it). A run that is suspended for over a minute while it holds the lock (a sleeping laptop, for example) can lose it to the next run. What remains is a short window between saving the ports and the containers binding them, in which another program can still take a port.
 - `vendor/bin/sail` must exist in the project directory (run `composer install` first).
 - Error messages show control characters (except newlines, which they use for layout), format characters (such as bidirectional overrides) and invalid bytes escaped, so a crafted directory name cannot send escape sequences to your terminal (a newline in a path can still start a line of its own).
 
@@ -212,6 +236,12 @@ Before step 1, shut down containers, editors and file watchers that write in the
 Your checks and the copy are not one step, so a process writing in the worktree at that moment can still make step 5 write outside it (a link planted as `$f.new`, or a directory in the path swapped for a link). Shutting down the processes first lowers this risk but does not remove it: other tools, git operations and other users can still write there. An outside file overwritten that way leaves no trace in these checks.
 
 ## Upgrading
+
+### v0.9.0
+
+- New command `check` (see [`check`](#sail-worktree-check)). It records the main worktree of the repository you run it in and reports ports used more than once across all repositories.
+- `registry.json` has a new `mains` section with the main worktrees' ports. `worktrees` is unchanged. An older version that saves the registry (its `up` or `rm`) drops `mains`; the next `up` or `check` records it again.
+- `up` records the main worktree's ports and no longer assigns them to a worktree. A worktree whose port a recorded main worktree (of any repository) uses gets another port on its next `up`, which prints `APP_PORT=82 (was 81, ...)`.
 
 ### v0.8.0
 
