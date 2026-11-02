@@ -32,8 +32,8 @@ func cmdCheck(args []string) error {
 	return r.finish()
 }
 
-// current is the main worktree that check records: the one of the repository it runs in, if any.
-type current struct {
+// checkTarget is the main worktree that check records: the one of the repository it runs in, if any.
+type checkTarget struct {
 	main, worktree    string
 	ports, defaults   map[string]int
 	envOK, recordable bool
@@ -41,26 +41,26 @@ type current struct {
 
 // currentMain finds the main worktree to record. Outside a repository or a project there is none, which is only a
 // warning: the rest of the registry can still be checked.
-func currentMain(r *report) current {
+func currentMain(r *report) checkTarget {
 	c, err := loadCtx()
 	if err != nil {
 		r.warn("no main worktree was recorded: %v", err)
-		return current{}
+		return checkTarget{}
 	}
 	cfg, err := c.config()
 	if err != nil {
 		r.warn("no main worktree was recorded: %v", err)
-		return current{}
+		return checkTarget{}
 	}
 	ports, defaults, envOK, found := mainPorts(c.main, cfg.PortVars)
 	if !found {
 		r.warn("no main worktree was recorded: the main worktree has no project directory at %q", c.main)
-		return current{}
+		return checkTarget{}
 	}
 	if !envOK {
 		r.warn("%s", mainEnvUnreadable(c.main))
 	}
-	cur := current{main: c.main, ports: ports, defaults: defaults, envOK: envOK, recordable: true}
+	cur := checkTarget{main: c.main, ports: ports, defaults: defaults, envOK: envOK, recordable: true}
 	if !c.isMain() {
 		cur.worktree = c.root
 	}
@@ -89,6 +89,7 @@ func checkRecord(r *report) (*Registry, error) {
 		}
 		changed = reg.recordMain(cur.main, wt, cur.ports, cur.defaults, cur.envOK)
 	}
+	// This reads the current main's .env again; harmless, and it keeps one rule for every record.
 	if refreshMains(reg) {
 		changed = true
 	}
@@ -178,7 +179,7 @@ func checkConflicts(r *report, reg *Registry) {
 		for _, p := range view[k] {
 			reserved[p] = true
 		}
-		if !validKey(k) || !pathExists(k) {
+		if !validKey(k) || !isDir(k) {
 			r.warn("the record of worktree %q keeps ports free, but it is not an existing directory: %s", k, cell(portsCell(view[k])))
 			continue
 		}

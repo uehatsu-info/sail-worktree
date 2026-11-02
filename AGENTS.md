@@ -117,18 +117,20 @@ These come from deliberate decisions; change them only on purpose and update the
   `.env`) instead of re-implementing them, prints only an allow-list of facts (never other `.env` values, and not even
   an invalid port value, because a port variable name may be any key; `APP_URL` without credentials, query and
   fragment), never reads a symlinked `.env`, and exits 1 after the report when it found a problem (warnings do not).
-- **`check` writes only the registry.** It records the current repository's main worktree (`checkRecord`) and then
-  reports conflicts over the whole registry. Under the same lock `refreshMains` updates every recorded main from its
-  `.env`, because `up` avoids only recorded ports: without it, a suggested `up` could keep a port a main now uses.
-  It never writes `.env` or `.sail-worktree.json`, never sources `.env`,
-  and runs neither sail nor docker (git only through `loadCtx` in the cwd). `mainPorts` reads the main's `.env` before
-  the lock; the registry is read after `lockRegistry` and saved only when `recordMain` reports a change. A `loadCtx`
-  or configuration error is a warning, so `check` works outside a repository. In the report, a `mains` key is used as a
-  directory only after `validKey` and `isDir` (`Lstat`, a link is not followed), its `.env` only through
-  `readMainEnv`, and only valid port numbers are printed. Records of missing directories or invalid keys are
-  warnings, never conflicts, so a deleted clone cannot make `check` fail for ever. A conflict is fixed by the user: a worktree by `up`, a main worktree by
-  hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`). Exit 1 only for a
-  conflict (`report.finish`, shared with `status`).
+- **`check` writes only the registry.** It records the current repository's main worktree, if it runs in one
+  (`currentMain`, `checkRecord`), refreshes every recorded main from its `.env` (`refreshMains`, also outside a
+  repository) and then reports conflicts over the whole registry. The refresh exists because `up` avoids only recorded
+  ports: without it, a suggested `up` could keep a port that a main now uses. It never writes `.env` or
+  `.sail-worktree.json`, never sources `.env`, and runs neither sail nor docker (git only through `loadCtx` in the
+  cwd). `mainPorts` reads the current main's `.env` before the lock; the registry is read after `lockRegistry`,
+  `refreshMains` reads the other mains' `.env` under the lock, and the registry is saved only when `recordMain` or
+  `refreshMains` reports a change. A `loadCtx` or configuration error is a warning, so `check` works outside a
+  repository. A `mains` key is used as a directory only after `validKey` and `isDir` (`Lstat` on the key; a link as
+  its last element is not followed), its `.env` only through `readMainEnv`. Conflict lines print only valid port
+  numbers. Records of missing directories or invalid keys are warnings (their recorded ports printed as they are),
+  never conflicts, so a deleted clone cannot make `check` fail for ever. A conflict is fixed by the user: a worktree
+  by `up`, a main worktree by hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching
+  `shellName`). Exit 1 only for a conflict (`report.finish`, shared with `status`).
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
@@ -217,9 +219,9 @@ These come from deliberate decisions; change them only on purpose and update the
 - **The registry lock.** `up`, `rm` and `check` update the registry under `lockRegistry` (`registry.json.lock` next to it,
   `O_EXCL`, mode 0600, pid inside; the file is closed at once because Windows cannot remove an open file). `up` takes
   it after the `.env` checks and before `loadRegistry`, so reading, `allocatePorts`, writing `.env` and `save` are one
-  step, and releases it right after `save` and before `runSail`; `rm` takes it after docker; `check` holds it only to
-  read, record and save. Never hold it while sail
-  or docker runs, and read the registry after locking. `ps`, `ports` and `status` never lock (the atomic save keeps
+  step, and releases it right after `save` and before `runSail`; `rm` takes it after docker; `check` holds it to
+  read, record, refresh the recorded mains (reading their `.env`) and save. Never hold it while sail or docker runs,
+  and read the registry after locking. `ps`, `ports` and `status` never lock (the atomic save keeps
   them consistent). A lock whose mtime is older than `lockTiming.stale` or more than 5 seconds in the future is
   abandoned: `claimStale` renames it to a unique name, checks that it is the file that was judged (same file and same
   mtime, since an inode can be reused) and removes it, or gives a fresh one back with `os.Link`, which fails instead

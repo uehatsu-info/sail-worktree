@@ -118,6 +118,37 @@ func TestCheckOutsideARepositoryStillReports(t *testing.T) {
 	if len(reg.Mains) != 2 {
 		t.Errorf("mains = %+v", reg.Mains)
 	}
+
+	// Outside a repository the recorded mains are still refreshed and saved.
+	writeFile(t, filepath.Join(b, ".env"), "APP_PORT=8090\n")
+	if out, err := runCheck(t); err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, _ = loadRegistry()
+	if got := reg.Mains[b].Ports["APP_PORT"]; got != 8090 {
+		t.Errorf("not refreshed outside a repository: %+v", reg.Mains[b])
+	}
+}
+
+func TestCheckDoesNotUseALinkedKeyAsADirectory(t *testing.T) {
+	isolatedRegistry(t)
+	a := realTempDir(t)
+	real := realTempDir(t)
+	writeFile(t, filepath.Join(real, ".env"), "APP_PORT=9000\n")
+	link := filepath.Join(realTempDir(t), "link")
+	symlinkOrSkip(t, real, link)
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{a: mainRec(80), link: mainRec(80)}})
+	out, err := runCheck(t)
+	if err != nil {
+		t.Fatalf("a linked key took part in a conflict: %v\n%s", err, out)
+	}
+	if want := fmt.Sprintf("the record of main worktree %q keeps ports free, but it is not an existing directory", link); !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
+	}
+	reg, _ := loadRegistry()
+	if got := reg.Mains[link].Ports["APP_PORT"]; got != 80 {
+		t.Errorf("the .env behind a linked key was read: %+v", reg.Mains[link])
+	}
 }
 
 func TestCheckSuggestionSkipsUsedPorts(t *testing.T) {

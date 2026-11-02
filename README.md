@@ -146,7 +146,7 @@ PORT  VARIABLE         WORKTREE  SUBDIR  STATE    HOST                       CON
 
 ### `sail-worktree check`
 
-Records the main worktree of the repository you are in, then reports ports that more than one main worktree or worktree uses, across every repository in the registry. Run it anywhere inside the repository, in the main worktree or in a linked one: this is how a repository that you use only in its main worktree becomes known. Outside a repository it records nothing (a warning says why) and checks the registry as it is.
+Records the main worktree of the repository you are in, then reports ports that more than one main worktree or worktree uses, across every repository in the registry. Run it anywhere inside the repository, in the main worktree or in a linked one: this is how a repository that you use only in its main worktree becomes known. Outside a repository it records no main worktree of its own (a warning says why), but still updates the recorded ones as described below.
 
 ```
 recorded main worktree: "/work/shop"
@@ -161,7 +161,7 @@ error: found 1 problem(s)
 ```
 
 - It writes only the registry: under the same lock as `up`, replaced atomically, and only when the record changed. It never writes `.env` or `.sail-worktree.json`, never sources `.env`, and runs neither docker nor sail.
-- What is recorded for a main worktree: for each port variable, the value in its `.env`, or the compose default when `.env` does not set it (or there is no `.env`); an invalid value reserves nothing. A `.env` that is a link or not a regular file is not read, and the previous record is kept (a warning says so). The main worktree must have the project directory at the same relative path. `up` records the same, when it runs in a linked worktree.
+- What is recorded for a main worktree: for each port variable, the value in its `.env`, or the compose default when `.env` does not set it (or there is no `.env`); an invalid value reserves nothing. A `.env` that is a link or not a regular file is not read, and the previous record is kept (a warning says so for the repository you are in). The main worktree must have the project directory at the same relative path. `up` records the same, when it runs in a linked worktree.
 - The first holder keeps the port: main worktrees before worktrees, each in path order. For a worktree, the fix is to run `sail-worktree up` in it (it assigns another port). For a main worktree, `check` proposes a port that no record uses and that this host can bind (bound for an instant and closed again); set it in that `.env` yourself and restart its containers. A variable name that is not a plain shell name is only quoted.
 - On every run `check` also updates every recorded main worktree from its `.env` (links are not followed), so a port changed there since is seen, and `up` avoids it from then on. A port variable added to the configuration is seen after the next `up` or `check` in that repository.
 - Two repositories whose main worktrees both use the compose defaults (`APP_PORT` 80, `FORWARD_DB_PORT` 3306 and so on) conflict: they cannot run at the same time. Give one of them other ports if you run them together; if you never do, the report is expected.
@@ -241,7 +241,7 @@ Your checks and the copy are not one step, so a process writing in the worktree 
 
 - New command `check` (see [`check`](#sail-worktree-check)). It records the main worktree of the repository you run it in and reports ports used more than once across all repositories.
 - `registry.json` has a new `mains` section with the main worktrees' ports. `worktrees` is unchanged. An older version that saves the registry (its `up` or `rm`) drops `mains`; the next `up` or `check` records it again.
-- `up` records the main worktree's ports and no longer assigns them to a worktree. A worktree whose port a main worktree (of any repository) uses gets another port on its next `up`, which prints `APP_PORT=82 (was 80, ...)`.
+- `up` records the main worktree's ports and no longer assigns them to a worktree. A worktree whose port a recorded main worktree (of any repository) uses gets another port on its next `up`, which prints `APP_PORT=82 (was 81, ...)`.
 
 ### v0.8.0
 
