@@ -25,6 +25,9 @@ Usage:
                                 (read-only; PORT: only that port)
   sail-worktree status [--no-docker]
                                 show how this worktree is set up and report problems (read-only; exit 1 if any)
+  sail-worktree check           record this repository's main worktree and report ports used more than once by
+                                main worktrees and worktrees of every repository (writes only the registry; exit 1
+                                if any)
   sail-worktree version         print the version (the tag for go install ...@vX.Y.Z; (devel) or a pseudo-version for a local build)
 
 Run the commands in your Laravel project's directory (the one with artisan and the compose file) or below it.
@@ -60,6 +63,8 @@ func main() {
 		err = cmdStatus(args)
 	case "ps":
 		err = cmdPs(args)
+	case "check":
+		err = cmdCheck(args)
 	case "version", "--version":
 		fmt.Println(version())
 		return

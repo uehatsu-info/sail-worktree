@@ -71,7 +71,7 @@ func cmdStatus(args []string) error {
 	r.line("worktree:          %s (branch %s)", filepath.Base(c.wtTop), currentBranch(c.wtTop))
 	r.line("main worktree:     %q", c.mainTop)
 	if c.isMain() {
-		r.line("this is the main worktree: up, stop and rm do not run here, and nothing is recorded for it")
+		r.line("this is the main worktree: up, stop and rm do not run here; check records its ports (up does too, in a worktree)")
 		return nil
 	}
 	proj := c.projectName()
