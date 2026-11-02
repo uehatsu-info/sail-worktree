@@ -262,17 +262,33 @@ Your checks and the copy are not one step, so a process writing in the worktree 
 
 ### v0.9.0
 
-- New command `check` (see [`check`](#sail-worktree-check)). It records the main worktree of the repository you run it in and reports ports used more than once across all repositories.
-- New command `prune` (see [`prune`](#sail-worktree-prune--y)). It removes the registry records of directories that no longer exist, which `check` warns about; before, the registry had to be edited by hand.
-- `registry.json` has a new `mains` section with the main worktrees' ports. `worktrees` is unchanged. An older version that saves the registry (its `up` or `rm`) drops `mains`; the next `up` or `check` records it again.
+**Check before you upgrade.** These can need action:
+
+- **A `.sail-worktree.json` that is now refused.** `up`, `stop` and `rm` fail on it, `status` reports a problem and `check` warns, when its `port_vars` has:
+  - a `name` that is not a shell variable name, or a `default` that is missing or outside 1 to 65535 (before, `up` could write other lines into `.env` or assign port 1);
+  - a `name` listed twice (in any case);
+  - a `name` with a meaning of its own, such as `PATH` or `COMPOSE_FILE` (see [the file](#the-sail-worktreejson-file)).
+
+  Without the file, detection refuses such a variable in the compose file (for example `${DOCKER_X_PORT:-81}:81`) the same way, except that `stop` and `rm` still run. Fix the entry by hand, or run `init`, which replaces the file with what it detects; for a reserved name, rename the variable in the compose file.
+- **Scripts that read `ps --json` or `ports --json`.** Main worktree records now appear in the same array (first in `ps`), so a script that expects only worktrees should keep only the objects with `"kind": "worktree"`. In `ports PORT --json`, the row of a port nothing records has `"kind": "none"` and `"state": "-"` (before, `state` was empty). The other fields keep their names and meanings.
+- **Do not run v0.8.1 or earlier at the same time as this version.** v0.8.0 and v0.8.1 break a stale lock by renaming it and remove locks by path, and earlier versions take no lock, so two runs could update the registry at once; the new lock protection works only between runs of this version. The older versions also do not have the Windows path rules below. See the lock note in the [Notes](#notes).
+- **An older version drops `mains`.** `registry.json` has a new `mains` section with the main worktrees' ports (`worktrees` is unchanged). An older version that saves the registry (its `up` or `rm`) drops it, and until the next `up` or `check` records it again, the main worktrees' ports are not kept free.
+- **Windows projects run from a UNC path** (or from a drive-letter path that goes through a symbolic link or junction to one). `ps` and `ports` treat their registry records as invalid (`up`, `rm` and `status` still work there, and the records still keep their ports free); map a drive letter instead. `check` warns about such a record and `prune` offers to remove it, but removing the record of a project that is still in use frees its ports in the registry until `up`, or for a main worktree also `check` in its repository, records it again. These rules cover the paths in the registry only; see the [Notes](#notes) for their limits.
+- **Worktrees whose names have no ASCII letter or digit** get the project name `wt-<hash>` instead of `-<hash>`, which compose refused. Such a worktree could not start, so nothing is lost; run `up` once before `rm` or `stop` so that `.env` gets the new name. Other names are unchanged.
+
+**Changed behaviour.**
+
 - `up` records the main worktree's ports and no longer assigns them to a worktree. A worktree whose port a recorded main worktree (of any repository) uses gets another port on its next `up`, which prints `APP_PORT=82 (was 81, ...)`.
-- `ps` and `ports` also list main worktree records (their rows come first in `ps`), and `ports` counts them in `CONFLICT`; `status` reports a port that a main worktree record also holds. Their `--json` objects gain a `kind` field (`worktree` or `main`, and in `ports PORT` `none` for the row of a port nothing records, whose `state` is now `-` instead of empty); the other fields keep their names and meanings, so a script that expects only worktrees should keep only `"kind": "worktree"`.
-- `status` warns about a port variable that the worktree's `.env` sets on more than one line.
-- A `.sail-worktree.json` whose `port_vars` has a `name` that is not a shell variable name, or a `default` that is missing or outside 1 to 65535, is refused: `up`, `stop` and `rm` fail, `status` reports a problem and `check` warns (before, `up` could write other lines into `.env` or assign port 1). So are a `name` listed twice (in any case) and a `name` with a meaning of its own, such as `PATH` or `COMPOSE_FILE` (see [the file](#the-sail-worktreejson-file)), and without the file, detection refuses such a variable in the compose file (for example `${DOCKER_X_PORT:-81}:81`) the same way, except that `stop` and `rm` still run. Fix the entry by hand, or run `init`, which replaces the file with what it detects; for a reserved name, rename the variable in the compose file.
-- On Windows, a registry entry whose path is not a drive-letter path (a UNC or device path) is no longer looked at, so `ps` and `ports` treat it as invalid, and with `--all` they no longer run git in other repositories, whose entries now show as `unattributed`; see the [Notes](#notes).
-- A worktree whose names have no ASCII letter or digit gets the project name `wt-<hash>` instead of `-<hash>`, which compose refused. Such a worktree could not start, so nothing is lost; run `up` once before `rm` or `stop` so that `.env` gets the new name. Other names are unchanged.
+- `ps` and `ports` also list main worktree records (first in `ps`), and `ports` counts them in `CONFLICT`. `status` reports a port that a main worktree record also holds, and warns about a port variable that the worktree's `.env` sets on more than one line.
 - `init` refuses arguments: `init --help` (or `-h`) prints the usage, and any other argument is an error, also next to `--help` (`init --help --bogus`). Before, `init` ignored them and rewrote `.sail-worktree.json`.
-- Every command except `version` accepts `-h`/`--help` and only prints the usage (see [Usage](#usage)). For `up` and `stop` only a first `-h`/`--help` counts; before, `up --help` and `stop -h` were passed to sail. For the other commands `-h`/`--help` next to another argument is an error.
+- Every command except `version` accepts `-h`/`--help` and only prints the usage (see [Usage](#usage)). For `up` and `stop` only `-h`/`--help` as the first argument counts; before, `up --help` and `stop -h` were passed to sail. For the other commands `-h`/`--help` next to another argument is an error.
+- On Windows, a registry path that is not a drive-letter path (a UNC or device path), or that goes through a link to one, is not used, so `ps` and `ports` treat its record as invalid; and with `--all` they do not run git in other repositories, whose entries show as `unattributed`. These rules cover the paths in the registry only; see the [Notes](#notes) for their limits.
+
+**New.**
+
+- Command `check` (see [`check`](#sail-worktree-check)): it records the main worktree of the repository you run it in and reports ports used more than once across all repositories.
+- Command `prune` (see [`prune`](#sail-worktree-prune--y)): it removes the registry records of directories that no longer exist, which `check` warns about; before, the registry had to be edited by hand.
+- A `kind` field in the `--json` output of `ps` and `ports` (`worktree`, `main`, or `none`; see above for scripts).
 
 ### v0.8.0
 

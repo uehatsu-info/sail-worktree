@@ -180,7 +180,10 @@ These come from deliberate decisions; change them only on purpose and update the
   user did not confirm them. It never writes `.env` or `.sail-worktree.json` and runs neither docker, sail nor git: the
   containers, networks and volumes of a removed worktree are left alone and the output says so (`docker compose ls -a`).
   Untrusted keys are printed with `%q` and port names through `cell`. A directory that is only out of reach for the
-  moment counts as missing.
+  moment counts as missing. So removing the record of a project that is still in use (one on a disk that is out of reach
+  for the moment, or on Windows one run from a UNC path or through a link to one, which is not a usable key) frees its
+  ports in the registry until `up`, or for a main worktree also `check` in its repository, records it again; a port
+  bound at that moment is still skipped by `up`'s `portFree`. The prompt lists the records first.
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
