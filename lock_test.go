@@ -390,3 +390,28 @@ func TestReadOnlyCommandsIgnoreTheLock(t *testing.T) {
 		t.Errorf("the lock file changed: %q, %v", b, err)
 	}
 }
+
+// TestLockNeverSpinsWhenTheCreateFails is issue #40: on Windows every create error is retried, and with no lock file
+// in the way the retry must still wait lockTiming.poll instead of spinning until the deadline.
+func TestLockNeverSpinsWhenTheCreateFails(t *testing.T) {
+	setupWorktreeRepo(t)
+	fastLock(t, 300*time.Millisecond, time.Hour)
+	lockTiming.poll = 20 * time.Millisecond
+	captureStderr(t)
+	oldOpen, oldWin := openLockFile, lockOnWindows
+	t.Cleanup(func() { openLockFile, lockOnWindows = oldOpen, oldWin })
+	lockOnWindows = true
+	calls := 0
+	openLockFile = func(lock string) (*os.File, error) {
+		calls++
+		return nil, &os.PathError{Op: "open", Path: lock, Err: os.ErrPermission}
+	}
+	_, err := lockRegistry()
+	if err == nil || !strings.Contains(err.Error(), "cannot create the registry lock") {
+		t.Errorf("err = %v", err)
+	}
+	if max := int(lockTiming.wait/lockTiming.poll) + 5; calls > max {
+		t.Errorf("the create was tried %d times in %v (at most %d with a %v poll)",
+			calls, lockTiming.wait, max, lockTiming.poll)
+	}
+}

@@ -20,6 +20,14 @@ var lockTiming = struct{ poll, wait, stale, notice time.Duration }{
 	poll: 50 * time.Millisecond, wait: 75 * time.Second, stale: 60 * time.Second, notice: time.Second,
 }
 
+// Seams for the tests: the create of the lock file and the Windows retry rule.
+var (
+	openLockFile = func(lock string) (*os.File, error) {
+		return os.OpenFile(lock, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	}
+	lockOnWindows = runtime.GOOS == "windows"
+)
+
 // lockRegistry takes the lock that serialises the commands that update the registry (up and rm; the read-only
 // commands never lock). The lock is registry.json.lock next to the registry, created with O_EXCL. A caller that
 // updates the registry must read it after locking, so that it sees the update of the run it waited for. unlock is
@@ -37,7 +45,7 @@ func lockRegistry() (unlock func(), err error) {
 	deadline := start.Add(lockTiming.wait)
 	noticed := false
 	for {
-		f, err := os.OpenFile(lock, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		f, err := openLockFile(lock)
 		if err == nil {
 			// The identity is taken from the open file, and the file is closed at once: on Windows an open file
 			// cannot be removed. The pid is for humans.
@@ -51,9 +59,10 @@ func lockRegistry() (unlock func(), err error) {
 			return releaser(lock, fi), nil
 		}
 		// On Windows a lock whose removal is still pending, or a directory in its place, is "access denied" and not
-		// "exists", so there every error is retried (and an old leftover broken) until the deadline. Elsewhere any
-		// other error (no permission, no space) cannot go away by waiting.
-		retry := errors.Is(err, os.ErrExist) || runtime.GOOS == "windows"
+		// "exists", so there every error is retried (and an old leftover broken) until the deadline, after poll like
+		// any wait: with no lock file in the way the error may simply repeat. Elsewhere any other error (no
+		// permission, no space) cannot go away by waiting.
+		retry := errors.Is(err, os.ErrExist) || lockOnWindows
 		if retry && breakStale(lock) && time.Now().Before(deadline) {
 			continue
 		}
@@ -90,13 +99,14 @@ func lockHolder(lock string) string {
 	return "pid unknown"
 }
 
-// breakStale removes an abandoned lock and reports whether the caller should try to take the lock again at once.
+// breakStale removes an abandoned lock and reports whether it did, so that the caller tries to take the lock again at
+// once. Anything else, a lock file that is already gone included, is retried after lockTiming.poll.
 // A lock is abandoned when its modification time is older than lockTiming.stale or (clock skew, a restored backup)
 // well in the future.
 func breakStale(lock string) bool {
 	fi, err := lstatIdentity(lock)
 	if err != nil {
-		return os.IsNotExist(err) // gone already: try at once
+		return false
 	}
 	if age := time.Since(fi.ModTime()); age <= lockTiming.stale && age >= -5*time.Second {
 		return false

@@ -268,10 +268,11 @@ These come from deliberate decisions; change them only on purpose and update the
   that was judged (same file and same mtime, since an inode can be reused) and removes it, or gives a fresh one back
   with `os.Link`, which fails instead of replacing a lock a third run took. `wait` is longer than `stale`. `unlock` is
   idempotent and removes only the file it created. Only on Windows are errors other than "exists" retried (a pending
-  removal looks like access denied); elsewhere they fail at once. The pid in the error comes through `readSmallFile` and
-  is shown only if it is a number. An `O_EXCL` file was chosen over flock/LockFileEx (no per-OS code, no dependency);
-  its cost is the stale rule and the hand recovery in the error message, and a run suspended for longer than `stale` can
-  lose its lock to the next one. Do not "improve" this into a lock held during `sail up`.
+  removal looks like access denied), always after `poll`, since only a broken stale lock is retried at once; elsewhere
+  they fail at once. The pid in the error comes through `readSmallFile` and is shown only if it is a number. An `O_EXCL`
+  file was chosen over flock/LockFileEx (no per-OS code, no dependency); its cost is the stale rule and the hand
+  recovery in the error message, and a run suspended for longer than `stale` can lose its lock to the next one. Do not
+  "improve" this into a lock held during `sail up`.
 - **Ports.** A new port is searched from default+1 upwards (the default is left to the main worktree), skipping ports
   of other worktrees, ports recorded for any main worktree (`used` includes `mains`, so `up` moves a worktree off a
   main's port and says so) and ports in use. A port counts as free only if it binds on all interfaces and on `127.0.0.1`;
