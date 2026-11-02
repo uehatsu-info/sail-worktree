@@ -503,8 +503,8 @@ func TestReservedNameInConfigBlocksStopAndRm(t *testing.T) {
 	}
 }
 
-// Detection cannot yield a reserved name today, so stop's and rm's exception (teardownConfig) is a guard; it still
-// returns the detected configuration, and only for a reservedPortVarError.
+// stop's and rm's exception (teardownConfig) returns the detected configuration, and only for a reservedPortVarError;
+// TestDetectedReservedNameRefusedOnlyByUpAndInit goes through detection.
 func TestTeardownConfigTakesTheDetectedConfiguration(t *testing.T) {
 	cfg := &Config{Compose: "compose.yaml", PortVars: []PortVar{{"X_PORT", 80}}}
 	c := &ctx{cfgErr: &reservedPortVarError{msg: "reserved", detected: cfg}, teardown: cfg}
@@ -581,12 +581,24 @@ func TestDetectionListsARepeatedVariableOnce(t *testing.T) {
 
 func TestReservedPortVarNames(t *testing.T) {
 	// Written out so that the list cannot lose one unnoticed: the keys up writes, the shell and Sail names, and the
-	// settings that send compose to other files or docker to another daemon. The map's own keys are checked too,
-	// which catches a key that is not upper-case.
+	// settings that send compose to other files or docker to another daemon, the proxy and SSH agent names, the
+	// BuildKit and buildx settings, and the names Sail's bin/sail reads. The map's own keys are checked too, which
+	// catches a key that is not upper-case.
 	reserved := []string{"SHELL", "USER", "PWD", "IFS", "APP_SERVICE", "WWWGROUP", "PATH", "HOME", "WWWUSER", "APP_ENV",
 		"COMPOSE_PROJECT_NAME", "SESSION_COOKIE", "APP_URL", "SANCTUM_STATEFUL_DOMAINS", "SAIL_FILES",
 		"COMPOSE_FILE", "COMPOSE_ENV_FILES", "COMPOSE_PROFILES", "COMPOSE_PATH_SEPARATOR", "COMPOSE_DISABLE_ENV_FILE",
-		"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"}
+		"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+		"HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "NO_PROXY", "ALL_PROXY", "SSH_AUTH_SOCK",
+		"BUILDKIT_COLORS", "BUILDKIT_HOST", "BUILDKIT_PROGRESS", "BUILDKIT_TTY_LOG_LINES",
+		"EXPERIMENTAL_BUILDKIT_SOURCE_POLICY",
+		"BUILDX_BAKE_DISABLE_VARS_ENV_LOOKUP", "BUILDX_BAKE_FILE", "BUILDX_BAKE_FILE_RELATIVE_PATHS",
+		"BUILDX_BAKE_FILE_SEPARATOR", "BUILDX_BAKE_GIT_ADVICE", "BUILDX_BAKE_GIT_AUTH_HEADER",
+		"BUILDX_BAKE_GIT_AUTH_TOKEN", "BUILDX_BAKE_GIT_SSH", "BUILDX_BUILDER", "BUILDX_CONFIG", "BUILDX_CPU_PROFILE",
+		"BUILDX_EXPERIMENTAL", "BUILDX_GIT_CHECK_DIRTY", "BUILDX_GIT_INFO", "BUILDX_GIT_LABELS", "BUILDX_MEM_PROFILE",
+		"BUILDX_METADATA_PROVENANCE", "BUILDX_METADATA_WARNINGS", "BUILDX_NO_DEFAULT_ATTESTATIONS",
+		"BUILDX_NO_DEFAULT_LOAD", "BUILDX_NO_DEFAULT_OCI_ARTIFACT", "BUILDX_SEND_GIT_QUERY_AS_INPUT",
+		"UID", "APP_USER", "SAIL_DOCKER_BINARY", "SAIL_SKIP_CHECKS", "SAIL_SHARE_DASHBOARD", "SAIL_SHARE_DOMAIN", "SAIL_SHARE_SERVER",
+		"SAIL_SHARE_SERVER_HOST", "SAIL_SHARE_SERVER_PORT", "SAIL_SHARE_SUBDOMAIN", "SAIL_SHARE_TOKEN"}
 	for n := range reservedNames {
 		reserved = append(reserved, n)
 	}
@@ -598,19 +610,74 @@ func TestReservedPortVarNames(t *testing.T) {
 		}
 	}
 	for _, n := range []string{"APP_PORT", "FORWARD_DB_PORT", "VITE_PORT", "PATH_PORT", "SAIL_FILES_PORT",
-		"DOCKER_WEB_PORT", "docker_web_port", "COMPOSE_WEB_PORT", "Compose_Web_Port", "DOCKER_X", "COMPOSE_X"} {
+		"DOCKER_WEB_PORT", "docker_web_port", "COMPOSE_WEB_PORT", "Compose_Web_Port", "DOCKER_X", "COMPOSE_X",
+		"SAIL_SHARE_PORT", "HTTP_PROXY_PORT", "BUILDKIT_PORT", "BUILDX_PORT", "SSH_PORT"} {
 		if why, ok := reservedPortVar(n); ok {
 			t.Errorf("%s is reserved: %s", n, why)
 		}
 	}
 }
 
-// Detection yields only names ending in PORT. If a reserved name ever matched, up and init would refuse a detected
-// variable and stop and rm would take teardownConfig's exception: check that path before adding one.
-func TestNoReservedNameIsDetected(t *testing.T) {
+// Detection yields only names ending in PORT, and SAIL_SHARE_SERVER_PORT is the only reserved one. If another one
+// matched, check TestDetectedReservedNameRefusedOnlyByUpAndInit's paths for it before adding it.
+func TestOnlySailShareServerPortIsDetected(t *testing.T) {
 	for n := range reservedNames {
-		if vars := detectPortVars("      - '${" + n + ":-80}:80'\n"); len(vars) != 0 {
+		vars := detectPortVars("      - '${" + n + ":-80}:80'\n")
+		if n == "SAIL_SHARE_SERVER_PORT" {
+			if len(vars) != 1 || vars[0].Name != n {
+				t.Errorf("%s is not detected: %v", n, vars)
+			}
+		} else if len(vars) != 0 {
 			t.Errorf("%s is detected: %v", n, vars)
 		}
+	}
+}
+
+// A compose file that maps SAIL_SHARE_SERVER_PORT (a name Sail's share command reads) is refused by up and init,
+// which would write the name into .env or .sail-worktree.json; stop and rm write neither and still run.
+func TestDetectedReservedNameRefusedOnlyByUpAndInit(t *testing.T) {
+	main, wt := setupDetectedRepo(t, "")
+	compose := detectCompose + "            - '${SAIL_SHARE_SERVER_PORT:-8080}:8080'\n"
+	writeFile(t, filepath.Join(wt, "compose.yaml"), compose)
+	env := "COMPOSE_PROJECT_NAME=" + projectName(main, wt, wt) + "\n"
+	writeFile(t, filepath.Join(wt, ".env"), env)
+	writeFakeSail(t, wt)
+	captureStderr(t)
+	captureStdout(t)
+	calls := captureRunner(t)
+	want := `port variable "SAIL_SHARE_SERVER_PORT" in "compose.yaml" cannot be used: ` + sailUses
+	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("up: error = %v", err)
+	}
+	if err := cmdInit(nil); err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("init: error = %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(wt, ".env")); string(b) != env {
+		t.Errorf("up wrote .env: %q", b)
+	}
+	if _, err := os.Lstat(filepath.Join(wt, configName)); !os.IsNotExist(err) {
+		t.Errorf("init wrote %s: %v", configName, err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("a refused command ran: %s %v", (*calls)[0].name, (*calls)[0].args)
+	}
+	t.Setenv("SAIL_SHARE_SERVER_PORT", "1")
+	if err := cmdStop(nil); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if len(*calls) != 1 || slices.Contains((*calls)[0].env, "SAIL_SHARE_SERVER_PORT=1") {
+		t.Errorf("stop: calls = %+v", *calls)
+	}
+	if err := cmdRm([]string{"-y"}); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+	// rm keeps the shell value (cleanEnv(nil)); down -v removes by the pinned project name.
+	rm := (*calls)[len(*calls)-1]
+	if len(*calls) != 2 || rm.name != "docker" || !slices.Contains(rm.env, "SAIL_SHARE_SERVER_PORT=1") ||
+		!slices.Contains(rm.args, projectName(main, wt, wt)) {
+		t.Errorf("rm: %s %v", rm.name, rm.args)
+	}
+	if b, _ := os.ReadFile(filepath.Join(wt, ".env")); string(b) != env {
+		t.Errorf("stop or rm wrote .env: %q", b)
 	}
 }

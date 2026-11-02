@@ -118,7 +118,14 @@ These come from deliberate decisions; change them only on purpose and update the
   a `..` after a name in a link target refuses the key (a target is walked element by element like `EvalSymlinks` does,
   never cleaned first, so no link in it is skipped). The walk may run several times for one key in a command. Limits: a
   link swapped after the walk is not caught, a drive letter mapped to a network share is the user's own setup, and a
-  folder where a volume without a drive letter is mounted (`\\?\Volume{...}`) is refused as well. On Windows git never
+  folder where a volume without a drive letter is mounted (`\\?\Volume{...}`) is refused as well. On Unix `validKey`
+  checks only the string (#97, the counterpart of the Windows link rule from #62): a key under an automounted location
+  (`/net/host/x`, an autofs map), or one that goes through a symbolic link to one, is followed by `realPath`, `isDir`
+  and git, which can trigger a mount, and a key on a network share mounted already reaches the network; so can a path
+  git reads from another repository's metadata. It is not checked because a Unix path carries no marker of a network
+  location, and comparing the device of each element would see the mount only after following the link (the automount
+  has happened by then) while refusing usual setups (macOS `/tmp` to `/private/tmp`, a separate `/home`, a project on
+  an external disk). On Windows git never
   runs in the registry directories of other repositories (`gitInRegistryDirs` is off), because git itself looks at paths
   from that repository's metadata (`gitdir` targets, a `.git` file's `gitdir:`), and a UNC or device path there can open
   a network connection; those entries are `unattributed`. Elsewhere git runs there only through `listWorktrees`
@@ -302,9 +309,12 @@ These come from deliberate decisions; change them only on purpose and update the
   - A configuration error is kept in `ctx.cfgErr` and returned by `ctx.config()` after the main-worktree refusal; no
     command reads `ctx.cfg` directly. `stop` fails on it too, as it did with a broken file. The exception: `stop` and
     `rm` take a reserved name found by detection (`reservedPortVarError`, through `ctx.teardownConfig()`): they write no
-    port variable, and detection yields only `*PORT` names, so the name cannot be `DOCKER_HOST` or `PATH`. No reserved
-    name ends in `PORT` today (a test pins it), so this exception is a guard for a future one. Port variables are
-    required only for `up` and only when detected (a file with `port_vars: []` still works).
+    port variable, and detection yields only `*PORT` names, so the name cannot be `DOCKER_HOST` or `PATH`. Only
+    `SAIL_SHARE_SERVER_PORT` (read by Sail's `share`) ends in `PORT` (a test pins it): without `.sail-worktree.json`, a
+    compose file that maps it stops `up` and `init`, `status` reports a configuration problem and `check` warns and
+    records no main, while `stop` and `rm` run (`stop` drops it from sail's environment; `rm` keeps a shell value, with
+    which compose only expands the compose file, and `down -v` picks what it removes by the pinned project name). Port
+    variables are required only for `up` and only when detected (a file with `port_vars: []` still works).
   - `up`'s order: main refusal, configuration, detected port variables, the existing `.env` checks and port
     allocation, then `sailPath` right before the first write, so nothing is written without Sail and the order of the
     existing refusals stays the same.
@@ -388,12 +398,14 @@ These come from deliberate decisions; change them only on purpose and update the
   real path with `composeInsideProject` (see "`rm` is guarded"). Each `port_vars` entry must have a `shellName` name and
   a `validPort` default (`validatePortVars`), because `up` writes `NAME=port` into `.env`; the names are not held to the
   detection rule, so a hand-added variable may use any name compose does. A name in `reservedNames` (keys `up`
-  writes, the `COMPOSE_*` and `DOCKER_*` settings docker compose and the docker CLI document, sources in the comment,
-  `SAIL_FILES`, a few shell and Sail names; case-insensitive, as `cleanEnv` drops them) is refused, by `detectConfig`
-  too, so `init` never writes a file that `loadConfig` refuses (none ends in `PORT`, so detection finds none today; see
-  the configuration error rule above). Other `COMPOSE_*` and `DOCKER_*` names, such as `DOCKER_WEB_PORT`, are allowed
-  on purpose: v0.8.1 handled them (#74). Keep the shell and Sail part short, add a key there when `up` starts to write
-  it, and add a compose or docker setting when they start to read one. A repeated name (also compared
+  writes, the `COMPOSE_*` and `DOCKER_*` settings docker compose and the docker CLI document, the BuildKit and buildx
+  settings, the proxy names and `SSH_AUTH_SOCK`, the settings `bin/sail` reads, sources in the comment,
+  `SAIL_FILES`, a few shell names; case-insensitive, as `cleanEnv` drops them) is refused, by `detectConfig`
+  too, so `init` never writes a file that `loadConfig` refuses (only `SAIL_SHARE_SERVER_PORT` ends in `PORT`, so
+  detection finds no other; see the configuration error rule above). Other `COMPOSE_*` and `DOCKER_*` names, such as
+  `DOCKER_WEB_PORT`, are allowed on purpose: v0.8.1 handled them (#74). Keep the shell part short, add a key there when
+  `up` starts to write it, and add a compose, docker, build or Sail setting when they start to read one; check the
+  sources in the comment again before each release. A repeated name (also compared
   case-insensitively) is refused, because `up` would assign two ports and `Set` keeps only the first line;
   `detectPortVars` yields each name once (`composePortRe` matches upper-case names only), and a test pins that.
 
@@ -422,8 +434,9 @@ These come from deliberate decisions; change them only on purpose and update the
   from the build info, so build from a tagged, clean checkout.
 - Actions are pinned to full commit SHAs with the version in a comment, and GoReleaser is pinned to an exact version.
   Dependabot opens weekly PRs for the actions. Do not switch back to floating tags.
-- To release: merge to `main`, create an annotated tag (`git tag -a vX.Y.Z -m vX.Y.Z`) on the merge commit, push the
-  tag, and check that the Release workflow and the `verify` job pass. Use a minor bump for user-visible or breaking
-  changes while the version is below 1.0.0.
+- To release: check the sources in the `reservedNames` comment for new settings (see the `port_vars` rule), merge to
+  `main`, create an annotated tag (`git tag -a vX.Y.Z -m vX.Y.Z`) on the merge commit, push the tag, and check that the
+  Release workflow and the `verify` job pass. Use a minor bump for user-visible or breaking changes while the version is
+  below 1.0.0.
 - Do not move or re-push a published tag: the Go module proxy caches tags. Publish a new version instead.
 - `GoReleaser` builds the release notes from commit subjects, so write subjects that read well to a user.
