@@ -8,7 +8,7 @@ Guidance for AI coding agents (and humans) working on this repository.
 Laravel Sail project run side by side. For each worktree it creates or updates `.env` and assigns ports that do not
 collide with other worktrees or with the host.
 
-Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `check`, `version`. See `README.md` for the user-facing behavior.
+Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `check`, `prune [-y]`, `version`. See `README.md` for the user-facing behavior.
 
 - Module: `github.com/uehatsu-info/sail-worktree` (Go version is set by `go.mod`)
 - Install: `go install github.com/uehatsu-info/sail-worktree@latest`, or the binaries attached to each GitHub release
@@ -38,11 +38,12 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries` (`gitInRegistryDirs`, `registryPathOK`), `foldRegistry` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
+| `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `usableDir`, `staleWorktreeKey` |
 | `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `refreshMains`, `checkConflicts`, `holder`, `suggestion` |
 | `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `lockTiming` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
 | `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `sanctumUnquote`, `statefulDisabled`, `addStatefulDomain` |
-| `sail_worktree_test.go`, `project_test.go`, `detect_test.go`, `sanctum_test.go`, `ps_test.go`, `registry_test.go`, `lock_test.go`, `status_test.go`, `portsview_test.go`, `check_test.go`, `links_unix_test.go` | Tests |
+| `sail_worktree_test.go`, `project_test.go`, `detect_test.go`, `sanctum_test.go`, `ps_test.go`, `registry_test.go`, `lock_test.go`, `status_test.go`, `portsview_test.go`, `check_test.go`, `prune_test.go`, `links_unix_test.go` | Tests |
 | `.github/workflows/ci.yml`, `release.yml`, `.github/dependabot.yml`, `.goreleaser.yaml` | CI and release |
 
 State outside the repository: the port registry is `os.UserConfigDir()/sail-worktree/registry.json`. The project
@@ -138,6 +139,18 @@ These come from deliberate decisions; change them only on purpose and update the
   never conflicts, so a deleted clone cannot make `check` fail for ever. A conflict is fixed by the user: a worktree
   by `up`, a main worktree by hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching
   `shellName`). Exit 1 only for a conflict (`report.finish`, shared with `status`).
+- **`prune` writes only the registry.** It removes what `check` warns about: a `worktrees` key that fails `validKey` or
+  does not resolve to a directory (`staleWorktreeKey`, the `foldRegistry` rule, so an alias key of a live worktree is
+  kept: it still holds that worktree's ports, and the next `up` there folds it with `migrate`, not `prune`), a `mains`
+  key that fails `usableDir` (`validKey`, then `isDir`; links are not followed, mains are recorded as real paths), and
+  entries of a kept main's `worktrees` list that fail `usableDir`. `validKey` always comes first, so an invalid key is
+  never looked at. It lists and asks (package `stdin`/`stdout`, `-y` skips) without the lock, then takes
+  `lockRegistry`, reads the registry again and removes only listed records that are still recorded and still unusable
+  (with the same per-kind test), saving only when something was removed; records that became unusable after the
+  prompt are left for the next run, because the user did not confirm them. It never writes `.env` or
+  `.sail-worktree.json` and runs neither docker, sail nor git: the containers, networks and volumes of a removed
+  worktree are left alone and the output says so (`docker compose ls -a`). Untrusted keys are printed with `%q` and
+  port names through `cell`. A directory that is only out of reach for the moment counts as missing.
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
@@ -224,11 +237,13 @@ These come from deliberate decisions; change them only on purpose and update the
   succeeds. The lock is taken after docker and before the second read (never while docker runs); if it cannot be taken
   the error says that docker finished and that rm can be run again (`down` is idempotent). The main worktree's record
   stays; only the worktree leaves its `worktrees` list (`forgetWorktree`).
-- **The registry lock.** `up`, `rm` and `check` update the registry under `lockRegistry` (`registry.json.lock` next to it,
+- **The registry lock.** `up`, `rm`, `check` and `prune` update the registry under `lockRegistry`
+  (`registry.json.lock` next to it,
   `O_EXCL`, mode 0600, pid inside; the file is closed at once because Windows cannot remove an open file). `up` takes
   it after the `.env` checks and before `loadRegistry`, so reading, `allocatePorts`, writing `.env` and `save` are one
   step, and releases it right after `save` and before `runSail`; `rm` takes it after docker; `check` holds it to
-  read, record, refresh the recorded mains (reading their `.env`) and save. Never hold it while sail or docker runs,
+  read, record, refresh the recorded mains (reading their `.env`) and save; `prune` takes it only after its prompt.
+  Never hold it while sail or docker runs,
   and read the registry after locking. `ps`, `ports` and `status` never lock (the atomic save keeps
   them consistent). A lock whose mtime is older than `lockTiming.stale` or more than 5 seconds in the future is
   abandoned: `claimStale` renames it to a unique name, checks that it is the file that was judged (same file and same
