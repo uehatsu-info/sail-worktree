@@ -483,7 +483,14 @@ func worktreeCell(kind, name string) string {
 	return cell(name) + " (main)"
 }
 
-func portsCell(ports map[string]int) string {
+// portsCell prints recorded ports as they are (check's and prune's messages).
+func portsCell(ports map[string]int) string { return portsText(ports, false) }
+
+// psPortsCell marks a value that is not a port number, which up replaces and ports, check and status ignore. The JSON
+// keeps the plain value.
+func psPortsCell(ports map[string]int) string { return portsText(ports, true) }
+
+func portsText(ports map[string]int, markInvalid bool) string {
 	names := make([]string, 0, len(ports))
 	for n := range ports {
 		names = append(names, n)
@@ -492,6 +499,9 @@ func portsCell(ports map[string]int) string {
 	parts := make([]string, len(names))
 	for i, n := range names {
 		parts[i] = n + "=" + strconv.Itoa(ports[n])
+		if markInvalid && !validPort(ports[n]) {
+			parts[i] += "(invalid)"
+		}
 	}
 	return strings.Join(parts, " ")
 }
@@ -571,7 +581,7 @@ func renderPs(w io.Writer, entries []entry) {
 	fmt.Fprintln(tw, "WORKTREE\tSUBDIR\tBRANCH\tPORTS\tSTATE\tDIR")
 	for _, e := range entries {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", worktreeCell(e.Kind, e.Worktree), cell(e.Subdir), cell(e.Branch),
-			cell(portsCell(e.Ports)), cell(e.State), cell(e.Dir))
+			cell(psPortsCell(e.Ports)), cell(e.State), cell(e.Dir))
 	}
 	tw.Flush()
 }

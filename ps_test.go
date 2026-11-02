@@ -1154,3 +1154,15 @@ func TestRegistryViewListsARepositoryOnce(t *testing.T) {
 		t.Errorf("listings = %d, git runs = %v", len(v.repos), runs)
 	}
 }
+
+// A recorded value that is not a port number is marked in ps's table, as ports shows it invalid; the JSON keeps it.
+func TestPsMarksInvalidRecordedPorts(t *testing.T) {
+	var b strings.Builder
+	renderPs(&b, []entry{{Kind: kindWorktree, Dir: "/x", Ports: map[string]int{"APP_PORT": 70000, "DB_PORT": 3307, "N_PORT": 0}, State: stateNone}})
+	if want := "APP_PORT=70000(invalid) DB_PORT=3307 N_PORT=0(invalid)"; !strings.Contains(b.String(), want) {
+		t.Errorf("missing %q in:\n%s", want, b.String())
+	}
+	if got := portsCell(map[string]int{"APP_PORT": 70000}); got != "APP_PORT=70000" {
+		t.Errorf("portsCell = %q, want the value as it is (check's warnings)", got)
+	}
+}

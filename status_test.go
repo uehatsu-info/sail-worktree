@@ -486,3 +486,17 @@ func TestStatusOtherHoldersUseCheckLabels(t *testing.T) {
 		}
 	}
 }
+
+// A value that is not a port number holds nothing, as in check and ports, even if two records share it.
+func TestOtherHoldersIgnoreInvalidPorts(t *testing.T) {
+	view := map[string]map[string]int{"/a": {"APP_PORT": 70000}, "/b": {"APP_PORT": 70000}}
+	mains := map[string]MainRecord{"/m": viewMain(map[string]int{"APP_PORT": 70000})}
+	for _, port := range []int{0, -1, 70000} {
+		if got := otherHolders(view, mains, "/a", port); got != nil {
+			t.Errorf("otherHolders(%d) = %q, want none", port, got)
+		}
+	}
+	if got := otherHolders(map[string]map[string]int{"/b": {"APP_PORT": 81}}, nil, "/a", 81); len(got) != 1 {
+		t.Errorf("otherHolders(81) = %q", got)
+	}
+}

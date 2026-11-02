@@ -142,7 +142,9 @@ These come from deliberate decisions; change them only on purpose and update the
   `APP_URL` without credentials, query and fragment), never reads a symlinked `.env`, and exits 1 after the report when
   it found a problem (warnings do not). A port variable that the worktree's `.env` sets on more than one line is a
   warning (`statusDuplicates`, through `duplicateKeys`; the name, never a value; none when the configuration is broken,
-  as there are no names then; the multi-line limit of the `check` bullet applies).
+  as there are no names then; the multi-line limit of the `check` bullet applies). A recorded value that fails
+  `validPort` holds no port, as in `check` and `ports`: `otherHolders` ignores it and `ps` marks it `(invalid)` in its
+  `PORTS` column (`psPortsCell`; `--json` and `check`'s `portsCell` keep the value as it is).
 - **`check` writes only the registry.** It records the current repository's main worktree, if it runs in its project
   directory or below it (`currentMain`, `checkRecord`; the `loadCtx` lookup, as for `up`; elsewhere a warning says where
   to run it), refreshes every recorded main from its `.env` (`refreshMains`, also outside a repository) and then reports

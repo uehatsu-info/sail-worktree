@@ -261,7 +261,9 @@ func parsePort(s string) (int, bool) {
 // because up avoids them all and would move this port on its next run. A worktree's main is not named: the line is
 // about this worktree's port, and the holder's own directory already tells which record to look at.
 func otherHolders(view map[string]map[string]int, mains map[string]MainRecord, self string, port int) []string {
-	if port == 0 {
+	// A value that is not a port number holds nothing, as in check and ports. The callers pass a valid port or 0, and
+	// an equal recorded value is then valid too.
+	if !validPort(port) {
 		return nil
 	}
 	var hs []holder
