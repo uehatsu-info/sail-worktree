@@ -454,14 +454,34 @@ func warnStopTarget(c *ctx) {
 	}
 }
 
-func cmdRm(args []string) error {
+// parseYes reads the arguments of rm and prune: -y or --yes skips the confirmation, and any other argument is refused.
+func parseYes(args []string) (bool, error) {
 	yes := false
 	for _, a := range args {
-		if a == "-y" || a == "--yes" {
-			yes = true
-		} else {
-			return fmt.Errorf("unknown argument: %s", a)
+		if a != "-y" && a != "--yes" {
+			return false, fmt.Errorf("unknown argument: %s", a)
 		}
+		yes = true
+	}
+	return yes, nil
+}
+
+// confirm prints prompt to stdout and reports whether the answer read from stdin is y or yes. Anything else, an empty
+// input included, prints "aborted" itself, so the default is no. prompt is printed as is: quote untrusted values in it.
+func confirm(prompt string) bool {
+	fmt.Fprint(stdout, prompt)
+	ans, _ := bufio.NewReader(stdin).ReadString('\n')
+	if a := strings.ToLower(strings.TrimSpace(ans)); a == "y" || a == "yes" {
+		return true
+	}
+	fmt.Fprintln(stdout, "aborted")
+	return false
+}
+
+func cmdRm(args []string) error {
+	yes, err := parseYes(args)
+	if err != nil {
+		return err
 	}
 	c, err := loadCtx()
 	if err != nil {
@@ -505,13 +525,9 @@ func cmdRm(args []string) error {
 	if _, err := loadRegistry(); err != nil {
 		return err
 	}
-	if !yes {
-		fmt.Printf("This removes the containers, networks, volumes (including database data) and built images of project %q. Continue? [y/N] ", proj)
-		ans, _ := bufio.NewReader(stdin).ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(ans)); a != "y" && a != "yes" {
-			fmt.Println("aborted")
-			return nil
-		}
+	if !yes && !confirm(fmt.Sprintf("This removes the containers, networks, volumes (including database data) "+
+		"and built images of project %q. Continue? [y/N] ", proj)) {
+		return nil
 	}
 	// Pass the project name, directory and compose file explicitly, and run without COMPOSE_* from the environment.
 	if err := runner(c.root, cleanEnv(nil), "docker", rmArgs(proj, c.root, composePath)...); err != nil {
@@ -536,7 +552,7 @@ func cmdRm(args []string) error {
 		return err
 	}
 	unlock()
-	fmt.Println("released the port assignments")
+	fmt.Fprintln(stdout, "released the port assignments")
 	return nil
 }
 

@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"maps"
 	"slices"
-	"strings"
 )
 
 // cmdPrune drops the registry records that check warns about: keys that are not usable local directories and, in a
@@ -15,13 +13,9 @@ import (
 // The list is shown and confirmed without the lock (a prompt can wait for ever); after locking, the registry is read
 // again and only listed records that are still recorded and still unusable are removed.
 func cmdPrune(args []string) error {
-	yes := false
-	for _, a := range args {
-		if a == "-y" || a == "--yes" {
-			yes = true
-		} else {
-			return fmt.Errorf("unknown argument: %s", a)
-		}
+	yes, err := parseYes(args)
+	if err != nil {
+		return err
 	}
 	reg, err := loadRegistry()
 	if err != nil {
@@ -45,13 +39,8 @@ func cmdPrune(args []string) error {
 	}
 	r.line("prune removes only these records from the registry; it does not touch containers, networks or volumes " +
 		"(find those of a removed worktree with `docker compose ls -a`).")
-	if !yes {
-		fmt.Fprint(stdout, "Remove these records? [y/N] ")
-		ans, _ := bufio.NewReader(stdin).ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(ans)); a != "y" && a != "yes" {
-			r.line("aborted")
-			return nil
-		}
+	if !yes && !confirm("Remove these records? [y/N] ") {
+		return nil
 	}
 	unlock, err := lockRegistry()
 	if err != nil {
