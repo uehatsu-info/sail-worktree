@@ -362,9 +362,52 @@ func TestCheckReportsWithoutTheLock(t *testing.T) {
 		t.Errorf("the other run's lock is gone: %v", err)
 	}
 
-	// A broken registry is still an error.
-	writeFile(t, p, "{")
-	if out, err := runCheck(t); err == nil {
-		t.Errorf("a broken registry is accepted without the lock\n%s", out)
+	// A registry broken while check waits for the lock is still an error.
+	betweenReadAndLock(t, func() { writeFile(t, p, "{") })
+	if out, err := runCheck(t); err == nil || strings.Contains(err.Error(), "problem") {
+		t.Errorf("a broken registry is accepted without the lock: %v\n%s", err, out)
+	}
+}
+
+// betweenReadAndLock runs fn after check has read the mains' .env and before it takes the lock.
+func betweenReadAndLock(t *testing.T, fn func()) {
+	t.Helper()
+	old := checkLock
+	checkLock = func() (func(), error) {
+		fn()
+		return lockRegistry()
+	}
+	t.Cleanup(func() { checkLock = old })
+}
+
+func TestCheckReadsMainEnvBeforeTheLock(t *testing.T) {
+	isolatedRegistry(t)
+	m := realTempDir(t)
+	writeFile(t, filepath.Join(m, ".env"), "APP_PORT=8090\n")
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(80)}})
+	// A change after the read is not seen by this run: the .env is not read again under the lock.
+	betweenReadAndLock(t, func() { writeFile(t, filepath.Join(m, ".env"), "APP_PORT=8091\n") })
+	if out, err := runCheck(t); err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, _ := loadRegistry()
+	if got := reg.Mains[m].Ports["APP_PORT"]; got != 8090 {
+		t.Errorf("APP_PORT = %d, want 8090 (the read before the lock)", got)
+	}
+}
+
+func TestCheckDoesNotRefreshARecordChangedBeforeTheLock(t *testing.T) {
+	isolatedRegistry(t)
+	m := realTempDir(t)
+	writeFile(t, filepath.Join(m, ".env"), "APP_PORT=8090\n")
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(80)}})
+	// Another run records 9000 after check read the .env (8090): that record is newer and must stay.
+	betweenReadAndLock(t, func() { saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(9000)}}) })
+	if out, err := runCheck(t); err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, _ := loadRegistry()
+	if got := reg.Mains[m].Ports["APP_PORT"]; got != 9000 {
+		t.Errorf("APP_PORT = %d, want 9000 (the record changed meanwhile)", got)
 	}
 }

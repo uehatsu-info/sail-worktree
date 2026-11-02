@@ -38,7 +38,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries` (`gitInRegistryDirs`, `registryPathOK`), `foldRegistry` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
-| `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `refreshMains`, `checkConflicts`, `holder`, `suggestion` |
+| `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `readMains`, `refreshMains`, `checkConflicts`, `holder`, `suggestion` |
 | `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `lockTiming` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
 | `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `sanctumUnquote`, `statefulDisabled`, `addStatefulDomain` |
@@ -129,18 +129,21 @@ These come from deliberate decisions; change them only on purpose and update the
   repository) and then reports conflicts over the whole registry. The refresh exists because `up` avoids only recorded
   ports: without it, a suggested `up` could keep a port that a main now uses. It never writes `.env` or
   `.sail-worktree.json`, never sources `.env`, and runs neither sail nor docker (git only through `loadCtx` in the cwd).
-  `mainPorts` reads the current main's `.env` before the lock; the registry is read after `lockRegistry`, `refreshMains`
-  reads the other mains' `.env` under the lock, and the registry is saved only when `recordMain` or `refreshMains`
-  reports a change. A `loadCtx` or configuration error is a warning, so `check` works outside a repository. So is a lock
-  that cannot be taken: nothing is recorded or refreshed, the registry is read without the lock (safe, it is replaced
-  atomically) and reported, and the warning says the report may rest on records that refreshing would have changed; a
-  broken registry stays an error. A `mains` key is used as a directory only after `validKey` (see the read-only rule
-  above) and `isDir` (`Lstat` on the key; a link as its last element is not followed), its `.env` only through
-  `readMainEnv`. Conflict lines print only valid port numbers. Records of missing directories or invalid keys are
-  warnings (their recorded ports printed as they are), never conflicts, so a deleted clone cannot make `check` fail for
-  ever. A conflict is fixed by the user: a worktree by `up`, a main worktree by hand (`suggestion` only prints a value;
-  `VAR=N` is shown only for a name matching `shellName`). Exit 1 only for a conflict (`report.finish`, shared with
-  `status`).
+  No `.env` is read under the lock, so a slow drive does not keep `up` and `rm` waiting: `readMains` reads the recorded
+  mains' `.env` first (from a registry read without the lock, used only for the keys and the records a refresh is based
+  on), then `mainPorts` the current main's. Under `lockRegistry` the registry is read again, `recordMain` records the
+  current main, `refreshMains` applies a pre-read result only to a record whose `ports` and `defaults` are still the
+  ones it was based on (a record changed meanwhile is newer; the next `check` refreshes it), and the registry is saved
+  only when `recordMain` or `refreshMains` reports a change. A `loadCtx` or configuration error is a warning, so `check`
+  works outside a repository. So is a lock that cannot be taken: nothing is recorded or refreshed, the registry is read
+  without the lock (safe, it is replaced atomically) and reported, and the warning says the report may rest on records
+  that refreshing would have changed; a broken registry stays an error. A `mains` key is used as a directory only after
+  `validKey` (see the read-only rule above) and `isDir` (`Lstat` on the key; a link as its last element is not
+  followed), its `.env` only through `readMainEnv`. Conflict lines print only valid port numbers. Records of missing
+  directories or invalid keys are warnings (their recorded ports printed as they are), never conflicts, so a deleted
+  clone cannot make `check` fail for ever. A conflict is fixed by the user: a worktree by `up`, a main worktree by hand
+  (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`). Exit 1 only for a conflict
+  (`report.finish`, shared with `status`).
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
@@ -230,19 +233,20 @@ These come from deliberate decisions; change them only on purpose and update the
 - **The registry lock.** `up`, `rm` and `check` update the registry under `lockRegistry` (`registry.json.lock` next to
   it, `O_EXCL`, mode 0600, pid inside; the file is closed at once because Windows cannot remove an open file). `up`
   takes it after the `.env` checks and before `loadRegistry`, so reading, `allocatePorts`, writing `.env` and `save` are
-  one step, and releases it right after `save` and before `runSail`; `rm` takes it after docker; `check` holds it to
-  read, record, refresh the recorded mains (reading their `.env`) and save. If `check` cannot take it, it warns and
-  reports on the registry read without it, writing nothing. Never hold it while sail or docker runs, and read the
-  registry after locking. `ps`, `ports` and `status` never lock (the atomic save keeps them consistent). A lock whose
-  mtime is older than `lockTiming.stale` or more than 5 seconds in the future is abandoned: `claimStale` renames it to a
-  unique name, checks that it is the file that was judged (same file and same mtime, since an inode can be reused) and
-  removes it, or gives a fresh one back with `os.Link`, which fails instead of replacing a lock a third run took. `wait`
-  is longer than `stale`. `unlock` is idempotent and removes only the file it created. Only on Windows are errors other
-  than "exists" retried (a pending removal looks like access denied); elsewhere they fail at once. The pid in the error
-  comes through `readSmallFile` and is shown only if it is a number. An `O_EXCL` file was chosen over flock/LockFileEx
-  (no per-OS code, no dependency); its cost is the stale rule and the hand recovery in the error message, and a run
-  suspended for longer than `stale` can lose its lock to the next one. Do not "improve" this into a lock held during
-  `sail up`.
+  one step, and releases it right after `save` and before `runSail`; `rm` takes it after docker; `check` reads the
+  mains' `.env` before it and holds it to read the registry again, record, refresh and save (what it read before locking
+  only decides which records may be refreshed; the registry it saves is the one read after locking). If `check` cannot
+  take it, it warns and reports on the registry read without it, writing nothing. Never hold it while sail or docker
+  runs, and read the registry after locking. `ps`, `ports` and `status` never lock (the atomic save keeps them
+  consistent). A lock whose mtime is older than `lockTiming.stale` or more than 5 seconds in the future is abandoned:
+  `claimStale` renames it to a unique name, checks that it is the file that was judged (same file and same mtime, since
+  an inode can be reused) and removes it, or gives a fresh one back with `os.Link`, which fails instead of replacing a
+  lock a third run took. `wait` is longer than `stale`. `unlock` is idempotent and removes only the file it created.
+  Only on Windows are errors other than "exists" retried (a pending removal looks like access denied); elsewhere they
+  fail at once. The pid in the error comes through `readSmallFile` and is shown only if it is a number. An `O_EXCL` file
+  was chosen over flock/LockFileEx (no per-OS code, no dependency); its cost is the stale rule and the hand recovery in
+  the error message, and a run suspended for longer than `stale` can lose its lock to the next one. Do not "improve"
+  this into a lock held during `sail up`.
 - **Ports.** A new port is searched from default+1 upwards (the default is left to the main worktree), skipping ports
   of other worktrees, ports recorded for any main worktree (`used` includes `mains`, so `up` moves a worktree off a
   main's port and says so) and ports in use. A port counts as free only if it binds on all interfaces and on `127.0.0.1`;
