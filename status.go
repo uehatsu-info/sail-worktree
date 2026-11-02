@@ -77,7 +77,11 @@ func cmdStatus(args []string) error {
 	r := &report{w: stdout}
 	r.line("project directory: %q", c.root)
 	r.line("worktree:          %s (branch %s)", filepath.Base(c.wtTop), currentBranch(c.wtTop))
-	r.line("main worktree:     %q", c.mainTop)
+	if c.bare { // mainTop is the bare repository there, not a checkout (as check's warning says)
+		r.line("main worktree:     none (the repository %q is bare, so there is no main worktree checkout)", c.mainTop)
+	} else {
+		r.line("main worktree:     %q", c.mainTop)
+	}
 	if c.isMain() {
 		r.line("this is the main worktree: up and rm do not run here; check records its ports (up does too, in a worktree)")
 		return nil

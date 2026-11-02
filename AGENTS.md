@@ -29,12 +29,12 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | File | Role |
 |---|---|
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
-| `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv` (a main worktree's ports), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
+| `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
-| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate`, `replacedMain`/`projectMarkers` (main records a move left behind) |
+| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry) |
-| `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
+| `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart (`counterpart`, `isProjectDir`) |
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey`/`foldMains` (aliases folded in memory, replaced mains marked), `psPortsCell`, `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
@@ -109,7 +109,7 @@ These come from deliberate decisions; change them only on purpose and update the
   aliases in a copy), never write `.env` or `.sail-worktree.json`, and never source `.env`. Registry keys are untrusted:
   a key that fails `validKey` (absolute and clean, and on Windows a drive-letter path, an allow-list, because a UNC or
   device path such as `\\host\share`, `\\?\` or `\??\` can open a network connection) is never used as a directory, by
-  any command (`migrate` in `up` and `rm` included). On Windows `validKey` also walks the key from its drive root with
+  any command (`migrateAliases` in `up` and `rm` included). On Windows `validKey` also walks the key from its drive root with
   `Lstat` and `Readlink` (`linksStayLocal`, through the replaceable `keyLinksOK`) and refuses it when a symbolic link or
   junction on the way, or in what it leads to, has a target that is not a drive-letter path, because Windows follows a
   link in the middle of a path whenever the path is used (`realPath`, `isDir`, git); a junction is checked although
@@ -118,7 +118,14 @@ These come from deliberate decisions; change them only on purpose and update the
   a `..` after a name in a link target refuses the key (a target is walked element by element like `EvalSymlinks` does,
   never cleaned first, so no link in it is skipped). The walk may run several times for one key in a command. Limits: a
   link swapped after the walk is not caught, a drive letter mapped to a network share is the user's own setup, and a
-  folder where a volume without a drive letter is mounted (`\\?\Volume{...}`) is refused as well. On Windows git never
+  folder where a volume without a drive letter is mounted (`\\?\Volume{...}`) is refused as well. On Unix `validKey`
+  checks only the string (#97, the counterpart of the Windows link rule from #62): a key under an automounted location
+  (`/net/host/x`, an autofs map), or one that goes through a symbolic link to one, is followed by `realPath`, `isDir`
+  and git, which can trigger a mount, and a key on a network share mounted already reaches the network; so can a path
+  git reads from another repository's metadata. It is not checked because a Unix path carries no marker of a network
+  location, and comparing the device of each element would see the mount only after following the link (the automount
+  has happened by then) while refusing usual setups (macOS `/tmp` to `/private/tmp`, a separate `/home`, a project on
+  an external disk). On Windows git never
   runs in the registry directories of other repositories (`gitInRegistryDirs` is off), because git itself looks at paths
   from that repository's metadata (`gitdir` targets, a `.git` file's `gitdir:`), and a UNC or device path there can open
   a network connection; those entries are `unattributed`. Elsewhere git runs there only through `listWorktrees`
@@ -171,16 +178,17 @@ These come from deliberate decisions; change them only on purpose and update the
   through `readMainEnv`. Conflict lines print only valid port numbers. Records of missing directories or invalid keys,
   and main records that another record replaced (`replacedMain`, see the `prune` rule), are warnings (their recorded
   ports printed as they are), never conflicts, so a deleted clone or a moved project cannot make `check` fail for ever.
-  An entry of a holder main's `worktrees` list that fails `usableDir` (prune's test) is a warning too, although it holds
-  no ports, so that `prune` removes only what `check` warns about. A conflict is fixed by the user: a worktree by `up`,
-  a main worktree by hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`).
-  Exit 1 only for a conflict (`report.finish`, shared with `status`) or an error; an error still prints the warnings
-  collected so far (`printWarnings`). A variable of a record's `defaults` that the main's `.env` sets on more than one
-  line is a warning (`warnDuplicates`, from the `.env` that `readMains` already read, so a main recorded by this run is
-  checked from the next one; the name through `cell`, never a value). `duplicateKeys` reads line by line, as `portValue`
-  does, so a line inside a multi-line quoted value counts: a documented limit, because only the warning could skip such
-  lines (it would then disagree with the port read) and a quote-aware `Set` would lose every key after an unclosed
-  quote.
+  An entry of a holder main's `worktrees` list that is stale by `staleWorktreeKey` (prune's test, so an alias of a live
+  worktree is folded, not warned about) is a warning too, although it holds no ports, so that `prune` removes only what
+  `check` warns about; a worktree's `(of ...)` comes only from holder mains' lists. A conflict is fixed by the user: a
+  worktree by `up`, a main worktree by hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching
+  `shellName`). Exit 1 only for a conflict (`report.finish`, shared with `status`) or an error; an error still prints
+  the warnings collected so far (`printWarnings`). A variable of a record's `defaults` that the main's `.env` sets on
+  more than one line is a warning (`warnDuplicates`, from the `.env` that `readMains` already read, so a main recorded
+  by this run is checked from the next one; the name through `cell`, never a value). `duplicateKeys` reads line by line,
+  as `portValue` does, so a line inside a multi-line quoted value counts: a documented limit, because only the warning
+  could skip such lines (it would then disagree with the port read) and a quote-aware `Set` would lose every key after
+  an unclosed quote.
 - **`prune` writes only the registry.** It removes what `check` warns about: a `worktrees` key that fails `validKey` or
   does not resolve to a directory (`staleWorktreeKey`, the `foldRegistry` rule, so an alias key of a live worktree is
   kept: it still holds that worktree's ports, and the next `up` there folds it with `migrate`, not `prune`), a `mains`
@@ -191,21 +199,21 @@ These come from deliberate decisions; change them only on purpose and update the
   `artisan` and a compose file, looked at with `Lstat` only, a link counts, an error other than not-exist counts as
   present) while a usable key that is its own real path and has markers lies strictly below it; a `realPath` failure
   keeps the record, and a main without such a second record keeps its ports; git is not asked), and entries of a kept
-  main's `worktrees` list that fail `usableDir`. `validKey` always comes first, so an invalid key is never looked at (on
-  Windows its walk reads only the elements and links on the way, up to the first refused link). It lists and asks
-  (package `stdin`/`stdout`, `-y` skips) without the lock, then takes `lockRegistry`, reads the registry again and
-  removes only listed records that are still recorded and still unusable (with the same per-kind test), saving only when
-  something was removed; records that became unusable after the prompt are left for the next run, because the user did
-  not confirm them. A replaced main is tested again after the prompt and before the lock (`recheckReplaced`, so that the
-  lock is not held while it reads the filesystem) and under the lock only compared in the registry (`stillPrunable`: its
-  record equals the listed one, and the record that replaces it is still there). It never writes `.env` or
+  main's `worktrees` list that are stale by `staleWorktreeKey` (the rule of `worktrees` keys: an older version recorded
+  aliases there too, and one of a live worktree is kept). `validKey` always comes first, so an invalid key is never
+  looked at (on Windows its walk reads only the elements and links on the way, up to the first refused link). It lists
+  and asks (package `stdin`/`stdout`, `-y` skips) without the lock, then takes `lockRegistry`, reads the registry again
+  and removes only listed records that are still recorded and still unusable (with the same per-kind test), saving only
+  when something was removed; records that became unusable after the prompt are left for the next run, because the user
+  did not confirm them. A replaced main is tested again after the prompt and before the lock (`recheckReplaced`, so that
+  the lock is not held while it reads the filesystem) and under the lock only compared in the registry (`stillPrunable`:
+  its record equals the listed one, and the record that replaces it is still there). It never writes `.env` or
   `.sail-worktree.json` and runs neither docker, sail nor git: the containers, networks and volumes of a removed
   worktree are left alone and the output says so (`docker compose ls -a`). Untrusted keys are printed with `%q` and port
   names through `cell`. A directory that is only out of reach for the moment counts as missing. So removing the record
   of a project that is still in use (one on a disk that is out of reach for the moment, on Windows one run from a UNC
   path or through a link to one, which is not a usable key, or a main whose checkout has no project markers at the
-  moment while a main record with markers lies below it: a branch without the project there, or a feature branch that
-  moved the project from `laravel/` to the root, whose `up` records the root as the counterpart) frees its ports in the
+  moment while a main record with markers lies below it: a branch without the project there) frees its ports in the
   registry until `up`, or for a main worktree also `check` in its project directory, records it again; a port bound at
   that moment is still skipped by `up`'s `portFree`. The prompt lists the records first.
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
@@ -217,21 +225,25 @@ These come from deliberate decisions; change them only on purpose and update the
   reads the first line, because `up` writes its result back and collapses duplicates to the first line. A default counts
   only if it is 1 to 65535 (`validPort`), so a hand-edited recorded default outside that reserves nothing (`loadConfig`
   already refuses one in the configuration; the check stays for the registry). A main directory that does not exist is
-  never recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file is not read
-  for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves
+  never recorded (`counterpart` may return a lexical path), nor one that is not a project directory by `lookupProject`'s
+  rule (`isProjectDir`, `configOrLaravel`; stricter than prune's `projectMarkers` on purpose), as such a main never
+  runs; `check`'s "has no project directory" warning covers both. A `.env` that is a link or not a regular file is not
+  read for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves
   nothing. The variables are those of the run's configuration (`cfg.PortVars`), which may be a branch's, so `recordMain`
   merges: a variable of the old record's `defaults` that the run does not know keeps its recorded default and port. Only
   a `check` run in the main worktree itself (`checkTarget.inMain`) replaces the record, so a variable that left the
   project is dropped only there (or by hand); until then it keeps its port reserved, and a variable that only a branch
-  has is dropped there and comes back with that branch's next `up` or `check`. A kept value is not refreshed by `up`
-  (which reads only the run's variables) or by a `check` in the project directory of a linked worktree of the same
-  repository (which records its main from that read and drops its pre-lock read of the current main), however often they
-  run; a `check` in the main worktree re-records or drops it, and a `check` anywhere else (`refreshMains`) re-reads it.
+  has is dropped there and comes back with that branch's next `up` or `check`. A kept value is refreshed from a read
+  before the lock for the record's `defaults` (`mainRead.kept`: `readMains`' read of the current main in `check`,
+  `mainEnvPorts` in `up`), only when that read succeeded (`keptOK`) and the record is still its base; otherwise it stays
+  as recorded. A `check` in the main worktree re-records or drops it, and a `check` anywhere else (`refreshMains`)
+  re-reads it.
   An unreadable `.env`, or a record that another run changed while this run waited for the lock, keeps the whole record,
   `inMain` included. `MainRecord` is a value type so that a hand-written `null` cannot cause a nil dereference. Alias
   paths in a record's `worktrees` list are folded like the top-level `worktrees` keys: by `migrate` (saved by `up` and
   `rm`; only in the current main's list, so an alias in another main's list is not folded by it), and by `check` in
-  memory only (`foldKey`, the key `ofMain` looks a worktree up by); an entry that fails `validKey` is never resolved.
+  memory only (`foldKey`, the key `ofMain` looks a worktree up by), and `prune` keeps them (`staleWorktreeKey`); an
+  entry that fails `validKey` is never resolved.
 - **`ports` examines the host.** It probes each distinct port once through `probePort` (a bind that is closed at once,
   so nothing is written; a running project's own ports are not probed) and asks `lsof` (Unix only, through `output`,
   fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the process
@@ -257,9 +269,11 @@ These come from deliberate decisions; change them only on purpose and update the
 - **Paths are real paths.** The worktree root, the main worktree and the project directory are resolved through
   symlinks, because the project name contains a hash of the project directory. `Registry.migrate` merges keys an older
   version recorded under a symlinked path, and replaces aliases of root in the current main's `worktrees` list (the only
-  one root can be listed in; other lists are not resolved under the lock; a changed list is sorted); it only changes
-  memory and the caller saves on success. A registry key is resolved only after `validKey` (on
-  Windows that includes the link walk).
+  one root can be listed in; other lists are not resolved; a changed list is sorted); it only changes memory and the
+  caller saves on success. `up` and `rm` split it: `aliasesOf` finds the aliases on a registry read before the lock, and
+  `migrateAliases` resolves only those again under it (an alias that an older version records in between is folded by a
+  later `up`; `rm` leaves it). A registry key is resolved only after `validKey` (on Windows that includes the link
+  walk), the re-check included.
 - **Project directory.** `up`, `stop` and `rm` (`lookupProject`) take the nearest directory with `.sail-worktree.json`
   anywhere up to the worktree root; only when there is none, the nearest directory where `isLaravelProject` holds
   (`artisan` is a regular file and a compose file exists), and then the configuration is detected (`ctx.detected`).
@@ -283,8 +297,9 @@ These come from deliberate decisions; change them only on purpose and update the
   - `isMain` decides on the worktree roots, with the project directories compared as well (defense in depth).
   - A bare first entry of `git worktree list` (`ctx.bare`) means there is no main worktree checkout: `mainTop` is the
     bare directory (it still gives the project name's slug), `ctx.main` is empty and `counterpart` is not called,
-    `isMain` is false in every worktree, `up` and `check` record no main, and `up` copies `.env` from the worktree's own
-    `.env.example` (`readOwnEnvExample`: a regular file only, since it comes from the branch checked out there).
+    `isMain` is false in every worktree, `up` and `check` record no main, `status` says the repository is bare instead
+    of showing `mainTop` as the main worktree, and `up` copies `.env` from the worktree's own `.env.example`
+    (`readOwnEnvExample`: a regular file only, since it comes from the branch checked out there).
   - The main worktree's counterpart (`counterpart`) is the same relative path there. It may not exist, but it must not
     resolve outside the main worktree, because `up` copies `.env` from it and Sail sources it. Only the directory is
     contained: the `.env` file in it may still be a link, as for a root project. A missing path is checked only
@@ -304,12 +319,15 @@ These come from deliberate decisions; change them only on purpose and update the
   - A configuration error is kept in `ctx.cfgErr` and returned by `ctx.config()` after the main-worktree refusal; no
     command reads `ctx.cfg` directly. `stop` fails on it too, as it did with a broken file. The exception: `stop` and
     `rm` take a reserved name found by detection (`reservedPortVarError`, through `ctx.teardownConfig()`): they write no
-    port variable, and detection yields only `*PORT` names, so the name cannot be `DOCKER_HOST` or `PATH`. No reserved
-    name ends in `PORT` today (a test pins it), so this exception is a guard for a future one. Port variables are
-    required only for `up` and only when detected (a file with `port_vars: []` still works).
+    port variable, and detection yields only `*PORT` names, so the name cannot be `DOCKER_HOST` or `PATH`. Only
+    `SAIL_SHARE_SERVER_PORT` (read by Sail's `share`) ends in `PORT` (a test pins it): without `.sail-worktree.json`, a
+    compose file that maps it stops `up` and `init`, `status` reports a configuration problem and `check` warns and
+    records no main, while `stop` and `rm` run (`stop` drops it from sail's environment; `rm` keeps a shell value, with
+    which compose only expands the compose file, and `down -v` picks what it removes by the pinned project name). Port
+    variables are required only for `up` and only when detected (a file with `port_vars: []` still works).
   - `up`'s order: main refusal, configuration, detected port variables, the existing `.env` checks and port
     allocation, then `sailPath` right before the first write, so nothing is written without Sail and the order of the
-    existing refusals stays the same.
+    existing refusals stays the same. A copy source that cannot be read fails before the lock is taken.
   - `rm` passes only the one compose file to `-f`, so `compose.override.yaml` is not read (volumes defined only there
     are left behind). A broken link named `compose.yaml` is skipped by `findMarker`, so a `docker-compose.yml` next to
     it is used.
@@ -326,18 +344,21 @@ These come from deliberate decisions; change them only on purpose and update the
   and the directory is not synced (atomicity, not durability). Do not go back to `os.WriteFile`: its
   truncate-then-write window is what a race smoke test covers. This is the registry only; `.env` and
   `.sail-worktree.json` keep `writeFileNoFollow`.
-- **Registry handling in `rm`.** Read the registry once before the prompt (to fail early on a broken file) and again
-  after `docker` (so an update made meanwhile by another `up` is not lost); release the worktree only after docker
-  succeeds. The lock is taken after docker and before the second read (never while docker runs); if it cannot be taken
-  the error says that docker finished and that rm can be run again (`down` is idempotent). The main worktree's record
-  stays; only the worktree leaves its `worktrees` list (`forgetWorktree`).
+- **Registry handling in `rm`.** Read the registry once before the prompt (to fail early on a broken file, and to find
+  the alias keys to release, `aliasesOf`; this never refuses) and again after `docker` (so an update made meanwhile by
+  another `up` is not lost); release the worktree only after docker succeeds. The lock is taken after docker and before
+  the second read (never while docker runs); if it cannot be taken the error says that docker finished and that rm can
+  be run again (`down` is idempotent). The main worktree's record stays; only the worktree leaves its `worktrees` list
+  (`forgetWorktree`).
 - **The registry lock.** `up`, `rm`, `check` and `prune` update the registry under `lockRegistry` (`registry.json.lock`
   next to it, `O_EXCL`, mode 0600, pid inside; the file is closed at once because Windows cannot remove an open file).
   `up` reads the main's `.env` (`mainPorts`) before it, after a registry read that is used only as the base of that
   main's record (`recordMainRead`, the rule of `check`; the ports it read are also avoided by this allocation, since a
-  record kept as newer may come from an older read), and takes it after the `.env` checks and before `loadRegistry`, so
-  reading, `allocatePorts`, writing `.env` and `save` are one step, and releases it right after `save` and before
-  `runSail`; `rm` takes it after docker; `check`
+  record kept as newer may come from an older read; this includes the kept variables it read) and to find alias keys
+  (`aliasesOf`); it also reads the source of a new `.env` before it (`readCopySource`; the worktree's own `.env` is
+  still read under it, and if that is gone by then the source is read there), and takes it after the `.env` checks
+  and before `loadRegistry`, so reading, `allocatePorts`, writing `.env` and `save` are one step, and releases it
+  right after `save` and before `runSail`; `rm` takes it after docker; `check`
   reads the mains' `.env` before it and holds it to read the registry again, record, refresh and save (what it read
   before locking only decides which records may be refreshed; the registry it saves is the one read after locking). If
   `check` times out on a lock that another run holds (`errLockHeld`), it warns and reports on the registry read without
@@ -390,12 +411,14 @@ These come from deliberate decisions; change them only on purpose and update the
   real path with `composeInsideProject` (see "`rm` is guarded"). Each `port_vars` entry must have a `shellName` name and
   a `validPort` default (`validatePortVars`), because `up` writes `NAME=port` into `.env`; the names are not held to the
   detection rule, so a hand-added variable may use any name compose does. A name in `reservedNames` (keys `up`
-  writes, the `COMPOSE_*` and `DOCKER_*` settings docker compose and the docker CLI document, sources in the comment,
-  `SAIL_FILES`, a few shell and Sail names; case-insensitive, as `cleanEnv` drops them) is refused, by `detectConfig`
-  too, so `init` never writes a file that `loadConfig` refuses (none ends in `PORT`, so detection finds none today; see
-  the configuration error rule above). Other `COMPOSE_*` and `DOCKER_*` names, such as `DOCKER_WEB_PORT`, are allowed
-  on purpose: v0.8.1 handled them (#74). Keep the shell and Sail part short, add a key there when `up` starts to write
-  it, and add a compose or docker setting when they start to read one. A repeated name (also compared
+  writes, the `COMPOSE_*` and `DOCKER_*` settings docker compose and the docker CLI document, the BuildKit and buildx
+  settings, the proxy names and `SSH_AUTH_SOCK`, the settings `bin/sail` reads, sources in the comment,
+  `SAIL_FILES`, a few shell names; case-insensitive, as `cleanEnv` drops them) is refused, by `detectConfig`
+  too, so `init` never writes a file that `loadConfig` refuses (only `SAIL_SHARE_SERVER_PORT` ends in `PORT`, so
+  detection finds no other; see the configuration error rule above). Other `COMPOSE_*` and `DOCKER_*` names, such as
+  `DOCKER_WEB_PORT`, are allowed on purpose: v0.8.1 handled them (#74). Keep the shell part short, add a key there when
+  `up` starts to write it, and add a compose, docker, build or Sail setting when they start to read one; check the
+  sources in the comment again before each release. A repeated name (also compared
   case-insensitively) is refused, because `up` would assign two ports and `Set` keeps only the first line;
   `detectPortVars` yields each name once (`composePortRe` matches upper-case names only), and a test pins that.
 
@@ -424,8 +447,9 @@ These come from deliberate decisions; change them only on purpose and update the
   from the build info, so build from a tagged, clean checkout.
 - Actions are pinned to full commit SHAs with the version in a comment, and GoReleaser is pinned to an exact version.
   Dependabot opens weekly PRs for the actions. Do not switch back to floating tags.
-- To release: merge to `main`, create an annotated tag (`git tag -a vX.Y.Z -m vX.Y.Z`) on the merge commit, push the
-  tag, and check that the Release workflow and the `verify` job pass. Use a minor bump for user-visible or breaking
-  changes while the version is below 1.0.0.
+- To release: check the sources in the `reservedNames` comment for new settings (see the `port_vars` rule), merge to
+  `main`, create an annotated tag (`git tag -a vX.Y.Z -m vX.Y.Z`) on the merge commit, push the tag, and check that the
+  Release workflow and the `verify` job pass. Use a minor bump for user-visible or breaking changes while the version is
+  below 1.0.0.
 - Do not move or re-push a published tag: the Go module proxy caches tags. Publish a new version instead.
 - `GoReleaser` builds the release notes from commit subjects, so write subjects that read well to a user.

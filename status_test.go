@@ -243,6 +243,20 @@ func TestStatusInTheMainWorktree(t *testing.T) {
 	}
 }
 
+// In a bare layout there is no main worktree checkout, so the bare directory is not shown as one (#89). The report
+// may still find problems (no .env), so only its main worktree line is checked.
+func TestStatusInABareLayoutSaysThereIsNoMainWorktree(t *testing.T) {
+	bare, _, _ := setupBareWorktreeRepo(t)
+	out, _, _ := runStatus(t)
+	want := fmt.Sprintf("main worktree:     none (the repository %q is bare, so there is no main worktree checkout)\n", bare)
+	if !strings.Contains(out, want) {
+		t.Errorf("no line %q:\n%s", want, out)
+	}
+	if old := fmt.Sprintf("main worktree:     %q\n", bare); strings.Contains(out, old) {
+		t.Errorf("the bare directory is shown as the main worktree:\n%s", out)
+	}
+}
+
 func TestStatusEscapesUntrustedText(t *testing.T) {
 	_, wt := statusSetup(t, "")
 	setEnv(t, wt, "APP_PORT", "8\x1b[31m0\u202e")

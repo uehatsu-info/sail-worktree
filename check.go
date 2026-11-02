@@ -116,8 +116,12 @@ func checkRecord(r *report) (*Registry, error) {
 			wt = cur.worktree
 		}
 		base, baseHad := pre.Mains[cur.main] // pre was read before the .env, so a newer record never passes for the base
+		// readMains read the current main for the base's defaults: that read refreshes the variables the record keeps
+		// for a configuration that lacks them, and currentMain's newer read the others (the next check catches up).
+		kept, keptOK := fresh[cur.main]
 		changed = reg.recordMainRead(cur.main, wt, mainRead{ports: cur.ports, defaults: cur.defaults, envOK: cur.envOK,
-			inMain: cur.inMain, basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad})
+			inMain: cur.inMain, basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad,
+			kept: kept.ports, keptOK: keptOK})
 		delete(fresh, cur.main) // currentMain read the same .env after readMains
 	}
 	if refreshMains(reg, fresh) {
@@ -152,15 +156,11 @@ func readMains(reg *Registry) map[string]mainRefresh {
 		if !usableDir(k) {
 			continue
 		}
-		env, ok := readMainEnv(k)
+		ports, duplicates, ok := mainEnvPorts(k, rec.Defaults)
 		if !ok {
 			continue
 		}
-		f := mainRefresh{ports: portsFromEnv(env, rec.Defaults), basePorts: rec.Ports, baseDefaults: rec.Defaults}
-		if env != nil {
-			f.duplicates = env.duplicateKeys(slices.Collect(maps.Keys(rec.Defaults)))
-		}
-		out[k] = f
+		out[k] = mainRefresh{ports: ports, basePorts: rec.Ports, baseDefaults: rec.Defaults, duplicates: duplicates}
 	}
 	return out
 }
@@ -239,6 +239,7 @@ func checkConflicts(r *report, reg *Registry) {
 	reserved := reg.used("")
 	var holders []holder
 	mains := slices.Sorted(maps.Keys(reg.Mains))
+	var live []string // the mains that hold ports: only their lists name a worktree's main
 	for _, k := range mains {
 		rec := reg.Mains[k]
 		if !usableDir(k) {
@@ -249,19 +250,21 @@ func checkConflicts(r *report, reg *Registry) {
 			r.warn("the record of main worktree %q keeps ports free, but %s: %s", k, why, cell(portsCell(rec.Ports)))
 			continue
 		}
+		live = append(live, k)
 		for name, p := range rec.Ports {
 			holders = append(holders, holder{main: true, dir: k, name: name, port: p})
 		}
-		// prune's test for the list entries, so that prune removes only what check warns about.
+		// prune's test for the list entries (an alias of a live worktree is folded, not stale), so that prune removes
+		// only what check warns about.
 		for _, w := range slices.Sorted(slices.Values(rec.Worktrees)) {
-			if !usableDir(w) {
+			if staleWorktreeKey(w) {
 				r.warn("the record of main worktree %q lists linked worktree %q, which is not a usable local directory "+
 					"(the entry holds no ports; prune removes it)", k, w)
 			}
 		}
 	}
 	ofMain := map[string]string{} // keyed by the folded path, as view is, so that an alias still matches
-	for _, k := range mains {
+	for _, k := range live {
 		for _, w := range reg.Mains[k].Worktrees {
 			ofMain[foldKey(w)] = k
 		}

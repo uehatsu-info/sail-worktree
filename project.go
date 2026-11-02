@@ -200,6 +200,15 @@ func configOrLaravel(dir string) (string, bool, error) {
 	return isLaravelProject(dir)
 }
 
+// isProjectDir reports whether dir itself is a project directory by lookupProject's rule (configOrLaravel: markers
+// through links, regular files only). An error counts as "not a project", as lookupProject would fail there. It is
+// stricter on purpose than prune's projectMarkers (Lstat, anything present counts), which must not remove a record
+// that may still be a project.
+func isProjectDir(dir string) bool {
+	_, ok, err := configOrLaravel(dir)
+	return err == nil && ok
+}
+
 // lookupProject finds the project directory for up, stop and rm. detected is true when there is no
 // .sail-worktree.json and the configuration has to be detected from cand.marker, the compose file.
 func lookupProject(wtTop, prefix string) (root string, cand *candidate, detected bool, err error) {
