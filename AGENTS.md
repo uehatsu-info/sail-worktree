@@ -31,14 +31,14 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv` (a main worktree's ports), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
-| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` |
+| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate`, `replacedMain`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart |
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey` (aliases folded in memory), `listWorktrees`/`parseWorktreeList`, `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
-| `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `staleWorktreeKey` |
+| `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `staleWorktreeKey`, `recheckReplaced` |
 | `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `readMains`, `refreshMains`, `checkConflicts`, `holder`, `suggestion` |
 | `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `claimStale`/`claimPath`, `releaser`, `lockTiming` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
@@ -143,52 +143,65 @@ These come from deliberate decisions; change them only on purpose and update the
   warning (`statusDuplicates`, through `duplicateKeys`; the name, never a value; none when the configuration is broken,
   as there are no names then; the multi-line limit of the `check` bullet applies).
 - **`check` writes only the registry.** It records the current repository's main worktree, if it runs in its project
-  directory or below it (`currentMain`, `checkRecord`; the `loadCtx` lookup, as for `up`; elsewhere a warning says
-  where to run it), refreshes every recorded main from its `.env` (`refreshMains`, also outside a
-  repository) and then reports conflicts over the whole registry. The refresh exists because `up` avoids only recorded
-  ports: without it, a suggested `up` could keep a port that a main now uses. It never writes `.env` or
-  `.sail-worktree.json`, never sources `.env`, and runs neither sail nor docker (git only through `loadCtx` in the cwd).
-  No `.env` is read under the lock, so a slow drive does not keep `up` and `rm` waiting: `readMains` reads the recorded
-  mains' `.env` first (from a registry read without the lock, used only for the keys and the records a refresh is based
-  on), then `mainPorts` the current main's. Under `lockRegistry` the registry is read again; `recordMainRead` records
-  the current main and `refreshMains` refreshes the others by one rule: a pre-read result is applied only to a record
-  whose `ports` and `defaults` are still the ones it was based on (`sameBase`; a record changed meanwhile, or one that
-  appeared, is newer and the next `check` refreshes it; the current main's worktree is still added), except that a
-  current main whose record is gone (pruned meanwhile) is recorded from the read. The base of the current main is taken
-  from the registry read before its `.env`, so a newer record never passes for it. The registry is saved only when
-  `recordMainRead` or `refreshMains` reports a change. A `loadCtx` or configuration error is a warning, so `check`
-  works outside a repository. So is a lock that another run holds for longer than the wait (`errLockHeld`; any other
-  lock error, such as no permission or a read-only file system, is an error): nothing is recorded or refreshed, the
-  registry is read without the lock (safe, it is replaced atomically) and reported, and the warning says the report may
-  rest on records that refreshing would have changed; a broken registry stays an error. A `mains` key is used as a
-  directory only after `validKey` (see the read-only rule above) and `isDir` (`Lstat` on the key; a link as its last
-  element is not followed), its `.env` only through `readMainEnv`. Conflict lines print only valid port numbers. Records
-  of missing directories or invalid keys are warnings (their recorded ports printed as they are), never conflicts, so a
-  deleted clone cannot make `check` fail for ever. A conflict is fixed by the user: a worktree by `up`, a main worktree
-  by hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`). Exit 1 only for a
-  conflict (`report.finish`, shared with `status`) or an error; an error still prints the warnings collected so far
-  (`printWarnings`). A variable of a record's `defaults` that the main's
-  `.env` sets on more than one line is a warning (`warnDuplicates`, from the `.env` that `readMains` already read, so a
-  main recorded by this run is checked from the next one; the name through `cell`, never a value). `duplicateKeys` reads
-  line by line, as `portValue` does, so a line inside a multi-line quoted value counts: a documented limit, because only
-  the warning could skip such lines (it would then disagree with the port read) and a quote-aware `Set` would lose every
-  key after an unclosed quote.
+  directory or below it (`currentMain`, `checkRecord`; the `loadCtx` lookup, as for `up`; elsewhere a warning says where
+  to run it), refreshes every recorded main from its `.env` (`refreshMains`, also outside a repository) and then reports
+  conflicts over the whole registry. The refresh exists because `up` avoids only recorded ports: without it, a suggested
+  `up` could keep a port that a main now uses. It never writes `.env` or `.sail-worktree.json`, never sources `.env`,
+  and runs neither sail nor docker (git only through `loadCtx` in the cwd). No `.env` is read under the lock, so a slow
+  drive does not keep `up` and `rm` waiting: `readMains` reads the recorded mains' `.env` first (from a registry read
+  without the lock, used only for the keys and the records a refresh is based on), then `mainPorts` the current main's.
+  Under `lockRegistry` the registry is read again; `recordMainRead` records the current main and `refreshMains`
+  refreshes the others by one rule: a pre-read result is applied only to a record whose `ports` and `defaults` are still
+  the ones it was based on (`sameBase`; a record changed meanwhile, or one that appeared, is newer and the next `check`
+  refreshes it; the current main's worktree is still added), except that a current main whose record is gone (pruned
+  meanwhile) is recorded from the read. The base of the current main is taken from the registry read before its `.env`,
+  so a newer record never passes for it. The registry is saved only when `recordMainRead` or `refreshMains` reports a
+  change. A `loadCtx` or configuration error is a warning, so `check` works outside a repository. So is a lock that
+  another run holds for longer than the wait (`errLockHeld`; any other lock error, such as no permission or a read-only
+  file system, is an error): nothing is recorded or refreshed, the registry is read without the lock (safe, it is
+  replaced atomically) and reported, and the warning says the report may rest on records that refreshing would have
+  changed; a broken registry stays an error. A `mains` key is used as a directory only after `validKey` (see the
+  read-only rule above) and `isDir` (`Lstat` on the key; a link as its last element is not followed), its `.env` only
+  through `readMainEnv`. Conflict lines print only valid port numbers. Records of missing directories or invalid keys,
+  and main records that another record replaced (`replacedMain`, see the `prune` rule), are warnings (their recorded
+  ports printed as they are), never conflicts, so a deleted clone or a moved project cannot make `check` fail for ever.
+  An entry of a holder main's `worktrees` list that fails `usableDir` (prune's test) is a warning too, although it holds
+  no ports, so that `prune` removes only what `check` warns about. A conflict is fixed by the user: a worktree by `up`,
+  a main worktree by hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`).
+  Exit 1 only for a conflict (`report.finish`, shared with `status`) or an error; an error still prints the warnings
+  collected so far (`printWarnings`). A variable of a record's `defaults` that the main's `.env` sets on more than one
+  line is a warning (`warnDuplicates`, from the `.env` that `readMains` already read, so a main recorded by this run is
+  checked from the next one; the name through `cell`, never a value). `duplicateKeys` reads line by line, as `portValue`
+  does, so a line inside a multi-line quoted value counts: a documented limit, because only the warning could skip such
+  lines (it would then disagree with the port read) and a quote-aware `Set` would lose every key after an unclosed
+  quote.
 - **`prune` writes only the registry.** It removes what `check` warns about: a `worktrees` key that fails `validKey` or
   does not resolve to a directory (`staleWorktreeKey`, the `foldRegistry` rule, so an alias key of a live worktree is
   kept: it still holds that worktree's ports, and the next `up` there folds it with `migrate`, not `prune`), a `mains`
-  key that fails `usableDir` (`validKey`, then `isDir`; links are not followed, mains are recorded as real paths), and
-  entries of a kept main's `worktrees` list that fail `usableDir`. `validKey` always comes first, so an invalid key is
-  never looked at (on Windows its walk reads only the elements and links on the way, up to the first refused link). It
-  lists and asks (package `stdin`/`stdout`, `-y` skips) without the lock, then takes `lockRegistry`, reads the registry
-  again and removes only listed records that are still recorded and still unusable (with the same per-kind test), saving
-  only when something was removed; records that became unusable after the prompt are left for the next run, because the
-  user did not confirm them. It never writes `.env` or `.sail-worktree.json` and runs neither docker, sail nor git: the
-  containers, networks and volumes of a removed worktree are left alone and the output says so (`docker compose ls -a`).
-  Untrusted keys are printed with `%q` and port names through `cell`. A directory that is only out of reach for the
-  moment counts as missing. So removing the record of a project that is still in use (one on a disk that is out of reach
-  for the moment, or on Windows one run from a UNC path or through a link to one, which is not a usable key) frees its
-  ports in the registry until `up`, or for a main worktree also `check` in its project directory, records it again; a
-  port bound at that moment is still skipped by `up`'s `portFree`. The prompt lists the records first.
+  key that fails `usableDir` (`validKey`, then `isDir`; links are not followed, mains are recorded as real paths), a
+  `mains` key that another record replaced (`replacedMain`, only for a key that passes `usableDir`; main keys are never
+  folded, so without it a record that a move left behind would conflict with the new one for ever: an alias whose real
+  path is a usable key of its own, or a directory without project markers (`projectMarkers`: `.sail-worktree.json`, or
+  `artisan` and a compose file, looked at with `Lstat` only, a link counts, an error other than not-exist counts as
+  present) while a usable key that is its own real path and has markers lies strictly below it; a `realPath` failure
+  keeps the record, and a main without such a second record keeps its ports; git is not asked), and entries of a kept
+  main's `worktrees` list that fail `usableDir`. `validKey` always comes first, so an invalid key is never looked at (on
+  Windows its walk reads only the elements and links on the way, up to the first refused link). It lists and asks
+  (package `stdin`/`stdout`, `-y` skips) without the lock, then takes `lockRegistry`, reads the registry again and
+  removes only listed records that are still recorded and still unusable (with the same per-kind test), saving only when
+  something was removed; records that became unusable after the prompt are left for the next run, because the user did
+  not confirm them. A replaced main is tested again after the prompt and before the lock (`recheckReplaced`, so that the
+  lock is not held while it reads the filesystem) and under the lock only compared in the registry (`stillPrunable`: its
+  record equals the listed one, and the record that replaces it is still there). It never writes `.env` or
+  `.sail-worktree.json` and runs neither docker, sail nor git: the containers, networks and volumes of a removed
+  worktree are left alone and the output says so (`docker compose ls -a`). Untrusted keys are printed with `%q` and port
+  names through `cell`. A directory that is only out of reach for the moment counts as missing. So removing the record
+  of a project that is still in use (one on a disk that is out of reach for the moment, on Windows one run from a UNC
+  path or through a link to one, which is not a usable key, or a main whose checkout has no project markers at the
+  moment while a main record with markers lies below it: a branch without the project there, or a feature branch that
+  moved the project from `laravel/` to the root, whose `up` records the root as the counterpart) frees its ports in the
+  registry until `up`, or for a main worktree also `check` in its project directory, records it again; a port bound at
+  that moment is still skipped by `up`'s `portFree`. The prompt lists the records first.
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
@@ -218,7 +231,8 @@ These come from deliberate decisions; change them only on purpose and update the
   fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the process
   called itself: it is printed through `cell`/`jsonEscape`. The port argument is digits only, 1 to 65535. Main worktree
   rows are probed like any row that is not `running`, and count in `CONFLICT` (`portsOf`), so `ports --all` agrees with
-  `check` on conflicts, except that stale or unattributed rows count here and only give a warning in `check`. The JSON
+  `check` on conflicts, except that stale or unattributed rows, and main records that `check` finds replaced
+  (`replacedMain`; `status` counts them as other holders too), count here and only give a warning in `check`. The JSON
   fields of `ports`, `process` and `pid` included, are a public contract too.
   A recorded value that fails `validPort` (a hand-edited registry) is `host` `invalid` (`hostInvalid`, decided before
   `running` and the probe cache): never probed (binding 0 picks a random port) nor given to `lsof`, and left out of
