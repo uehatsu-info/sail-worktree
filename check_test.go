@@ -443,6 +443,69 @@ func TestCheckDoesNotRefreshARecordChangedBeforeTheLock(t *testing.T) {
 	}
 }
 
+// The current main follows the same rule as the others (#70): an up that records a newer .env while check waits for the
+// lock keeps its record, and check still adds the worktree it runs in.
+func TestCheckKeepsTheCurrentMainRecordChangedBeforeTheLock(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8090\n")
+	saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 81}},
+		Mains: map[string]MainRecord{main: mainRec(80)}})
+	betweenReadAndLock(t, func() {
+		writeFile(t, filepath.Join(main, ".env"), "APP_PORT=9000\n")
+		saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 81}},
+			Mains: map[string]MainRecord{main: mainRec(9000)}})
+	})
+	if out, err := runCheck(t); err != nil {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	reg, _ := loadRegistry()
+	if rec := reg.Mains[main]; rec.Ports["APP_PORT"] != 9000 || rec.Defaults["APP_PORT"] != 80 ||
+		len(rec.Worktrees) != 1 || rec.Worktrees[0] != wt {
+		t.Errorf("record = %+v, want APP_PORT 9000 (the record changed meanwhile) and the worktree listed", rec)
+	}
+}
+
+// A record that appeared while check waited is newer as well; one that is still the base, or that is gone (pruned
+// meanwhile), takes the read, which is then all there is to know.
+func TestCheckRecordsTheCurrentMainUnlessARecordAppeared(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		before, wait *MainRecord // nil: no record
+		want         int
+	}{
+		{"unchanged", &MainRecord{Ports: map[string]int{"APP_PORT": 80}, Defaults: map[string]int{"APP_PORT": 80}}, nil, 8090},
+		{"appeared", nil, &MainRecord{Ports: map[string]int{"APP_PORT": 9000}, Defaults: map[string]int{"APP_PORT": 80}}, 9000},
+		{"gone", &MainRecord{Ports: map[string]int{"APP_PORT": 80}, Defaults: map[string]int{"APP_PORT": 80}}, &MainRecord{}, 8090},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			main, _ := setupWorktreeRepo(t)
+			t.Chdir(main)
+			writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8090\n")
+			reg := &Registry{Mains: map[string]MainRecord{}}
+			if tc.before != nil {
+				reg.Mains[main] = *tc.before
+			}
+			saveRegistry(t, reg)
+			if tc.wait != nil {
+				betweenReadAndLock(t, func() {
+					reg := &Registry{Mains: map[string]MainRecord{}}
+					if tc.wait.Ports != nil {
+						reg.Mains[main] = *tc.wait
+					}
+					saveRegistry(t, reg)
+				})
+			}
+			if out, err := runCheck(t); err != nil {
+				t.Fatalf("err = %v\n%s", err, out)
+			}
+			got, _ := loadRegistry()
+			if p := got.Mains[main].Ports["APP_PORT"]; p != tc.want {
+				t.Errorf("APP_PORT = %d, want %d", p, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckFindsTheMainOfAWorktreeListedUnderAnAlias(t *testing.T) {
 	real, links := newLinkedDir(t, "alias")
 	main, wt2 := realTempDir(t), realTempDir(t)

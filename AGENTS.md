@@ -149,10 +149,13 @@ These come from deliberate decisions; change them only on purpose and update the
   `.sail-worktree.json`, never sources `.env`, and runs neither sail nor docker (git only through `loadCtx` in the cwd).
   No `.env` is read under the lock, so a slow drive does not keep `up` and `rm` waiting: `readMains` reads the recorded
   mains' `.env` first (from a registry read without the lock, used only for the keys and the records a refresh is based
-  on), then `mainPorts` the current main's. Under `lockRegistry` the registry is read again, `recordMain` records the
-  current main, `refreshMains` applies a pre-read result only to a record whose `ports` and `defaults` are still the
-  ones it was based on (a record changed meanwhile is newer; the next `check` refreshes it), and the registry is saved
-  only when `recordMain` or `refreshMains` reports a change. A `loadCtx` or configuration error is a warning, so `check`
+  on), then `mainPorts` the current main's. Under `lockRegistry` the registry is read again; `recordMainRead` records
+  the current main and `refreshMains` refreshes the others by one rule: a pre-read result is applied only to a record
+  whose `ports` and `defaults` are still the ones it was based on (`sameBase`; a record changed meanwhile, or one that
+  appeared, is newer and the next `check` refreshes it; the current main's worktree is still added), except that a
+  current main whose record is gone (pruned meanwhile) is recorded from the read. The base of the current main is taken
+  from the registry read before its `.env`, so a newer record never passes for it. The registry is saved only when
+  `recordMainRead` or `refreshMains` reports a change. A `loadCtx` or configuration error is a warning, so `check`
   works outside a repository. So is a lock that another run holds for longer than the wait (`errLockHeld`; any other
   lock error, such as no permission or a read-only file system, is an error): nothing is recorded or refreshed, the
   registry is read without the lock (safe, it is replaced atomically) and reported, and the warning says the report may

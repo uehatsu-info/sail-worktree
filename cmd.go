@@ -333,6 +333,24 @@ func mainPorts(dir string, vars []PortVar) (ports, defaults map[string]int, envO
 	return portsFromEnv(env, defaults), defaults, true, true
 }
 
+// mainRead is what a run read of its main worktree's .env before taking the lock (with the rule of mainPorts), and the
+// record of that main as it was before the read (basePorts, baseDefaults; baseHad false when there was none).
+type mainRead struct {
+	ports, defaults, basePorts, baseDefaults map[string]int
+	envOK, baseHad                           bool
+}
+
+// recordMainRead records m under the lock by the rule refreshMains follows: the read is applied only while the record is
+// still the one it was based on. A record that another run changed meanwhile (or that appeared) is newer and keeps its
+// ports and defaults; this relies on recordMain keeping them for ok=false, and worktree is still added. A record that
+// is gone (pruned meanwhile) is recorded from the read, which is then all there is to know. It reports whether the
+// record changed.
+func (r *Registry) recordMainRead(main, worktree string, m mainRead) bool {
+	rec, had := r.Mains[main]
+	current := !had || m.baseHad && sameBase(rec, m.basePorts, m.baseDefaults)
+	return r.recordMain(main, worktree, m.ports, m.defaults, m.envOK && current)
+}
+
 // readMainEnv reads the .env of a main worktree's project directory without following a link. env is nil when there
 // is no .env (compose then uses the defaults); ok is false when it exists but cannot be read as a regular file.
 func readMainEnv(dir string) (env *envFile, ok bool) {

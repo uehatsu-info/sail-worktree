@@ -107,8 +107,10 @@ func checkRecord(r *report) (*Registry, error) {
 		if _, ok := reg.Worktrees[cur.worktree]; ok && cur.worktree != "" {
 			wt = cur.worktree
 		}
-		changed = reg.recordMain(cur.main, wt, cur.ports, cur.defaults, cur.envOK)
-		delete(fresh, cur.main) // recordMain used a newer read of the same .env
+		base, baseHad := pre.Mains[cur.main] // pre was read before the .env, so a newer record never passes for the base
+		changed = reg.recordMainRead(cur.main, wt, mainRead{ports: cur.ports, defaults: cur.defaults, envOK: cur.envOK,
+			basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad})
+		delete(fresh, cur.main) // currentMain read the same .env after readMains
 	}
 	if refreshMains(reg, fresh) {
 		changed = true
@@ -173,7 +175,7 @@ func refreshMains(reg *Registry, fresh map[string]mainRefresh) bool {
 	changed := false
 	for k, f := range fresh {
 		rec, ok := reg.Mains[k]
-		if !ok || !maps.Equal(rec.Ports, f.basePorts) || !maps.Equal(rec.Defaults, f.baseDefaults) {
+		if !ok || !sameBase(rec, f.basePorts, f.baseDefaults) {
 			continue
 		}
 		if !maps.Equal(f.ports, rec.Ports) {
@@ -183,6 +185,12 @@ func refreshMains(reg *Registry, fresh map[string]mainRefresh) bool {
 		}
 	}
 	return changed
+}
+
+// sameBase reports whether rec still has the ports and defaults that a read before the lock was based on (all that a
+// read of a main's .env depends on).
+func sameBase(rec MainRecord, ports, defaults map[string]int) bool {
+	return maps.Equal(rec.Ports, ports) && maps.Equal(rec.Defaults, defaults)
 }
 
 // holder is one port of one main worktree or worktree.
