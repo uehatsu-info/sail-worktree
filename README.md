@@ -219,7 +219,7 @@ sail-worktree up -d
 - A project directory that resolves outside the worktree is an error. As with the compose check, a link swapped in after these checks is not caught.
 - When you run `up`, `stop` or `rm` below the project directory (for example in `laravel/app`), it prints `project directory: "<path>"` to stderr.
 - When no project directory is found, the error names the subdirectories that would be found, and the directories on the way up that have only `artisan` or only a compose file, so running a command at the worktree root tells you where to go.
-- The project name is `<main worktree name>-<worktree name>-<hash of the project directory>`. For a project at the worktree root this is the same name as before.
+- The project name is `<main worktree name>-<worktree name>-<hash of the project directory>`, where the two names are lower-cased, each run of characters other than `a-z`, `0-9`, `_` and `-` becomes one `-`, and `-` and `_` are trimmed at both ends. When nothing is left (worktree names without an ASCII letter or digit), `wt` is used instead. For a project at the worktree root this is the same name as before.
 
 ## Notes
 
@@ -265,6 +265,7 @@ Your checks and the copy are not one step, so a process writing in the worktree 
 - `up` records the main worktree's ports and no longer assigns them to a worktree. A worktree whose port a recorded main worktree (of any repository) uses gets another port on its next `up`, which prints `APP_PORT=82 (was 81, ...)`.
 - `ps` and `ports` also list main worktree records (their rows come first in `ps`), and `ports` counts them in `CONFLICT`; `status` reports a port that a main worktree record also holds. Their `--json` objects gain a `kind` field (`worktree` or `main`); the other fields keep their names and meanings, so a script that expects only worktrees should skip `"kind": "main"`.
 - On Windows, a registry entry whose path is not a drive-letter path (a UNC or device path) is no longer looked at, so `ps` and `ports` treat it as invalid, and with `--all` they no longer run git in other repositories, whose entries now show as `unattributed`; see the [Notes](#notes).
+- A worktree whose names have no ASCII letter or digit gets the project name `wt-<hash>` instead of `-<hash>`, which compose refused. Such a worktree could not start, so nothing is lost; run `up` once before `rm` or `stop` so that `.env` gets the new name. Other names are unchanged.
 
 ### v0.8.0
 
