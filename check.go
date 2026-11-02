@@ -210,6 +210,7 @@ func (h holder) String() string {
 // are not absolute clean paths) and main records that another record replaced (replacedMain) are left out with a
 // warning: up still keeps their ports free, but they cannot be in use, and a deleted clone or a moved project must not
 // make check fail for ever.
+// Entries of a main record's linked worktrees that prune removes are warned about too, although they hold no ports.
 func checkConflicts(r *report, reg *Registry) {
 	// A suggestion must avoid every port up treats as taken: alias keys and stale records included. used returns a
 	// fresh map, so suggestion can add to it.
@@ -228,6 +229,13 @@ func checkConflicts(r *report, reg *Registry) {
 		}
 		for name, p := range rec.Ports {
 			holders = append(holders, holder{main: true, dir: k, name: name, port: p})
+		}
+		// prune's test for the list entries, so that prune removes only what check warns about.
+		for _, w := range slices.Sorted(slices.Values(rec.Worktrees)) {
+			if !usableDir(w) {
+				r.warn("the record of main worktree %q lists linked worktree %q, which is not a usable local directory "+
+					"(the entry holds no ports; prune removes it)", k, w)
+			}
 		}
 	}
 	ofMain := map[string]string{} // keyed by the folded path, as view is, so that an alias still matches

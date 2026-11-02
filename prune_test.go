@@ -544,3 +544,54 @@ func TestPruneKeepsAReplacedMainThatChangedBeforeTheLock(t *testing.T) {
 		})
 	}
 }
+
+// check warns about exactly the linked worktree entries that prune removes (#78).
+func TestCheckWarnsAboutTheLinkedEntriesPruneRemoves(t *testing.T) {
+	isolatedRegistry(t)
+	_, liveMain, base := staleRegistry(t)
+	out, _ := runCheck(t)
+	var warned []string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, " lists linked worktree ") {
+			warned = append(warned, l)
+		}
+	}
+	want := []string{filepath.Join(base, "gone"), "rel"}
+	if len(warned) != len(want) {
+		t.Fatalf("warnings about list entries = %q, want %d\n%s", warned, len(want), out)
+	}
+	for i, w := range want {
+		line := fmt.Sprintf("the record of main worktree %q lists linked worktree %q, which is not a usable local "+
+			"directory (the entry holds no ports; prune removes it)", liveMain, w)
+		if !strings.Contains(warned[i], line) {
+			t.Errorf("warning %d = %q, want %q", i, warned[i], line)
+		}
+	}
+	out, err := runPrune(t, strings.NewReader(""), "-y")
+	if err != nil || !strings.Contains(out, fmt.Sprintf("%d linked worktree entr(ies)", len(want))) {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	for _, w := range want {
+		if !strings.Contains(out, fmt.Sprintf("linked worktree %q in the record of main worktree %q", w, liveMain)) {
+			t.Errorf("prune did not list %q:\n%s", w, out)
+		}
+	}
+}
+
+// The list of a replaced main record leaves with it, so check does not warn about its entries one by one either.
+func TestCheckDoesNotWarnAboutTheListOfAReplacedMain(t *testing.T) {
+	isolatedRegistry(t)
+	root, sub := movedRoot(t)
+	gone := filepath.Join(root, "gone-wt")
+	rec := mainRec(80)
+	rec.Worktrees = []string{gone}
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{root: rec, sub: mainRec(81)}})
+	out, err := runCheck(t)
+	if err != nil || strings.Contains(out, " lists linked worktree ") {
+		t.Errorf("err = %v\n%s", err, out)
+	}
+	out, err = runPrune(t, strings.NewReader(""), "-y")
+	if err != nil || !strings.Contains(out, "1 main worktree record(s), 0 linked worktree entr(ies)") {
+		t.Errorf("err = %v\n%s", err, out)
+	}
+}

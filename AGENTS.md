@@ -161,14 +161,15 @@ These come from deliberate decisions; change them only on purpose and update the
   element is not followed), its `.env` only through `readMainEnv`. Conflict lines print only valid port numbers. Records
   of missing directories or invalid keys, and main records that another record replaced (`replacedMain`, see the `prune`
   rule), are warnings (their recorded ports printed as they are), never conflicts, so a deleted clone or a moved project
-  cannot make `check` fail for ever. A conflict is fixed by the user: a worktree by `up`, a main worktree by hand
-  (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`). Exit 1 only for a conflict
-  (`report.finish`, shared with `status`) or an error. A variable of a record's `defaults` that the main's `.env` sets
-  on more than one line is a warning (`warnDuplicates`, from the `.env` that `readMains` already read, so a main
-  recorded by this run is checked from the next one; the name through `cell`, never a value). `duplicateKeys` reads line
-  by line, as `portValue` does, so a line inside a multi-line quoted value counts: a documented limit, because only the
-  warning could skip such lines (it would then disagree with the port read) and a quote-aware `Set` would lose every key
-  after an unclosed quote.
+  cannot make `check` fail for ever. An entry of a holder main's `worktrees` list that fails `usableDir` (prune's test)
+  is a warning too, although it holds no ports, so that `prune` removes only what `check` warns about. A conflict is
+  fixed by the user: a worktree by `up`, a main worktree by hand (`suggestion` only prints a value; `VAR=N` is shown
+  only for a name matching `shellName`). Exit 1 only for a conflict (`report.finish`, shared with `status`) or an error.
+  A variable of a record's `defaults` that the main's `.env` sets on more than one line is a warning (`warnDuplicates`,
+  from the `.env` that `readMains` already read, so a main recorded by this run is checked from the next one; the name
+  through `cell`, never a value). `duplicateKeys` reads line by line, as `portValue` does, so a line inside a multi-line
+  quoted value counts: a documented limit, because only the warning could skip such lines (it would then disagree with
+  the port read) and a quote-aware `Set` would lose every key after an unclosed quote.
 - **`prune` writes only the registry.** It removes what `check` warns about: a `worktrees` key that fails `validKey` or
   does not resolve to a directory (`staleWorktreeKey`, the `foldRegistry` rule, so an alias key of a live worktree is
   kept: it still holds that worktree's ports, and the next `up` there folds it with `migrate`, not `prune`), a `mains`
