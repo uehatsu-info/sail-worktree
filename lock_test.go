@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -100,6 +101,9 @@ func TestLockTimeoutNamesTheLockFileAndSaysItOnce(t *testing.T) {
 	_, err := lockRegistry()
 	if err == nil {
 		t.Fatal("a held lock was taken")
+	}
+	if !errors.Is(err, errLockHeld) {
+		t.Errorf("the timeout does not wrap errLockHeld (check would fail instead of warning): %v", err)
 	}
 	for _, want := range []string{"locked by another sail-worktree run", "pid 4242", strconv.Quote(p), "delete it"} {
 		if !strings.Contains(err.Error(), want) {
