@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -401,6 +402,8 @@ func TestLoadConfigValidatesPortVars(t *testing.T) {
 		{`{"name":"SESSION_COOKIE","default":80}`, `port_vars[0] ("SESSION_COOKIE"): name in .sail-worktree.json is reserved: up writes it`},
 		{`{"name":"APP_URL","default":80}`, `port_vars[0] ("APP_URL"): name in .sail-worktree.json is reserved: up writes it`},
 		{`{"name":"SANCTUM_STATEFUL_DOMAINS","default":80}`, `port_vars[0] ("SANCTUM_STATEFUL_DOMAINS"): name in .sail-worktree.json is reserved: up writes it`},
+		{`{"name":"APP_PORT","default":80},{"name":"APP_PORT","default":81}`, `port_vars[1] ("APP_PORT"): name in .sail-worktree.json repeats port_vars[0] ("APP_PORT") (names are compared case-insensitively)`},
+		{`{"name":"APP_PORT","default":80},{"name":"DB_PORT","default":3306},{"name":"app_Port","default":80}`, `port_vars[2] ("app_Port"): name in .sail-worktree.json repeats port_vars[0] ("APP_PORT")`},
 	} {
 		writeFile(t, cfg, `{"compose":"compose.yaml","port_vars":[`+tc.vars+`]}`)
 		if _, err := loadConfig(dir); err == nil || !strings.HasPrefix(err.Error(), tc.want) {
@@ -408,8 +411,8 @@ func TestLoadConfigValidatesPortVars(t *testing.T) {
 		}
 	}
 	// A hand-added variable need not follow the detection rule; the bounds themselves are ports.
-	writeFile(t, cfg, `{"compose":"compose.yaml","port_vars":[{"name":"vite_port","default":1},{"name":"_X","default":65535},{"name":"PATH_PORT","default":2},{"name":"APP_URL_PORT","default":3}]}`)
-	if c, err := loadConfig(dir); err != nil || len(c.PortVars) != 4 {
+	writeFile(t, cfg, `{"compose":"compose.yaml","port_vars":[{"name":"vite_port","default":1},{"name":"_X","default":65535},{"name":"PATH_PORT","default":2},{"name":"APP_URL_PORT","default":3},{"name":"APP_PORT","default":80},{"name":"APP_PORT_2","default":80}]}`)
+	if c, err := loadConfig(dir); err != nil || len(c.PortVars) != 6 {
 		t.Errorf("valid port_vars: %+v, %v", c, err)
 	}
 }
@@ -445,6 +448,65 @@ func TestDetectionRefusesAReservedPortVariable(t *testing.T) {
 	writeFile(t, filepath.Join(wt, "compose.yaml"), "services:\n  app:\n    ports:\n      - '${COMPOSE_X_PORT:-81}:81'\n")
 	if _, err := detectConfig(wt, "compose.yaml"); err == nil || !strings.Contains(err.Error(), `"COMPOSE_X_PORT" in "compose.yaml" cannot be used`) {
 		t.Errorf("COMPOSE_X_PORT: error = %v", err)
+	}
+}
+
+// A repeated port variable is a configuration error like the others: up, stop and rm fail before running anything,
+// status reports it and check only warns.
+func TestRepeatedPortVariableIsAConfigurationError(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	cfg := `{"compose":"compose.yaml","port_vars":[{"name":"APP_PORT","default":80},{"name":"app_port","default":80}]}`
+	writeFile(t, filepath.Join(wt, configName), cfg)
+	want := `port_vars[1] ("app_port"): name in .sail-worktree.json repeats port_vars[0] ("APP_PORT")`
+	for name, run := range map[string]func() error{
+		"up":   func() error { return cmdUp(nil) },
+		"stop": func() error { return cmdStop(nil) },
+		"rm":   func() error { return cmdRm([]string{"-y"}) },
+	} {
+		calls := captureRunner(t)
+		if err := run(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: error = %v", name, err)
+		}
+		if len(*calls) != 0 {
+			t.Errorf("%s ran %v", name, *calls)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
+		t.Errorf("a command wrote .env: %v", err)
+	}
+
+	writeFile(t, filepath.Join(wt, ".env"), "APP_PORT=81\n")
+	writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}})
+	probePortFake(t, true)
+	out, _, err := runStatus(t)
+	if err == nil || !strings.Contains(out, "configuration: "+want) {
+		t.Errorf("status: err = %v\n%s", err, out)
+	}
+
+	writeFile(t, filepath.Join(main, configName), cfg)
+	t.Chdir(main)
+	out, err = runCheck(t)
+	if err != nil || !strings.Contains(out, "no main worktree was recorded: "+want) {
+		t.Errorf("check: err = %v\n%s", err, out)
+	}
+}
+
+// Detection yields each variable once, keeping the first valid default, so init never writes a file that
+// validatePortVars refuses as repeated.
+func TestDetectionListsARepeatedVariableOnce(t *testing.T) {
+	_, wt := setupDetectedRepo(t, "")
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services:\n  app:\n    ports:\n      - '${APP_PORT:-80}:80'\n      - '${APP_PORT:-81}:8080'\n      - '${VITE_PORT:-0}:1'\n      - '${VITE_PORT:-5173}:5173'\n      - '${VITE_PORT:-5174}:5174'\n")
+	captureStdoutFile(t)
+	if err := cmdInit(nil); err != nil {
+		t.Fatal(err)
+	}
+	c, err := loadConfig(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []PortVar{{"APP_PORT", 80}, {"VITE_PORT", 5173}}
+	if !slices.Equal(c.PortVars, want) {
+		t.Errorf("port_vars = %v, want %v", c.PortVars, want)
 	}
 }
 
