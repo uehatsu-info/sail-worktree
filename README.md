@@ -59,7 +59,7 @@ sail-worktree up -d
 
 - The compose file and the port variables come from `.sail-worktree.json` if there is one; otherwise they are detected from the compose file on every run (only `- ...` list lines with a host port mapping such as `'${APP_PORT:-80}:80'` count, so a usual `environment:` entry such as `- DB_PORT=${DB_PORT:-3306}` is not rewritten). Without the file, a branch whose compose file adds or removes a port variable gets its ports assigned on the next `up`, or released from the registry (the old line in `.env` stays).
 - If `.env` does not exist, it is copied from the main worktree's `.env` (or `.env.example` if that is missing).
-- In a bare repository with linked worktrees (`git clone --bare`, then `git worktree add`), there is no main worktree checkout: every worktree is a linked one, `.env` is copied from the worktree's own `.env.example` (a regular file only, not a link; without one, create `.env` first), and nothing is recorded as a main worktree (so no worktree uses the default ports).
+- In a bare repository with linked worktrees (`git clone --bare`, then `git worktree add`), there is no main worktree checkout: every worktree is a linked one, `.env` is copied from the worktree's own `.env.example` (a regular file only, not a link; without one, create `.env` first), and nothing is recorded as a main worktree (so no worktree uses the default ports). `status` says that the repository is bare instead of naming a main worktree.
 - Nothing is written when `vendor/bin/sail` is missing.
 - Each port variable gets a free port. The search starts at the default value + 1, leaving the default value to the main worktree.
 - Ports already assigned to other worktrees and ports in use on the host are skipped.

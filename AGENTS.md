@@ -277,8 +277,9 @@ These come from deliberate decisions; change them only on purpose and update the
   - `isMain` decides on the worktree roots, with the project directories compared as well (defense in depth).
   - A bare first entry of `git worktree list` (`ctx.bare`) means there is no main worktree checkout: `mainTop` is the
     bare directory (it still gives the project name's slug), `ctx.main` is empty and `counterpart` is not called,
-    `isMain` is false in every worktree, `up` and `check` record no main, and `up` copies `.env` from the worktree's own
-    `.env.example` (`readOwnEnvExample`: a regular file only, since it comes from the branch checked out there).
+    `isMain` is false in every worktree, `up` and `check` record no main, `status` says the repository is bare instead
+    of showing `mainTop` as the main worktree, and `up` copies `.env` from the worktree's own `.env.example`
+    (`readOwnEnvExample`: a regular file only, since it comes from the branch checked out there).
   - The main worktree's counterpart (`counterpart`) is the same relative path there. It may not exist, but it must not
     resolve outside the main worktree, because `up` copies `.env` from it and Sail sources it. Only the directory is
     contained: the `.env` file in it may still be a link, as for a root project. A missing path is checked only
