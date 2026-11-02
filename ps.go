@@ -33,7 +33,7 @@ type entry struct {
 const (
 	stateNone         = "-"
 	stateStale        = "stale"        // the worktree or directory is gone, or the key is invalid
-	stateUnattributed = "unattributed" // the directory exists but git does not place it in a listed worktree
+	stateUnattributed = "unattributed" // the directory exists but no listed worktree holds it
 	// docker's view of the compose project.
 	stateRunning = "running" // at least one container runs
 	stateStopped = "stopped" // containers exist, none runs
@@ -146,8 +146,14 @@ func gitListEnv() []string {
 func anyPath(string) bool { return true }
 
 // registryPathOK decides which worktree paths of a repository found through the registry may be used as paths: they
-// come from that repository's metadata, as untrusted as the registry (replaceable in tests).
+// come from that repository's metadata, as untrusted as the registry (replaceable in tests). Not reached on Windows,
+// where gitInRegistryDirs is off; kept for the other systems.
 var registryPathOK = validKey
+
+// gitInRegistryDirs tells whether --all (ps and ports) runs git in the directories of other repositories. Not on
+// Windows: git itself looks at paths from that repository's metadata, and a UNC or device path there can open a network
+// connection that sends the user's credentials (replaceable in tests).
+var gitInRegistryDirs = runtime.GOOS != "windows"
 
 // listWorktrees lists the worktrees of the repository that contains dir (the first one is the main worktree), keeping
 // only the paths usable accepts. Only `worktree list` is used, with fsmonitor off, so that a repository's own
@@ -272,7 +278,7 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 			ports = map[string]int{}
 		}
 		ri, wi, ok := attribute(key, repos)
-		if !ok && all && validKey(key) {
+		if !ok && all && validKey(key) && gitInRegistryDirs {
 			// Another repository: ask git in the entry's own directory (only if it still exists).
 			if fi, err := os.Stat(key); err == nil && fi.IsDir() {
 				if l, err := listWorktrees(key, registryPathOK); err == nil && len(l) > 0 {

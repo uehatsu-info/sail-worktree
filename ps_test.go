@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -229,6 +230,7 @@ func TestFoldRegistry(t *testing.T) {
 }
 
 func TestPsListsTheCurrentRepository(t *testing.T) {
+	withGitInRegistryDirs(t, true)
 	main, wt := setupWorktreeRepo(t)
 	otherMain, otherWt := newRepoWithWorktree(t, realTempDir(t), "other", "x")
 	_ = otherMain
@@ -558,6 +560,7 @@ func TestPsJSONEscapesFormatCharacters(t *testing.T) {
 }
 
 func TestPsAllAttributesOtherRepositoriesDespiteGitDir(t *testing.T) {
+	withGitInRegistryDirs(t, true)
 	_, wt := setupWorktreeRepo(t)
 	_, otherWt := newRepoWithWorktree(t, realTempDir(t), "other", "x")
 	writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}, otherWt: {"APP_PORT": 82}})
@@ -839,6 +842,7 @@ func TestParseWorktreeListSkipsRefusedPaths(t *testing.T) {
 }
 
 func TestPsAllFiltersWorktreePathsOfOtherRepositories(t *testing.T) {
+	withGitInRegistryDirs(t, true)
 	main, wt := setupWorktreeRepo(t)
 	otherMain, otherWt := newRepoWithWorktree(t, realTempDir(t), "other", "x")
 	writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}, otherWt: {"APP_PORT": 82}})
@@ -874,5 +878,51 @@ func TestPsAllFiltersWorktreePathsOfOtherRepositories(t *testing.T) {
 	registryPathOK = func(p string) bool { return validKey(p) && p != otherWt }
 	if e := other(); e.State != stateUnattributed || e.Worktree != "" {
 		t.Errorf("an entry of a refused linked worktree is attributed: %+v", e)
+	}
+}
+
+// withGitInRegistryDirs sets whether ps --all runs git in other repositories' directories (off by default on Windows).
+func withGitInRegistryDirs(t *testing.T, on bool) {
+	t.Helper()
+	old := gitInRegistryDirs
+	gitInRegistryDirs = on
+	t.Cleanup(func() { gitInRegistryDirs = old })
+}
+
+func TestGitInRegistryDirsDefaultsOffOnlyOnWindows(t *testing.T) {
+	if gitInRegistryDirs != (runtime.GOOS != "windows") {
+		t.Errorf("gitInRegistryDirs = %v on %s", gitInRegistryDirs, runtime.GOOS)
+	}
+}
+
+func TestPsAllRunsGitInOtherRepositoriesOnlyWhenAllowed(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	_, otherWt := newRepoWithWorktree(t, realTempDir(t), "other", "x")
+	writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}, otherWt: {"APP_PORT": 82}})
+	asked := 0
+	old := registryPathOK
+	registryPathOK = func(p string) bool { asked++; return validKey(p) }
+	t.Cleanup(func() { registryPathOK = old })
+	other := func() entry {
+		t.Helper()
+		for _, e := range psJSON(t, "--all") {
+			if e.Dir == otherWt {
+				return e
+			}
+		}
+		t.Fatalf("no entry for %q", otherWt)
+		return entry{}
+	}
+
+	// With git allowed the same fixture is attributed, so the "off" half below cannot pass on a broken fixture.
+	withGitInRegistryDirs(t, true)
+	if e := other(); asked == 0 || e.Worktree != "other-x" {
+		t.Fatalf("with git: asked=%d entry=%+v", asked, e)
+	}
+	// registryPathOK sees every path of a listing git produced there, so it is not asked when git does not run.
+	asked = 0
+	withGitInRegistryDirs(t, false)
+	if e := other(); asked != 0 || e.State != stateUnattributed || e.Worktree != "" || e.Ports["APP_PORT"] != 82 {
+		t.Errorf("without git: asked=%d entry=%+v", asked, e)
 	}
 }
