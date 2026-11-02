@@ -167,7 +167,8 @@ These come from deliberate decisions; change them only on purpose and update the
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
   `check` record it again. Ports follow one rule (`portsFromEnv`): a valid value in the main's `.env`, the default when
   the key is absent or empty or there is no `.env`, nothing for an invalid value. The value is read with `portValue`
-  (quotes, inline comments), as compose and Sail's bash do; `Get` keeps comments, because `up` writes its result back. A
+  (quotes, inline comments, the last line of a duplicated key), as compose and Sail's bash do; `Get` keeps comments
+  and reads the first line, because `up` writes its result back and collapses duplicates to the first line. A
   default counts only if it is 1 to 65535 (`validPort`), so a hand-edited recorded default outside that reserves nothing
   (`loadConfig` already refuses one in the configuration; the check stays for the registry). A main directory that does
   not exist is never recorded (`counterpart` may return a lexical path). A `.env` that is a link or not a regular file
@@ -306,7 +307,10 @@ These come from deliberate decisions; change them only on purpose and update the
   including on Windows forms such as `C:x`, `\\srv\x` and `/x`. That check only reads the string; `rm` also checks the
   real path with `composeInsideProject` (see "`rm` is guarded"). Each `port_vars` entry must have a `shellName` name
   and a `validPort` default (`validatePortVars`), because `up` writes `NAME=port` into `.env`; the names are not held
-  to the detection rule, so a hand-added variable may use any name compose does (detected entries always pass).
+  to the detection rule, so a hand-added variable may use any name compose does. A name `reservedPortVar` lists (keys
+  `up` writes, `COMPOSE_*`, `SAIL_FILES`, `DOCKER_*`, a few shell and Sail names; case-insensitive, as `cleanEnv`
+  drops them) is refused, by `detectConfig` too, so `init` never writes a file that `loadConfig` refuses. Keep the
+  list short, and add a key there when `up` starts to write it.
 
 ## Testing notes
 

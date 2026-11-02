@@ -390,3 +390,32 @@ func TestPortsFromEnvIgnoresInvalidDefaults(t *testing.T) {
 		t.Errorf("without .env: %v", got)
 	}
 }
+
+func TestPortsFromEnvReadsTheLastLineOfAKey(t *testing.T) {
+	defaults := map[string]int{"APP_PORT": 80}
+	for env, want := range map[string]int{ // 0: nothing reserved
+		"APP_PORT=8080\nAPP_PORT=8081\n":        8081,
+		"export APP_PORT=8080\nAPP_PORT=8082\n": 8082,
+		"APP_PORT=8080\nexport APP_PORT=8083\n": 8083,
+		"APP_PORT=8080\nAPP_PORT=\n":            80, // the last line is empty: the compose default
+		"APP_PORT=8080\n#APP_PORT=9\n":          8080,
+		"APP_PORT=8080\nAPP_PORT=abc\n":         0,
+	} {
+		e, err := parseEnv(strings.NewReader(env))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := portsFromEnv(e, defaults)
+		if p, ok := got["APP_PORT"]; (want == 0 && ok) || (want != 0 && p != want) {
+			t.Errorf("%q: got %v, want %d", env, got, want)
+		}
+	}
+	// Get, which up writes back to .env, still reads the first line.
+	e, err := parseEnv(strings.NewReader("APP_PORT=8080\nAPP_PORT=8081\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := e.Get("APP_PORT"); v != "8080" {
+		t.Errorf("Get = %q", v)
+	}
+}
