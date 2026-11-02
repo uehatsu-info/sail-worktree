@@ -143,8 +143,8 @@ PORT  VARIABLE         WORKTREE  SUBDIR  STATE    HOST                       CON
 - `STATE` is the one `ps` shows (including `stale` for entries whose worktree is gone, which still hold their ports); `--no-docker` does not ask docker, so a running project's own ports are probed too and may show as `unavailable`; the same happens on Windows with `--all` for other repositories' projects, whose entries are `unattributed`.
 - Main worktrees' ports are listed too (`WORKTREE` is marked `(main)`, `STATE` is `-` as in `ps`). They are probed like any other port, so a running main worktree's port shows as `unavailable`.
 - `CONFLICT` is `yes` when the port is recorded more than once among the listed rows: by two entries (a main worktree included), or by two variables of one entry. `up` never assigns the same port twice, so between worktrees this points at a hand-edited registry or an alias that was not merged; a worktree on a main worktree's port is moved by its next `up`. With `--all`, every recorded entry is compared, as in `check` (which leaves out records of directories that are gone).
-- With `PORT` (digits only, 1 to 65535) only that port is shown; if nothing records it (also when only another repository does, without `--all`), one row without a variable (empty strings in `--json`) still tells whether the host can bind it.
-- `--json` prints an array of objects with the fields `kind` (`worktree` or `main`), `port`, `variable`, `worktree`, `subdir`, `state`, `host` (the three values above), `process` (empty when unknown), `pid` (0 when unknown) and `conflict`.
+- With `PORT` (digits only, 1 to 65535) only that port is shown; if nothing records it (also when only another repository does, without `--all`), one row without a variable still tells whether the host can bind it (`STATE` `-`; in `--json`, `kind` is `none`, `state` is `-` and `variable`, `worktree` and `subdir` are empty).
+- `--json` prints an array of objects with the fields `kind` (`worktree`, `main`, or `none` for the row of a port nothing records), `port`, `variable`, `worktree`, `subdir`, `state`, `host` (the three values above), `process` (empty when unknown), `pid` (0 when unknown) and `conflict`.
 
 ### `sail-worktree check`
 
@@ -219,7 +219,7 @@ sail-worktree up -d
 - A project directory that resolves outside the worktree is an error. As with the compose check, a link swapped in after these checks is not caught.
 - When you run `up`, `stop` or `rm` below the project directory (for example in `laravel/app`), it prints `project directory: "<path>"` to stderr.
 - When no project directory is found, the error names the subdirectories that would be found, and the directories on the way up that have only `artisan` or only a compose file, so running a command at the worktree root tells you where to go.
-- The project name is `<main worktree name>-<worktree name>-<hash of the project directory>`. For a project at the worktree root this is the same name as before.
+- The project name is `<main worktree name>-<worktree name>-<hash of the project directory>`, where the two names are lower-cased, each run of characters other than `a-z`, `0-9`, `_` and `-` becomes one `-`, and `-` and `_` are trimmed at both ends. When nothing is left (worktree names without an ASCII letter or digit), `wt` is used instead. For a project at the worktree root this is the same name as before.
 
 ## Notes
 
@@ -263,9 +263,11 @@ Your checks and the copy are not one step, so a process writing in the worktree 
 - New command `prune` (see [`prune`](#sail-worktree-prune--y)). It removes the registry records of directories that no longer exist, which `check` warns about; before, the registry had to be edited by hand.
 - `registry.json` has a new `mains` section with the main worktrees' ports. `worktrees` is unchanged. An older version that saves the registry (its `up` or `rm`) drops `mains`; the next `up` or `check` records it again.
 - `up` records the main worktree's ports and no longer assigns them to a worktree. A worktree whose port a recorded main worktree (of any repository) uses gets another port on its next `up`, which prints `APP_PORT=82 (was 81, ...)`.
-- `ps` and `ports` also list main worktree records (their rows come first in `ps`), and `ports` counts them in `CONFLICT`; `status` reports a port that a main worktree record also holds. Their `--json` objects gain a `kind` field (`worktree` or `main`); the other fields keep their names and meanings, so a script that expects only worktrees should skip `"kind": "main"`.
+- `ps` and `ports` also list main worktree records (their rows come first in `ps`), and `ports` counts them in `CONFLICT`; `status` reports a port that a main worktree record also holds. Their `--json` objects gain a `kind` field (`worktree` or `main`, and in `ports PORT` `none` for the row of a port nothing records, whose `state` is now `-` instead of empty); the other fields keep their names and meanings, so a script that expects only worktrees should keep only `"kind": "worktree"`.
 - A `.sail-worktree.json` whose `port_vars` has a `name` that is not a shell variable name, or a `default` that is missing or outside 1 to 65535, is refused: `up`, `stop` and `rm` fail, `status` reports a problem and `check` warns (before, `up` could write other lines into `.env` or assign port 1). Fix the entry by hand, or run `init`, which replaces the file with what it detects.
 - On Windows, a registry entry whose path is not a drive-letter path (a UNC or device path) is no longer looked at, so `ps` and `ports` treat it as invalid, and with `--all` they no longer run git in other repositories, whose entries now show as `unattributed`; see the [Notes](#notes).
+- A worktree whose names have no ASCII letter or digit gets the project name `wt-<hash>` instead of `-<hash>`, which compose refused. Such a worktree could not start, so nothing is lost; run `up` once before `rm` or `stop` so that `.env` gets the new name. Other names are unchanged.
+- `init` refuses arguments: `init --help` (or `-h`) prints the usage, and any other argument is an error. Before, `init` ignored them and rewrote `.sail-worktree.json`.
 
 ### v0.8.0
 

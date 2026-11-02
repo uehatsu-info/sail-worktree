@@ -303,13 +303,21 @@ func statusAppURL(r *report, env *envFile, vars []PortVar) {
 	}
 	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", "" // may hold secrets
 	r.line("APP_URL:           %q", u.String())
-	appPort := 0 // up rewrites APP_URL with the APP_PORT it assigned; an invalid value is reported with the ports
+	// up rewrites APP_URL with the APP_PORT it assigned. An invalid value is reported with the ports and must not be
+	// echoed here.
+	configured := false
 	for _, v := range vars {
-		if s, ok := env.Get("APP_PORT"); v.Name == "APP_PORT" && ok {
-			appPort, _ = parsePort(s)
-		}
+		configured = configured || v.Name == "APP_PORT"
 	}
-	if appPort == 0 {
+	if !configured {
+		return
+	}
+	s, ok := env.Get("APP_PORT")
+	if !ok {
+		return
+	}
+	appPort, ok := parsePort(s)
+	if !ok {
 		return
 	}
 	if u.Port() != strconv.Itoa(appPort) {

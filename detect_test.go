@@ -309,7 +309,7 @@ func TestInitWritesIntoTheNearestProject(t *testing.T) {
 	writeFile(t, filepath.Join(nested, artisanName), "x\n")
 	writeFile(t, filepath.Join(nested, "compose.yaml"), detectCompose)
 	t.Chdir(nested)
-	if err := cmdInit(); err != nil {
+	if err := cmdInit(nil); err != nil {
 		t.Fatal(err)
 	}
 	readConfigAt(t, nested)
@@ -323,7 +323,7 @@ func TestInitWritesIntoTheNearestProject(t *testing.T) {
 	dev := filepath.Join(wt, ".devcontainer")
 	writeFile(t, filepath.Join(dev, "docker-compose.yml"), detectCompose)
 	t.Chdir(dev)
-	if err := cmdInit(); err != nil {
+	if err := cmdInit(nil); err != nil {
 		t.Fatal(err)
 	}
 	readConfigAt(t, wt)
@@ -337,7 +337,7 @@ func TestInitUpdatesAndKeepsACustomCompose(t *testing.T) {
 	writeFile(t, filepath.Join(wt, "docker", "compose.dev.yml"), detectCompose)
 	writeFile(t, filepath.Join(wt, configName), `{"compose":"docker/compose.dev.yml","port_vars":[]}`)
 	out := captureStdoutFile(t)
-	if err := cmdInit(); err != nil {
+	if err := cmdInit(nil); err != nil {
 		t.Fatal(err)
 	}
 	c := readConfigAt(t, wt)
@@ -356,12 +356,12 @@ func TestInitWithAnUnusableComposeValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	captureStdoutFile(t)
-	if err := cmdInit(); err == nil || !strings.Contains(err.Error(), "no compose file (compose.yaml") {
+	if err := cmdInit(nil); err == nil || !strings.Contains(err.Error(), "no compose file (compose.yaml") {
 		t.Errorf("error = %v", err)
 	}
 	// With a standard name present, init falls back to it.
 	writeFile(t, filepath.Join(wt, "compose.yaml"), detectCompose)
-	if err := cmdInit(); err != nil {
+	if err := cmdInit(nil); err != nil {
 		t.Fatal(err)
 	}
 	if c := readConfigAt(t, wt); c.Compose != "compose.yaml" {

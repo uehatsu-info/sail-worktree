@@ -52,7 +52,7 @@ func main() {
 	args := os.Args[2:]
 	switch os.Args[1] {
 	case "init":
-		err = cmdInit()
+		err = cmdInit(args)
 	case "up":
 		err = cmdUp(args)
 	case "stop":

@@ -24,7 +24,15 @@ import (
 
 func cwd() (string, error) { return os.Getwd() }
 
-func cmdInit() error {
+func cmdInit(args []string) error {
+	// init replaces .sail-worktree.json, so a request for help or a mistyped option must not run it.
+	if len(args) > 0 {
+		if args[0] == "-h" || args[0] == "--help" {
+			fmt.Fprint(stdout, usage)
+			return nil
+		}
+		return fmt.Errorf("unknown argument: %s", args[0])
+	}
 	dir, err := cwd()
 	if err != nil {
 		return err
@@ -150,12 +158,21 @@ func (c *ctx) isMain() bool { return c.wtTop == c.mainTop || c.root == c.main }
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9_-]+`)
 
+// fallbackSlug replaces a slug that is empty after trimming (worktree names without an ASCII letter or digit):
+// compose refuses a project name that does not start with [a-z0-9], such as "-<hash>".
+const fallbackSlug = "wt"
+
 // projectName is the compose project name: a slug of the two worktree names and a hash of the project directory.
-// For a project at the worktree root (root == wtTop) it equals the name older versions computed, so rm keeps working.
+// For a project at the worktree root (root == wtTop) it equals the name older versions computed, so rm keeps working;
+// only an empty slug, which gave a name compose refused, is replaced.
 func projectName(mainTop, wtTop, root string) string {
 	sum := sha1.Sum([]byte(root))
 	slug := nonSlug.ReplaceAllString(strings.ToLower(filepath.Base(mainTop)+"-"+filepath.Base(wtTop)), "-")
-	return strings.Trim(slug, "-_") + "-" + hex.EncodeToString(sum[:])[:6]
+	slug = strings.Trim(slug, "-_")
+	if slug == "" {
+		slug = fallbackSlug
+	}
+	return slug + "-" + hex.EncodeToString(sum[:])[:6]
 }
 
 func (c *ctx) projectName() string { return projectName(c.mainTop, c.wtTop, c.root) }

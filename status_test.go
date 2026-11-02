@@ -365,6 +365,23 @@ func TestStatusNeverEchoesInvalidPortValues(t *testing.T) {
 	}
 }
 
+func TestStatusSkipsAppURLCheckForAnInvalidAppPort(t *testing.T) {
+	for _, bad := range []string{"99999", "-1", "0"} {
+		t.Run(bad, func(t *testing.T) {
+			_, wt := statusSetup(t, "")
+			setEnv(t, wt, "APP_PORT", bad)
+			out, errOut, err := runStatus(t)
+			if err == nil || !strings.Contains(out, "APP_PORT in .env is not a port number") {
+				t.Fatalf("err = %v\n%s", err, out)
+			}
+			if strings.Contains(out+errOut, "does not use APP_PORT") || strings.Contains(out+errOut, "APP_PORT "+bad) ||
+				strings.Contains(out+errOut, "="+bad) {
+				t.Errorf("the invalid value took part in the APP_URL check:\n%s%s", out, errOut)
+			}
+		})
+	}
+}
+
 func TestStatusHidesAppURLQueryAndFragment(t *testing.T) {
 	_, wt := statusSetup(t, "")
 	setEnv(t, wt, "APP_URL", "http://localhost:9000/?token="+statusSecret+"#"+statusSecret)

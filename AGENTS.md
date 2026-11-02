@@ -212,7 +212,8 @@ These come from deliberate decisions; change them only on purpose and update the
     back to a parent.
   - The project name is `projectName(mainTop, wtTop, root)`: the slug comes from the two worktree names and the hash
     from the project directory, so a project at the root keeps the name older versions wrote (a test pins the old
-    formula). Production code calls `ctx.projectName()`.
+    formula). Only a slug that is empty after trimming becomes `fallbackSlug` (`wt`), because compose refuses a name
+    that does not start with `[a-z0-9]`. Production code calls `ctx.projectName()`.
   - `isMain` decides on the worktree roots, with the project directories compared as well (defense in depth).
   - The main worktree's counterpart (`counterpart`) is the same relative path there. It may not exist, but it must not
     resolve outside the main worktree, because `up` copies `.env` from it and Sail sources it. Only the directory is
