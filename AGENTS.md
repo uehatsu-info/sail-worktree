@@ -129,7 +129,10 @@ These come from deliberate decisions; change them only on purpose and update the
   names and meanings. `status` reuses `checkOwnEnv`, `upOverrideKeys`, `projectName` and `addStatefulDomain` (on a copy
   of `.env`) instead of re-implementing them, prints only an allow-list of facts (never other `.env` values, and not
   even an invalid port value, because a port variable name may be any key; `APP_URL` without credentials, query and
-  fragment), never reads a symlinked `.env`, and exits 1 after the report when it found a problem (warnings do not).
+  fragment), never reads a symlinked `.env`, and exits 1 after the report when it found a problem (warnings do not). A
+  port variable that the worktree's `.env` sets on more than one line is a warning (`statusDuplicates`, through
+  `duplicateKeys`; the name, never a value; none when the configuration is broken, as there are no names then; the
+  multi-line limit of the `check` bullet applies).
 - **`check` writes only the registry.** It records the current repository's main worktree, if it runs in one
   (`currentMain`, `checkRecord`), refreshes every recorded main from its `.env` (`refreshMains`, also outside a
   repository) and then reports conflicts over the whole registry. The refresh exists because `up` avoids only recorded
@@ -152,7 +155,10 @@ These come from deliberate decisions; change them only on purpose and update the
   by hand (`suggestion` only prints a value; `VAR=N` is shown only for a name matching `shellName`). Exit 1 only for a
   conflict (`report.finish`, shared with `status`) or an error. A variable of a record's `defaults` that the main's
   `.env` sets on more than one line is a warning (`warnDuplicates`, from the `.env` that `readMains` already read, so a
-  main recorded by this run is checked from the next one; the name through `cell`, never a value).
+  main recorded by this run is checked from the next one; the name through `cell`, never a value). `duplicateKeys` reads
+  line by line, as `portValue` does, so a line inside a multi-line quoted value counts: a documented limit, because only
+  the warning could skip such lines (it would then disagree with the port read) and a quote-aware `Set` would lose every
+  key after an unclosed quote.
 - **`prune` writes only the registry.** It removes what `check` warns about: a `worktrees` key that fails `validKey` or
   does not resolve to a directory (`staleWorktreeKey`, the `foldRegistry` rule, so an alias key of a live worktree is
   kept: it still holds that worktree's ports, and the next `up` there folds it with `migrate`, not `prune`), a `mains`
