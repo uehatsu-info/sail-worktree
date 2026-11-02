@@ -180,7 +180,7 @@ func TestFoldRegistryMatchesMigrate(t *testing.T) {
 		for k, v := range m {
 			migrated.Worktrees[k] = v
 		}
-		migrated.migrate(real)
+		migrated.migrate(real, "")
 		if len(folded) != 1 || len(migrated.Worktrees) != 1 || folded[real]["APP_PORT"] != migrated.Worktrees[real]["APP_PORT"] {
 			t.Errorf("withReal=%v: folded %v, migrated %v", withReal, folded, migrated.Worktrees)
 		}

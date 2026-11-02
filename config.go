@@ -50,7 +50,7 @@ func loadConfig(root string) (*Config, error) {
 // search at 1 or bind :0. Names are held to shellName, not to the detection rule, because a hand-added variable may be
 // any name the compose file uses. A repeated name is refused too: up would assign two ports and Set would keep only
 // the first line, leaving the other port recorded but unused. Names are compared case-insensitively, as for a reserved
-// name. Detected variables always pass, except a reserved name, which detectConfig refuses too.
+// name. Detected variables always pass: detection yields only names ending in PORT, and no reserved name does.
 func validatePortVars(vars []PortVar) error {
 	first := map[string]int{}
 	for i, v := range vars {
@@ -75,26 +75,83 @@ func validatePortVars(vars []PortVar) error {
 
 // reservedPortVar reports why name cannot be a port variable: up writes NAME=port into .env, Sail sources it, and
 // cleanEnv drops every port variable name from the environment of sail and docker. Names are compared
-// case-insensitively, as cleanEnv drops them. The list is short on purpose, not complete: it holds the names that up
-// writes itself (keep it in step with up), the override keys, and the environment names whose loss breaks Sail or
-// sends docker elsewhere (rm runs "down -v").
+// case-insensitively, as cleanEnv drops them.
 func reservedPortVar(name string) (string, bool) {
-	n := strings.ToUpper(name)
-	switch {
-	case n == "COMPOSE_PROJECT_NAME" || n == "SESSION_COOKIE" || n == "APP_URL" || n == sanctumKey:
-		return "up writes it", true
-	case strings.HasPrefix(n, "COMPOSE_") || n == "SAIL_FILES":
-		return "it would override the compose files or project that up uses", true
-	case strings.HasPrefix(n, "DOCKER_"):
-		// DOCKER_HOST, DOCKER_CONTEXT, DOCKER_CONFIG, ... choose the daemon and settings docker uses.
-		return "docker reads it from the environment", true
-	case n == "PATH" || n == "HOME" || n == "SHELL" || n == "USER" || n == "PWD" || n == "IFS":
-		return "the shell and sail need it", true
-	case n == "APP_SERVICE" || n == "WWWUSER" || n == "WWWGROUP" || n == "APP_ENV":
-		// Sail's script reads these; APP_ENV also chooses the .env file it sources.
-		return "Sail's script uses it", true
-	}
-	return "", false
+	why, ok := reservedNames[strings.ToUpper(name)]
+	return why, ok
+}
+
+const (
+	upWrites       = "up writes it"
+	overridesUp    = "it would override the compose files or project that up uses"
+	composeSetting = "compose reads it as its own setting"
+	dockerSetting  = "docker reads it from the environment"
+	shellNeeds     = "the shell and sail need it"
+	sailUses       = "Sail's script uses it"
+)
+
+// reservedNames holds, upper-case, the keys up writes itself (keep it in step with up), SAIL_FILES, the shell and Sail
+// names whose loss breaks sail, and the COMPOSE_* and DOCKER_* settings that docker compose and the docker CLI
+// document (checked 2026-11): https://docs.docker.com/compose/how-tos/environment-variables/envvars/ (with the names
+// it lists as unsupported in Compose V2, which an older docker-compose still reads) and
+// https://docs.docker.com/reference/cli/docker/#environment-variables (plus DOCKER_CONTENT_TRUST*, which older CLIs
+// read). Other COMPOSE_* and DOCKER_* names, such as DOCKER_WEB_PORT, are allowed: v0.8.1 handled them (#74). None ends
+// in PORT, so detection never yields one; adding one makes detectConfig's refusal and teardownConfig reachable again,
+// which TestNoReservedNameIsDetected points out.
+var reservedNames = map[string]string{
+	"COMPOSE_PROJECT_NAME": upWrites,
+	"SESSION_COOKIE":       upWrites,
+	"APP_URL":              upWrites,
+	sanctumKey:             upWrites,
+	"SAIL_FILES":           overridesUp,
+	"PATH":                 shellNeeds,
+	"HOME":                 shellNeeds,
+	"SHELL":                shellNeeds,
+	"USER":                 shellNeeds,
+	"PWD":                  shellNeeds,
+	"IFS":                  shellNeeds,
+	// Sail's script reads these; APP_ENV also chooses the .env file it sources.
+	"APP_SERVICE": sailUses,
+	"WWWUSER":     sailUses,
+	"WWWGROUP":    sailUses,
+	"APP_ENV":     sailUses,
+
+	"COMPOSE_FILE":                  overridesUp,
+	"COMPOSE_ENV_FILES":             overridesUp,
+	"COMPOSE_PROFILES":              overridesUp,
+	"COMPOSE_PATH_SEPARATOR":        overridesUp,
+	"COMPOSE_DISABLE_ENV_FILE":      overridesUp,
+	"COMPOSE_ANSI":                  composeSetting,
+	"COMPOSE_API_VERSION":           composeSetting,
+	"COMPOSE_BAKE":                  composeSetting,
+	"COMPOSE_CONVERT_WINDOWS_PATHS": composeSetting,
+	"COMPOSE_DOCKER_CLI_BUILD":      composeSetting,
+	"COMPOSE_EXPERIMENTAL":          composeSetting,
+	"COMPOSE_FORCE_WINDOWS_HOST":    composeSetting,
+	"COMPOSE_HTTP_TIMEOUT":          composeSetting,
+	"COMPOSE_IGNORE_ORPHANS":        composeSetting,
+	"COMPOSE_INTERACTIVE_NO_CLI":    composeSetting,
+	"COMPOSE_MENU":                  composeSetting,
+	"COMPOSE_PARALLEL_LIMIT":        composeSetting,
+	"COMPOSE_PROGRESS":              composeSetting,
+	"COMPOSE_REMOVE_ORPHANS":        composeSetting,
+	"COMPOSE_STATUS_STDOUT":         composeSetting,
+	"COMPOSE_TLS_VERSION":           composeSetting,
+	// DOCKER_HOST, DOCKER_CONTEXT, DOCKER_CONFIG and the TLS names choose the daemon docker talks to (rm runs
+	// "down -v").
+	"DOCKER_API_VERSION":          dockerSetting,
+	"DOCKER_BUILDKIT":             dockerSetting,
+	"DOCKER_CERT_PATH":            dockerSetting,
+	"DOCKER_CONFIG":               dockerSetting,
+	"DOCKER_CONTENT_TRUST":        dockerSetting,
+	"DOCKER_CONTENT_TRUST_SERVER": dockerSetting,
+	"DOCKER_CONTEXT":              dockerSetting,
+	"DOCKER_CUSTOM_HEADERS":       dockerSetting,
+	"DOCKER_DEFAULT_PLATFORM":     dockerSetting,
+	"DOCKER_HIDE_LEGACY_COMMANDS": dockerSetting,
+	"DOCKER_HOST":                 dockerSetting,
+	"DOCKER_TLS":                  dockerSetting,
+	"DOCKER_TLS_VERIFY":           dockerSetting,
 }
 
 // maxSmallFile bounds what readSmallFile reads from a compose file or .sail-worktree.json.
@@ -133,8 +190,7 @@ func detectConfig(root, compose string) (*Config, error) {
 	}
 	cfg := &Config{Compose: compose, PortVars: detectPortVars(string(b))}
 	for _, v := range cfg.PortVars {
-		// The detection rule lets COMPOSE_*PORT and DOCKER_*PORT through; refusing them here too keeps init from
-		// writing a file that loadConfig refuses.
+		// Not reached today (see reservedNames); it keeps init from writing a file that loadConfig refuses.
 		if why, ok := reservedPortVar(v.Name); ok {
 			return nil, &reservedPortVarError{
 				msg:      fmt.Sprintf("port variable %+q in %q cannot be used: %s; rename it in the compose file", v.Name, compose, why),
@@ -146,8 +202,9 @@ func detectConfig(root, compose string) (*Config, error) {
 }
 
 // reservedPortVarError is detectConfig's refusal of a reserved name. It carries the detected configuration for stop
-// and rm (ctx.teardownConfig), which do not write port variables. That is safe only because detection yields names
-// ending in PORT, so a reserved one is a COMPOSE_*PORT or DOCKER_*PORT and never a name such as DOCKER_HOST or PATH.
+// and rm (ctx.teardownConfig), which do not write port variables. No reserved name ends in PORT, so it is a guard for
+// a future *PORT entry (see reservedNames). Letting stop and rm through is safe only because detection yields names
+// ending in PORT, never one such as DOCKER_HOST or PATH.
 type reservedPortVarError struct {
 	msg      string
 	detected *Config
@@ -504,8 +561,9 @@ func usableDir(k string) bool { return validKey(k) && isDir(k) }
 // It only changes memory; the caller saves on success. An existing entry for root wins; otherwise the entry of the
 // alias with the smallest key (lexicographically) is adopted. The ports of dropped aliases are not left in used.
 // Keys whose path cannot be resolved (it no longer exists) and keys that fail validKey are left alone. Aliases of root
-// in the worktree lists of main records are replaced by root as well (a list that holds none is left as it is).
-func (r *Registry) migrate(root string) {
+// in the worktree list of main, the only record root can be listed in, are replaced by root as well (a list that holds
+// none is left as it is); other mains' lists are not looked at, since each entry may be resolved under the lock.
+func (r *Registry) migrate(root, main string) {
 	var aliases []string
 	for k := range r.Worktrees {
 		if k == root || !validKey(k) {
@@ -522,7 +580,7 @@ func (r *Registry) migrate(root string) {
 		}
 		delete(r.Worktrees, k)
 	}
-	for m, rec := range r.Mains {
+	if rec, ok := r.Mains[main]; ok {
 		ws := make([]string, 0, len(rec.Worktrees))
 		changed, seen := false, false
 		for _, w := range rec.Worktrees {
@@ -540,7 +598,7 @@ func (r *Registry) migrate(root string) {
 		if changed {
 			sort.Strings(ws)
 			rec.Worktrees = ws
-			r.Mains[m] = rec
+			r.Mains[main] = rec
 		}
 	}
 }

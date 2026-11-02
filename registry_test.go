@@ -384,7 +384,7 @@ func TestMigrateLeavesInvalidKeysAlone(t *testing.T) {
 	root := realTempDir(t)
 	unclean := root + string(filepath.Separator) + "."
 	r := &Registry{Worktrees: map[string]map[string]int{unclean: {"APP_PORT": 8123}}}
-	r.migrate(root)
+	r.migrate(root, "")
 	if _, ok := r.Worktrees[unclean]; !ok || len(r.Worktrees) != 1 {
 		t.Errorf("an invalid key was migrated: %v", r.Worktrees)
 	}
@@ -396,21 +396,34 @@ func TestRegistryMigrateFoldsMainsWorktrees(t *testing.T) {
 	other, z := filepath.Join(base, "other"), filepath.Join(base, "z")
 	// Resolves to real, but fails validKey, so it must not be resolved.
 	unclean := real + string(filepath.Separator) + ".." + string(filepath.Separator) + filepath.Base(real)
-	r := &Registry{Worktrees: map[string]map[string]int{}, Mains: map[string]MainRecord{
-		"/a": {Worktrees: []string{links[0], other}},
-		"/b": {Worktrees: []string{real, links[1], links[0]}},
-		"/c": {Worktrees: []string{z, other}},
-		"/d": {Worktrees: []string{unclean}},
-	}}
-	r.migrate(real)
+	lists := func() map[string]MainRecord {
+		return map[string]MainRecord{
+			"/a": {Worktrees: []string{links[0], other}},
+			"/b": {Worktrees: []string{real, links[1], links[0]}},
+			"/c": {Worktrees: []string{z, other}},
+			"/d": {Worktrees: []string{unclean}},
+		}
+	}
 	for m, want := range map[string][]string{
 		"/a": {other, real},
 		"/b": {real},
 		"/c": {z, other}, // no alias: left as it is, order included
 		"/d": {unclean},
+		"/e": nil, // no record: nothing to fold
 	} {
+		r := &Registry{Worktrees: map[string]map[string]int{}, Mains: lists()}
+		r.migrate(real, m)
 		if got := r.Mains[m].Worktrees; !slices.Equal(got, want) {
 			t.Errorf("mains[%s].worktrees = %q, want %q", m, got, want)
+		}
+		// Only the given main's list is folded (#79): root is listed nowhere else.
+		for k, rec := range lists() {
+			if got := r.Mains[k].Worktrees; k != m && !slices.Equal(got, rec.Worktrees) {
+				t.Errorf("migrate(%q) changed mains[%s].worktrees to %q", m, k, got)
+			}
+		}
+		if _, ok := r.Mains["/e"]; ok {
+			t.Errorf("migrate(%q) created a record", m)
 		}
 	}
 }
@@ -597,7 +610,7 @@ func TestRefusedKeyLinksAreUnusable(t *testing.T) {
 		Worktrees: map[string]map[string]int{alias: {"APP_PORT": 8123}},
 		Mains:     map[string]MainRecord{"/m": {Worktrees: []string{alias}}},
 	}
-	r.migrate(real)
+	r.migrate(real, "")
 	if _, ok := r.Worktrees[alias]; !ok || len(r.Worktrees) != 1 {
 		t.Errorf("migrate folded a refused key: %v", r.Worktrees)
 	}
@@ -653,7 +666,7 @@ func TestValidKeyRefusesLinksOffTheDriveOnWindows(t *testing.T) {
 		t.Errorf("staleWorktreeKey = %v, foldKey = %q", staleWorktreeKey(k), foldKey(k))
 	}
 	r := &Registry{Worktrees: map[string]map[string]int{k: {"APP_PORT": 8123}}}
-	r.migrate(real)
+	r.migrate(real, "")
 	if _, ok := r.Worktrees[k]; !ok {
 		t.Errorf("migrate dropped %q: %v", k, r.Worktrees)
 	}

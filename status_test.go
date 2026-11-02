@@ -446,3 +446,20 @@ func TestStatusWarnsAboutAPortKeySetTwice(t *testing.T) {
 		t.Errorf("a value or another key is shown:\n%s", out)
 	}
 }
+
+// The continuation lines of a warning or a problem are indented under its text, so that they cannot pass for a
+// heading or an item; control characters other than the newline are still escaped (#76).
+func TestReportIndentsContinuationLines(t *testing.T) {
+	var b strings.Builder
+	r := &report{w: &b}
+	r.warn("a\nb")
+	r.warn("c\rd")
+	r.problem("e\nproblems:")
+	if err := r.finish(); err == nil {
+		t.Error("a problem does not fail")
+	}
+	want := "warnings:\n  - a\n    b\n  - c\\rd\nproblems:\n  - e\n    problems:\n"
+	if b.String() != want {
+		t.Errorf("got %q, want %q", b.String(), want)
+	}
+}

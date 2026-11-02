@@ -27,18 +27,20 @@ func cmdCheck(args []string) error {
 	r := &report{w: stdout}
 	reg, err := checkRecord(r)
 	if err != nil {
+		r.printWarnings() // they may explain the error, and nothing else will show them
 		return err
 	}
 	checkConflicts(r, reg)
 	return r.finish()
 }
 
-// checkTarget is the main worktree that check records: the one of the repository it runs in, if any.
+// checkTarget is the main worktree that check records: the one of the repository it runs in, if any (main is empty
+// when there is none).
 type checkTarget struct {
-	main, worktree    string
-	ports, defaults   map[string]int
-	envOK, recordable bool
-	inMain            bool // check runs in the main worktree, whose configuration decides the record's variables
+	main, worktree  string
+	ports, defaults map[string]int
+	envOK           bool
+	inMain          bool // check runs in the main worktree, whose configuration decides the record's variables
 }
 
 // currentMain finds the main worktree to record. Outside a repository or a project there is none, which is only a
@@ -46,7 +48,12 @@ type checkTarget struct {
 func currentMain(r *report) checkTarget {
 	c, err := loadCtx()
 	if err != nil {
-		r.warn("no main worktree was recorded: %v", err)
+		r.warn("no main worktree was recorded: %v\ncheck records the main worktree of the project it runs in: run it in "+
+			"the project directory or below it", err)
+		return checkTarget{}
+	}
+	if c.bare {
+		r.warn("no main worktree was recorded: the repository %q is bare, so there is no main worktree checkout", c.mainTop)
 		return checkTarget{}
 	}
 	cfg, err := c.config()
@@ -62,7 +69,7 @@ func currentMain(r *report) checkTarget {
 	if !envOK {
 		r.warn("%s", mainEnvUnreadable(c.main))
 	}
-	cur := checkTarget{main: c.main, ports: ports, defaults: defaults, envOK: envOK, recordable: true}
+	cur := checkTarget{main: c.main, ports: ports, defaults: defaults, envOK: envOK}
 	cur.inMain = c.isMain()
 	if !c.isMain() {
 		cur.worktree = c.root
@@ -104,13 +111,15 @@ func checkRecord(r *report) (*Registry, error) {
 		return nil, err
 	}
 	changed := false
-	if cur.recordable {
+	if cur.main != "" {
 		wt := ""
 		if _, ok := reg.Worktrees[cur.worktree]; ok && cur.worktree != "" {
 			wt = cur.worktree
 		}
-		changed = reg.recordMain(cur.main, wt, cur.ports, cur.defaults, cur.envOK, cur.inMain)
-		delete(fresh, cur.main) // recordMain used a newer read of the same .env
+		base, baseHad := pre.Mains[cur.main] // pre was read before the .env, so a newer record never passes for the base
+		changed = reg.recordMainRead(cur.main, wt, mainRead{ports: cur.ports, defaults: cur.defaults, envOK: cur.envOK,
+			inMain: cur.inMain, basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad})
+		delete(fresh, cur.main) // currentMain read the same .env after readMains
 	}
 	if refreshMains(reg, fresh) {
 		changed = true
@@ -121,7 +130,7 @@ func checkRecord(r *report) (*Registry, error) {
 		}
 	}
 	unlock()
-	if cur.recordable {
+	if cur.main != "" {
 		r.line("recorded main worktree: %q", cur.main)
 	}
 	return reg, nil
@@ -175,7 +184,7 @@ func refreshMains(reg *Registry, fresh map[string]mainRefresh) bool {
 	changed := false
 	for k, f := range fresh {
 		rec, ok := reg.Mains[k]
-		if !ok || !maps.Equal(rec.Ports, f.basePorts) || !maps.Equal(rec.Defaults, f.baseDefaults) {
+		if !ok || !sameBase(rec, f.basePorts, f.baseDefaults) {
 			continue
 		}
 		if !maps.Equal(f.ports, rec.Ports) {
@@ -185,6 +194,12 @@ func refreshMains(reg *Registry, fresh map[string]mainRefresh) bool {
 		}
 	}
 	return changed
+}
+
+// sameBase reports whether rec still has the ports and defaults that a read before the lock was based on (all that a
+// read of a main's .env depends on).
+func sameBase(rec MainRecord, ports, defaults map[string]int) bool {
+	return maps.Equal(rec.Ports, ports) && maps.Equal(rec.Defaults, defaults)
 }
 
 // holder is one port of one main worktree or worktree.
