@@ -765,11 +765,17 @@ func TestCheckTellsAWorktreeToRunUpInsideWSL2(t *testing.T) {
 	saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 8123}}})
 	nativeWindows = true
 	t.Cleanup(func() { nativeWindows = false })
+	t.Chdir(main) // the hint names the worktree, not the directory check runs in
 	out, err := runCheck(t)
 	if err == nil || !strings.Contains(err.Error(), "found 1 problem") {
 		t.Fatalf("err = %v\n%s", err, out)
 	}
-	want := fmt.Sprintf("fix: run `sail-worktree up` in %q inside WSL2 and run check there (WSL2 has a registry of its own)", wt)
+	want := fmt.Sprintf("fix: in %q on Windows, run `sail-worktree rm` while its .env still has the name an older "+
+		"version's up wrote here (rm runs `docker compose down -v` for that name, removing its volumes; do not "+
+		"change the name to make it run), or else edit %s by hand (see the README Notes): up inside WSL2 does not "+
+		"release this Windows record; then run `sail-worktree up` in it inside WSL2 and run check there (WSL2 has a "+
+		"registry of its own)",
+		wt, registryPathShown())
 	if !strings.Contains(out, want) {
 		t.Errorf("missing %q in:\n%s", want, out)
 	}
