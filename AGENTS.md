@@ -34,12 +34,12 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry), `parseWorktreeRecords` (the `git worktree list --porcelain` parser `ps` shares; paths come unquoted, and `-z` needs git 2.36, so a path with a newline is misread) |
-| `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart (`counterpart`, `isProjectDir`) |
+| `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart (`counterpart`, `isProjectDir`), `surelyNotProject` (the same rule on registry keys, `Lstat` only) |
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey`/`foldMains` (aliases folded in memory, replaced mains marked), `psPortsCell`, `listWorktrees`/`parseWorktreeList` (on `parseWorktreeRecords`), `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
 | `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `staleWorktreeKey`, `recheckReplaced`, `prunedMain` (`stillPrunable`), `pruneLock` (the lock `prune` takes, replaced by tests) |
-| `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `readMains`, `refreshMains`, `checkConflicts`, `holder`, `suggestion` |
+| `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `readMains`, `refreshMains`, `checkConflicts`, `notProjectMain`, `holder`, `suggestion` |
 | `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `claimStale`/`claimPath`, `releaser`, `lockTiming` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
 | `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `sanctumUnquote`, `statefulDisabled`, `addStatefulDomain` |
@@ -176,8 +176,10 @@ These come from deliberate decisions; change them only on purpose and update the
   changed; a broken registry stays an error. A `mains` key is used as a directory only after `validKey` (see the
   read-only rule above) and `isDir` (`Lstat` on the key; a link as its last element is not followed), its `.env` only
   through `readMainEnv`. Conflict lines print only valid port numbers. Records of missing directories or invalid keys,
-  and main records that another record replaced (`replacedMain`, see the `prune` rule), are warnings (their recorded
-  ports printed as they are), never conflicts, so a deleted clone or a moved project cannot make `check` fail for ever.
+  main records that another record replaced (`replacedMain`, see the `prune` rule), and main records of directories that
+  are not projects (`notProjectMain`, see the `prune` rule; `readMains` does not refresh them, as `up` and `check` would
+  no longer record them) are warnings (their recorded ports printed as they are), never conflicts, so a deleted clone or
+  a moved project cannot make `check` fail for ever.
   An entry of a holder main's `worktrees` list that is stale by `staleWorktreeKey` (prune's test, so an alias of a live
   worktree is folded, not warned about) is a warning too, although it holds no ports, so that `prune` removes only what
   `check` warns about; a worktree's `(of ...)` comes only from holder mains' lists. A conflict is fixed by the user: a
@@ -193,31 +195,39 @@ These come from deliberate decisions; change them only on purpose and update the
   does not resolve to a directory (`staleWorktreeKey`, the `foldRegistry` rule, so an alias key of a live worktree is
   kept: it still holds that worktree's ports, and the next `up` there folds it with `migrate`, not `prune`), a `mains`
   key that fails `usableDir` (`validKey`, then `isDir`; links are not followed, mains are recorded as real paths), a
-  `mains` key that another record replaced (`replacedMain`; see below), and entries of a kept main's `worktrees` list
-  that are stale by `staleWorktreeKey` (the rule of `worktrees` keys: an older version recorded aliases there too, and
-  one of a live worktree is kept). Main keys are never folded, so without `replacedMain` a record that a move left
-  behind would conflict with the new one for ever. `replacedMain` is tested only for a key that passes `usableDir`, and
-  finds a record replaced in two cases. One is an alias whose real path is a usable key of its own. The other is a key
-  that is its own real path and a directory without project markers, while a usable key that is its own real path and
-  has markers lies strictly below it; the markers (`projectMarkers`) are `.sail-worktree.json`, or `artisan` and a
-  compose file, looked at with `Lstat` only, so a link counts and an error other than not-exist counts as present. A
-  `realPath` failure keeps the record, a main without such a second record keeps its ports, and git is not asked.
-  `validKey` always comes first, so an invalid key is never looked at (on Windows its walk reads only the elements and
-  links on the way, up to the first refused link). It lists and asks (package `stdin`/`stdout`, `-y` skips) without the
-  lock, then takes `lockRegistry`, reads the registry again and removes only listed records that are still recorded and
-  still unusable (with the same per-kind test), saving only when something was removed; records that became unusable
-  after the prompt are left for the next run, because the user did not confirm them. A replaced main is tested again
-  after the prompt and before the lock (`recheckReplaced`, so that the lock is not held while it reads the filesystem)
-  and under the lock only compared in the registry (`stillPrunable`: its record equals the listed one, and the record
-  that replaces it is still there). It never writes `.env` or `.sail-worktree.json` and runs neither docker, sail nor
+  `mains` key that another record replaced (`replacedMain`; see below), a `mains` key that is surely not a project
+  directory (`notProjectMain`; see below), and entries of a kept main's `worktrees` list that are stale by
+  `staleWorktreeKey` (the rule of `worktrees` keys: an older version recorded aliases there too, and one of a live
+  worktree is kept). Main keys are never folded, so without `replacedMain` a record that a move left behind would
+  conflict with the new one for ever. `replacedMain` is tested only for a key that passes `usableDir`, and finds a
+  record replaced in two cases. One is an alias whose real path is a usable key of its own. The other is a key that is
+  its own real path and a directory without project markers, while a usable key that is its own real path and has
+  markers lies strictly below it; the markers (`projectMarkers`) are `.sail-worktree.json`, or `artisan` and a compose
+  file, looked at with `Lstat` only, so a link counts and an error other than not-exist counts as present. A `realPath`
+  failure keeps the record, a main without such a second record keeps its ports, and git is not asked. `notProjectMain`
+  is tested after `replacedMain` (in `check` too) on a key that passes `usableDir`: `surelyNotProject` applies
+  `isProjectDir`'s rule with `Lstat` only, so it implies `!isProjectDir`, and a marker that is a link or a
+  `ModeIrregular` reparse point, or an error other than not-exist, leaves the key in doubt and keeps it (#102: older
+  versions recorded such counterparts, which `up` and `check` no longer do). `validKey` always comes first, so an
+  invalid key is never looked at (on Windows its walk reads only the elements and links on the way, up to the first
+  refused link). It lists and asks (package `stdin`/`stdout`, `-y` skips) without the lock, then takes `lockRegistry`,
+  reads the registry again and removes only listed records that are still recorded and still unusable (with the same
+  per-kind test), saving only when something was removed; records that became unusable after the prompt are left for the
+  next run, because the user did not confirm them. A replaced main is tested again after the prompt and before the lock
+  (`recheckReplaced`, so that the lock is not held while it reads the filesystem) and under the lock only compared in
+  the registry (`stillPrunable`: its record equals the listed one, and the record that replaces it is still there). A
+  main that is not a project is tested again under the lock (`stillPrunable`: `notProjectMain` again, with `Lstat` only
+  like the unusable kind's `usableDir`, and its record equal to the listed one, since `up` or `check` recording it
+  meanwhile read a project there). It never writes `.env` or `.sail-worktree.json` and runs neither docker, sail nor
   git: the containers, networks and volumes of a removed worktree are left alone and the output says so (`docker compose
   ls -a`). Untrusted keys are printed with `%q` and port names through `cell`. A directory that is only out of reach for
   the moment counts as missing. So removing the record of a project that is still in use (one on a disk that is out of
   reach for the moment, on Windows one run from a UNC path or through a link to one, which is not a usable key, or a
-  main whose checkout has no project markers at the moment while a main record with markers lies below it: a branch
-  without the project there) frees its ports in the registry until `up`, or for a main worktree also `check` in its
-  project directory, records it again; a port bound at that moment is still skipped by `up`'s `portFree`. The prompt
-  lists the records first.
+  main whose checkout has no project markers at the moment while a main record with markers lies below it, or one whose
+  checkout has no project at that path at the moment: a branch without the project there) frees its ports in the
+  registry until `up`, or for a main worktree also `check` in its project directory, records it again (for such a main,
+  only once its checkout has the project again); a port bound at that moment is still skipped by `up`'s `portFree`. The
+  prompt lists the records first.
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
@@ -228,8 +238,10 @@ These come from deliberate decisions; change them only on purpose and update the
   only if it is 1 to 65535 (`validPort`), so a hand-edited recorded default outside that reserves nothing (`loadConfig`
   already refuses one in the configuration; the check stays for the registry). A main directory that does not exist is
   never recorded (`counterpart` may return a lexical path), nor one that is not a project directory by `lookupProject`'s
-  rule (`isProjectDir`, `configOrLaravel`; stricter than prune's `projectMarkers` on purpose), as such a main never
-  runs; `check`'s "has no project directory" warning covers both. A `.env` that is a link, not a regular file or larger
+  rule (`isProjectDir`, `configOrLaravel`; `check` and `prune` apply it to recorded keys without following links,
+  `surelyNotProject`, and `replacedMain` uses the looser `projectMarkers`), as such a main never runs; `check`'s "has no
+  project directory" warning covers both, and a record an older version made of such a directory is warned about by
+  `check` and removed by `prune` (`notProjectMain`). A `.env` that is a link, not a regular file or larger
   than 1 MiB (`readEnvIfRegular` refuses it rather than cut it) is not read for the record, although `up` copies `.env`
   through a link: the record keeps its ports, and a new record reserves nothing. The variables are those of the run's
   configuration (`cfg.PortVars`), which may be a branch's, so `recordMain` merges: a variable of the old record's
@@ -251,10 +263,11 @@ These come from deliberate decisions; change them only on purpose and update the
   fixed arguments, `lookupOwner` in tests) only about ports that cannot be bound. A process name is whatever the process
   called itself: it is printed through `cell`/`jsonEscape`. The port argument is digits only, 1 to 65535. Main worktree
   rows are probed like any row that is not `running`, and count in `CONFLICT` (`portsOf`), so `ports --all` agrees with
-  `check` on conflicts, except that stale or unattributed rows count here and only give a warning in `check`. A main
-  record that `check` finds replaced (`replacedMain`, state `replaced`) is probed but never in `CONFLICT`, as `check`
-  leaves it out (`status` still counts it as another holder). The JSON fields of `ports`, `process` and `pid` included,
-  are a public contract too.
+  `check` on conflicts, except that stale or unattributed rows, and main rows of directories that are not projects
+  (`notProjectMain`; shown without a mark, as no JSON value was added for them), count here and only give a warning in
+  `check`. A main record that `check` finds replaced (`replacedMain`, state `replaced`) is probed but never in
+  `CONFLICT`, as `check` leaves it out (`status` still counts it as another holder). The JSON fields of `ports`,
+  `process` and `pid` included, are a public contract too.
   A recorded value that fails `validPort` (a hand-edited registry) is `host` `invalid` (`hostInvalid`, decided before
   `running` and the probe cache): never probed (binding 0 picks a random port) nor given to `lsof`, and left out of
   `CONFLICT`, as `check` ignores it. `invalid` is a value added to `host`; the existing values keep their meanings.

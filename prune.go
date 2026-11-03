@@ -7,14 +7,14 @@ import (
 )
 
 // cmdPrune drops the registry records that check warns about: keys that are not usable local directories, main
-// worktree records that another record replaced (replacedMain) and, in a main worktree's record, linked worktrees whose
-// directory is gone. Such a record keeps its ports reserved for ever (up avoids them), and nothing else removes it. It
-// writes only the registry and runs neither docker, sail nor git, so the containers, networks and volumes of a removed
-// worktree are left alone.
+// worktree records that another record replaced (replacedMain) or whose directory is not a project (notProjectMain)
+// and, in a main worktree's record, linked worktrees whose directory is gone. Such a record keeps its ports reserved for
+// ever (up avoids them), and nothing else removes it. It writes only the registry and runs neither docker, sail nor
+// git, so the containers, networks and volumes of a removed worktree are left alone.
 // The list is shown and confirmed without the lock (a prompt can wait for ever). Replaced main records are tested again
 // after the prompt, still without the lock, so that a slow disk does not keep other runs waiting; after locking, the
 // registry is read again and only listed records that are still recorded and still unusable (or unchanged and still
-// replaced) are removed.
+// replaced, or unchanged and still not a project) are removed.
 func cmdPrune(args []string) error {
 	yes, err := parseYes(args)
 	if err != nil {
@@ -91,7 +91,7 @@ func recheckReplaced(list pruneList) (pruneList, []string, error) {
 	var kept []string
 	var mains []prunedMain
 	for _, m := range list.mains {
-		if m.by != "" {
+		if m.kind == mainReplaced {
 			if by, _ := reg.replacedMain(m.key); by != m.by {
 				kept = append(kept, fmt.Sprintf("main worktree %q", m.key))
 				continue
@@ -113,16 +113,29 @@ type pruneList struct {
 
 type linkedEntry struct{ main, worktree string }
 
-// prunedMain is a listed main worktree record: by and why are set when another record replaced it (replacedMain), and
-// rec is the record as listed, so that one that up or check recorded again meanwhile is not removed.
+// prunedMain is a listed main worktree record: kind says why it is listed, by and why are set for mainReplaced, and rec
+// is the record as listed, so that one that up or check recorded again meanwhile is not removed.
 type prunedMain struct {
+	kind         mainKind
 	key, by, why string
 	rec          MainRecord
 }
 
+// mainKind is why a main record is listed; each kind is tested again with its own rule before it is removed.
+type mainKind int
+
+const (
+	mainUnusable   mainKind = iota // not a usable local directory
+	mainReplaced                   // another record replaced it (replacedMain)
+	mainNotProject                 // a directory that is not a project (notProjectMain)
+)
+
 func (m prunedMain) reason() string {
-	if m.by != "" {
+	switch m.kind {
+	case mainReplaced:
 		return m.why
+	case mainNotProject:
+		return notProjectReason
 	}
 	return "it is not a usable local directory"
 }
@@ -147,7 +160,7 @@ func staleWorktreeKey(k string) bool {
 
 // findPrunable lists the unusable records of reg. Main worktree keys are recorded as real paths and never folded, so
 // they are checked without following links; the entries of their lists are folded like worktrees keys (an older
-// version recorded aliases there too). A replaced main record takes its list with it.
+// version recorded aliases there too). A replaced main record, or one that is not a project, takes its list with it.
 func findPrunable(reg *Registry) pruneList {
 	var l pruneList
 	for _, k := range slices.Sorted(maps.Keys(reg.Worktrees)) {
@@ -162,7 +175,11 @@ func findPrunable(reg *Registry) pruneList {
 			continue
 		}
 		if by, why := reg.replacedMain(k); by != "" {
-			l.mains = append(l.mains, prunedMain{key: k, by: by, why: why, rec: rec})
+			l.mains = append(l.mains, prunedMain{kind: mainReplaced, key: k, by: by, why: why, rec: rec})
+			continue
+		}
+		if notProjectMain(k) {
+			l.mains = append(l.mains, prunedMain{kind: mainNotProject, key: k, rec: rec})
 			continue
 		}
 		for _, w := range slices.Sorted(slices.Values(reg.Mains[k].Worktrees)) {
@@ -178,7 +195,8 @@ func findPrunable(reg *Registry) pruneList {
 // and returns what it removed and the listed records it kept (quoted for the report). Records that became unusable
 // after the list are left for the next prune: the user did not confirm them. A replaced main record is not tested
 // again here, under the lock (recheckReplaced did it just before): it is removed only when it is unchanged since the
-// list and the record that replaces it is still there.
+// list and the record that replaces it is still there. A main record that is not a project is tested again here, with
+// Lstat only like the unusable kind, and removed only when it is also unchanged.
 func (r *Registry) prune(list pruneList) (done pruneList, kept []string) {
 	for _, k := range list.worktrees {
 		if _, ok := r.Worktrees[k]; !ok {
@@ -219,12 +237,21 @@ func (r *Registry) prune(list pruneList) (done pruneList, kept []string) {
 }
 
 // stillPrunable tests a listed main record under the lock: an unusable one with usableDir again, a replaced one only in
-// the registry (rec, the record now, is the one listed, and the record that replaces it is still there).
+// the registry (rec, the record now, is the one listed, and the record that replaces it is still there), and one that
+// is not a project with notProjectMain again and unchanged (up or check recording it meanwhile read a project there).
+// Unlike replacedMain, which may resolve links, notProjectMain is only a few Lstat calls, like usableDir, so it runs
+// under the lock.
 func (m prunedMain) stillPrunable(r *Registry, rec MainRecord) bool {
-	if m.by == "" {
-		return !usableDir(m.key)
+	switch m.kind {
+	case mainReplaced:
+		_, ok := r.Mains[m.by]
+		return ok && sameRecord(rec, m.rec)
+	case mainNotProject:
+		return sameRecord(rec, m.rec) && notProjectMain(m.key)
 	}
-	_, ok := r.Mains[m.by]
-	return ok && maps.Equal(rec.Ports, m.rec.Ports) && maps.Equal(rec.Defaults, m.rec.Defaults) &&
-		slices.Equal(rec.Worktrees, m.rec.Worktrees)
+	return !usableDir(m.key)
+}
+
+func sameRecord(a, b MainRecord) bool {
+	return maps.Equal(a.Ports, b.Ports) && maps.Equal(a.Defaults, b.Defaults) && slices.Equal(a.Worktrees, b.Worktrees)
 }

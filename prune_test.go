@@ -53,7 +53,7 @@ func staleRegistry(t *testing.T) (live, liveMain, base string) {
 	t.Helper()
 	base = realTempDir(t)
 	live = mustMkdir(t, filepath.Join(base, "live"))
-	liveMain = mustMkdir(t, filepath.Join(base, "main"))
+	liveMain = projectDir(t, mustMkdir(t, filepath.Join(base, "main")))
 	sep := string(filepath.Separator)
 	saveRegistry(t, &Registry{
 		Worktrees: map[string]map[string]int{
@@ -102,7 +102,7 @@ func TestPruneWithNothingToRemove(t *testing.T) {
 	}
 
 	base := realTempDir(t)
-	live, main := mustMkdir(t, filepath.Join(base, "wt")), mustMkdir(t, filepath.Join(base, "main"))
+	live, main := mustMkdir(t, filepath.Join(base, "wt")), projectDir(t, mustMkdir(t, filepath.Join(base, "main")))
 	saveRegistry(t, &Registry{
 		Worktrees: map[string]map[string]int{live: {"APP_PORT": 81}},
 		Mains:     map[string]MainRecord{main: {Ports: map[string]int{"APP_PORT": 80}, Worktrees: []string{live}}},
@@ -354,6 +354,13 @@ func projectDir(t *testing.T, dir string) string {
 	return dir
 }
 
+// projectTempDir is a temporary project directory: a main record of a directory that is not a project is left out by
+// check and removed by prune (#102).
+func projectTempDir(t *testing.T) string {
+	t.Helper()
+	return projectDir(t, realTempDir(t))
+}
+
 // aliasMain returns a main key that reaches the project directory real through a symbolic link in the middle of the
 // path, as after moving ~/work and leaving a ~/work link behind (#71).
 func aliasMain(t *testing.T) (alias, real string) {
@@ -412,58 +419,60 @@ func TestReplacedMainRecordsAreWarnedAndPruned(t *testing.T) {
 	}
 }
 
-// A main record is replaced only when a live record takes its place; without one it keeps holding its ports.
+// A main record is replaced only when a live record takes its place; without one it keeps holding its ports, unless
+// it is surely not a project (then it is warned about and pruned for that reason, #102).
 func TestMainRecordsThatAreNotReplaced(t *testing.T) {
 	alone := func(stale, _ string) map[string]MainRecord { return map[string]MainRecord{stale: mainRec(80)} }
 	both := func(stale, live string) map[string]MainRecord {
 		return map[string]MainRecord{stale: mainRec(80), live: mainRec(80)}
 	}
 	for _, tc := range []struct {
-		name  string
-		keys  func(t *testing.T) (string, string)
-		mains func(stale, live string) map[string]MainRecord
+		name       string
+		keys       func(t *testing.T) (string, string)
+		mains      func(stale, live string) map[string]MainRecord
+		notProject bool // stale is surely not a project (#102)
 	}{
-		{"alias whose real path has no record", aliasMain, alone},
+		{"alias whose real path has no record", aliasMain, alone, false},
 		{"alias whose real path is refused by validKey", func(t *testing.T) (string, string) {
 			alias, real := aliasMain(t)
 			refuseKeyLinks(t, real)
 			return alias, real
-		}, both},
-		{"old root with no record below it", movedRoot, alone},
+		}, both, false},
+		{"old root with no record below it", movedRoot, alone, true},
 		{"old root that is still a project", func(t *testing.T) (string, string) {
 			root, sub := movedRoot(t)
 			return projectDir(t, root), sub
-		}, both},
+		}, both, false},
 		{"old root whose marker is a dangling link", func(t *testing.T) (string, string) {
 			root, sub := movedRoot(t)
 			symlinkOrSkip(t, filepath.Join(root, "missing"), filepath.Join(root, configName))
 			return root, sub
-		}, both},
+		}, both, false},
 		{"old root with artisan and a compose file", func(t *testing.T) (string, string) {
 			root, sub := movedRoot(t)
 			writeFile(t, filepath.Join(root, artisanName), "")
 			writeFile(t, filepath.Join(root, "docker-compose.yml"), "")
 			return root, sub
-		}, both},
+		}, both, false},
 		{"record below has no markers", func(t *testing.T) (string, string) {
 			root, sub := movedRoot(t)
 			if err := os.Remove(filepath.Join(sub, configName)); err != nil {
 				t.Fatal(err)
 			}
 			return root, sub
-		}, both},
+		}, both, true},
 		{"record below is not replaced by one above it", func(t *testing.T) (string, string) {
 			root, sub := movedRoot(t)
 			if err := os.Remove(filepath.Join(sub, configName)); err != nil {
 				t.Fatal(err)
 			}
 			return sub, projectDir(t, root) // a main on a branch without the project in laravel/ for now
-		}, both},
+		}, both, true},
 		{"record below is refused by validKey", func(t *testing.T) (string, string) {
 			root, sub := movedRoot(t)
 			refuseKeyLinks(t, sub)
 			return root, sub
-		}, both},
+		}, both, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isolatedRegistry(t)
@@ -473,9 +482,16 @@ func TestMainRecordsThatAreNotReplaced(t *testing.T) {
 			if strings.Contains(out, "no longer a project directory") || strings.Contains(out, "has its own record") {
 				t.Errorf("a record that nothing replaces was warned about:\n%s", out)
 			}
+			notProject := fmt.Sprintf("the record of main worktree %q keeps ports free, but %s", stale, notProjectReason)
+			if strings.Contains(out, notProject) != tc.notProject {
+				t.Errorf("notProject = %v, but check said:\n%s", tc.notProject, out)
+			}
 			out, err := runPrune(t, strings.NewReader(""), "-y")
-			if err != nil || strings.Contains(out, fmt.Sprintf("main worktree %q (", stale)) {
+			if err != nil || strings.Contains(out, "no longer a project directory") || strings.Contains(out, "has its own record") {
 				t.Errorf("err = %v\n%s", err, out)
+			}
+			if listed := strings.Contains(out, fmt.Sprintf("main worktree %q (", stale)); listed != tc.notProject {
+				t.Errorf("listed = %v, notProject = %v:\n%s", listed, tc.notProject, out)
 			}
 		})
 	}
@@ -584,7 +600,7 @@ func TestPruneKeepsAnAliasEntryOfALiveWorktree(t *testing.T) {
 	isolatedRegistry(t)
 	_, links := newLinkedDir(t, "alias")
 	base := realTempDir(t)
-	main := mustMkdir(t, filepath.Join(base, "main"))
+	main := projectDir(t, mustMkdir(t, filepath.Join(base, "main")))
 	dangling := filepath.Join(base, "dangling")
 	symlinkOrSkip(t, filepath.Join(base, "missing"), dangling)
 	rec := mainRec(80)
@@ -661,5 +677,71 @@ func TestPrunedReplacedMainIsNotRecordedAgainFromAnOldBranch(t *testing.T) {
 	}
 	if strings.Contains(out, "keeps ports free, but") {
 		t.Errorf("check warns about a replaced record again:\n%s", out)
+	}
+}
+
+// A main record of a directory that is not a project (an older version recorded such a counterpart) is warned about and
+// not refreshed nor counted by check, and pruned with its list (#102).
+func TestNonProjectMainIsWarnedNotRefreshedAndPruned(t *testing.T) {
+	isolatedRegistry(t)
+	plain := realTempDir(t)
+	writeFile(t, filepath.Join(plain, ".env"), "APP_PORT=8090\n")
+	live := projectTempDir(t)
+	gone := filepath.Join(plain, "gone-wt")
+	rec := mainRec(80)
+	rec.Worktrees = []string{gone}
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{plain: rec, live: mainRec(80)}})
+	out, err := runCheck(t)
+	if err != nil || strings.Contains(out, "conflicts:") || strings.Contains(out, " lists linked worktree ") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	if want := fmt.Sprintf("the record of main worktree %q keeps ports free, but %s: APP_PORT=80", plain, notProjectReason); !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
+	}
+	if reg, _ := loadRegistry(); reg.Mains[plain].Ports["APP_PORT"] != 80 {
+		t.Errorf("the record was refreshed from its .env: %+v", reg.Mains[plain])
+	}
+	out, err = runPrune(t, strings.NewReader(""), "-y")
+	if err != nil || !strings.Contains(out, "removed 0 worktree record(s), 1 main worktree record(s), 0 linked worktree entr(ies)") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	if want := fmt.Sprintf("main worktree %q (ports: APP_PORT=80): %s", plain, notProjectReason); !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
+	}
+	if reg, _ := loadRegistry(); len(reg.Mains) != 1 || reg.Mains[live].Ports == nil {
+		t.Errorf("mains = %+v", reg.Mains)
+	}
+}
+
+// Under the lock a listed record that is not a project is tested again: one that became a project, or whose record
+// changed (up or check recorded it again), is kept.
+func TestPruneKeepsANonProjectMainThatChangedBeforeTheLock(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(t *testing.T, dir string)
+	}{
+		{"became a project", func(t *testing.T, dir string) { projectDir(t, dir) }},
+		{"record changed", func(t *testing.T, dir string) {
+			saveRegistry(t, &Registry{Mains: map[string]MainRecord{dir: mainRec(82)}})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolatedRegistry(t)
+			dir := realTempDir(t)
+			saveRegistry(t, &Registry{Mains: map[string]MainRecord{dir: mainRec(80)}})
+			orig := pruneLock
+			t.Cleanup(func() { pruneLock = orig })
+			pruneLock = func() (func(), error) {
+				tc.change(t, dir)
+				return orig()
+			}
+			out, err := runPrune(t, strings.NewReader(""), "-y")
+			if err != nil || !strings.Contains(out, fmt.Sprintf("kept (changed since the list): main worktree %q", dir)) {
+				t.Fatalf("err = %v\n%s", err, out)
+			}
+			if reg, _ := loadRegistry(); len(reg.Mains) != 1 {
+				t.Errorf("mains = %+v", reg.Mains)
+			}
+		})
 	}
 }

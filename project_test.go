@@ -494,19 +494,63 @@ func TestIsProjectDir(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(badConfig, configName), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	artisanDir := realTempDir(t)
+	if err := os.Mkdir(filepath.Join(artisanDir, artisanName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	composeDir := mk(artisanName)
+	if err := os.Mkdir(filepath.Join(composeDir, "compose.yaml"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for name, c := range map[string]struct {
-		dir  string
-		want bool
+		dir             string
+		want, surelyNot bool
 	}{
-		"plain directory":                {mk("README.md"), false},
-		"configuration":                  {mk(configName), true},
-		"artisan and compose file":       {mk(artisanName, "docker-compose.yml"), true},
-		"artisan alone":                  {mk(artisanName), false},
-		"compose file alone":             {mk("compose.yaml"), false},
-		"configuration that is a folder": {badConfig, false},
+		"plain directory":                {mk("README.md"), false, true},
+		"configuration":                  {mk(configName), true, false},
+		"artisan and compose file":       {mk(artisanName, "docker-compose.yml"), true, false},
+		"artisan alone":                  {mk(artisanName), false, true},
+		"compose file alone":             {mk("compose.yaml"), false, true},
+		"configuration that is a folder": {badConfig, false, true},
+		"artisan that is a folder":       {artisanDir, false, true},
+		"compose file that is a folder":  {composeDir, false, true},
 	} {
 		if got := isProjectDir(c.dir); got != c.want {
 			t.Errorf("%s: isProjectDir = %v, want %v", name, got, c.want)
+		}
+		if got := surelyNotProject(c.dir); got != c.surelyNot {
+			t.Errorf("%s: surelyNotProject = %v, want %v", name, got, c.surelyNot)
+		}
+	}
+}
+
+// surelyNotProject does not follow a marker that is a link: whatever it leads to, the directory is in doubt and its
+// record is kept (#102).
+func TestSurelyNotProjectLeavesLinkedMarkersInDoubt(t *testing.T) {
+	target := filepath.Join(realTempDir(t), "target")
+	writeFile(t, target, "")
+	for _, c := range []struct {
+		name, link string
+		files      []string // regular files next to the link
+		dangling   bool
+	}{
+		{"configuration", configName, nil, false},
+		{"dangling configuration", configName, nil, true},
+		{"artisan", artisanName, []string{"compose.yaml"}, false},
+		{"compose file", "compose.yaml", []string{artisanName}, false},
+		{"dangling compose file", "compose.yaml", []string{artisanName}, true},
+	} {
+		dir := realTempDir(t)
+		for _, f := range c.files {
+			writeFile(t, filepath.Join(dir, f), "")
+		}
+		to := target
+		if c.dangling {
+			to = filepath.Join(dir, "missing")
+		}
+		symlinkOrSkip(t, to, filepath.Join(dir, c.link))
+		if surelyNotProject(dir) {
+			t.Errorf("%s: a linked marker was taken as absent or followed", c.name)
 		}
 	}
 }
