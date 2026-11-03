@@ -110,16 +110,16 @@ const (
 //     https://github.com/docker/buildx; both are reserved)
 //   - https://docs.docker.com/engine/cli/proxy/ (the proxy names)
 //   - https://docs.docker.com/reference/cli/docker/buildx/build/#ssh (SSH_AUTH_SOCK)
-//   - Windows: cleanEnv drops a port variable from the environment of sail.bat (what os/exec's lookExtensions runs for
-//     vendor/bin/sail, Composer's proxy that runs bash) and of docker in rm. os/exec restores only SYSTEMROOT, and then
-//     Sail's source of .env overwrites it. SYSTEMROOT: golang.org/issue/25210 (DLLs); USERPROFILE: os.UserHomeDir,
-//     which docker/cli v29.7.2 cli/config/config.go uses for ~/.docker with no fallback on Windows (empty, it is a
-//     relative .docker); PROGRAMFILES: cli-plugins/manager/manager_windows.go (the compose plugin); PROGRAMDATA:
-//     internal/registry/config.go (certs.d), all in https://github.com/docker/cli. Left out, as neither docker/cli nor
-//     sail.bat reads them: WINDIR, TEMP and TMP, APPDATA and LOCALAPPDATA, PATHEXT (docker runs plugins by their .exe
-//     name), COMSPEC (golang.org/issue/56555: a process that starts a batch file needs it; this tool starts sail.bat
-//     with its own environment, and nothing below it starts one) and XDG_RUNTIME_DIR (a rootless setup puts the socket
-//     in DOCKER_HOST or a context).
+//   - Windows: cleanEnv drops a port variable from the environment of docker in rm; up and stop refuse native Windows
+//     and start no sail.bat there (#132). os/exec restores only SYSTEMROOT, which stays reserved as it was for sail.bat
+//     (#118). SYSTEMROOT: golang.org/issue/25210 (DLLs); USERPROFILE: os.UserHomeDir, which docker/cli v29.7.2
+//     cli/config/config.go uses for ~/.docker with no fallback on Windows (empty, it is a relative .docker);
+//     PROGRAMFILES: cli-plugins/manager/manager_windows.go (the compose plugin); PROGRAMDATA:
+//     internal/registry/config.go (certs.d), all in https://github.com/docker/cli. Left out, as docker/cli does not
+//     read them: WINDIR, TEMP and TMP, APPDATA and LOCALAPPDATA (docker/compose reads LOCALAPPDATA only when the
+//     known-folder lookup fails, pkg/remote/cache_windows.go and internal/locker/runtime_windows.go), PATHEXT (docker
+//     runs plugins by their .exe name), COMSPEC (golang.org/issue/56555: a process that starts a batch file needs it;
+//     this tool starts none) and XDG_RUNTIME_DIR (a rootless setup puts the socket in DOCKER_HOST or a context).
 //   - the SAIL_* names in laravel/sail 1.x bin/sail (the names it only forwards into the container, COLORTERM and
 //     its AGENT_ENV_VARS, are not settings and are left out, #111)
 //
@@ -139,8 +139,8 @@ var reservedNames = map[string]string{
 	"PWD":                  shellNeeds,
 	"IFS":                  shellNeeds,
 	"UID":                  shellNeeds, // read-only in bash: sourcing .env stops at it, so the rest is skipped
-	// As port variables on Windows, cleanEnv would drop them from the environment of sail.bat and docker, and
-	// SYSTEMROOT, which os/exec restores, Sail's source of .env would overwrite.
+	// As port variables on Windows, cleanEnv would drop them from the environment of docker in rm (before #132 also
+	// of sail.bat); os/exec restores SYSTEMROOT, which stays reserved as it was for sail.bat.
 	"SYSTEMROOT":   windowsNeeds, // DLL loading, Winsock among them
 	"USERPROFILE":  dockerOnWindows,
 	"PROGRAMFILES": dockerOnWindows,

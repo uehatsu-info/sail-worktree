@@ -29,7 +29,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | File | Role |
 |---|---|
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
-| `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `upLock` (the lock `up` takes, replaced by tests), `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
+| `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `upLock` (the lock `up` takes, replaced by tests), `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), `nativeWindows`/`nativeWindowsError` (`up` and `stop` refused on native Windows), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnv`/`readEnvIfRegular`/`readOwnEnv` (`readRegularEnv`, `parseEnvFile`, the 1 MiB limit), `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`markedBelow`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
@@ -96,7 +96,8 @@ These come from deliberate decisions; change them only on purpose and update the
 - **Override keys differ per command.** `up` refuses `COMPOSE_FILE`, `COMPOSE_ENV_FILES` and `SAIL_FILES` in `.env`
   (compose would not read the ports and project name `up` writes). `COMPOSE_PROFILES` is allowed. `rm` also refuses
   `COMPOSE_PROFILES` because it cannot be undone. `stop` refuses nothing and only warns (best effort, non-main
-  worktrees; it reads only a regular file and warns that it could not check an existing `.env` it refused).
+  worktrees; it reads only a regular file and warns that it could not check an existing `.env` it refused), except
+  that it refuses native Windows as `up` does.
 - **`rm` is guarded.** It recomputes the project name and requires `COMPOSE_PROJECT_NAME` in `.env` to match exactly.
   Every refusing check runs *before* the confirmation prompt. It pins `--project-name`, `--project-directory` and `-f`,
   and runs without `COMPOSE_*`, `SAIL_FILES` and the port variables from the environment (`cleanEnv`). Values from
@@ -236,9 +237,10 @@ These come from deliberate decisions; change them only on purpose and update the
   that is out of reach for the moment, on Windows one run from a UNC path or through a link to one, which is not a
   usable key, or a main whose checkout, reached directly or through an alias key, has no project markers at the moment
   while a main record with markers lies below it, or one whose checkout has no project at that path at the moment: a
-  branch without the project there) frees its ports in the registry until `up`, or for a main worktree also `check` in
-  its project directory, records it again (for such a main, only once its checkout has the project again); a port bound
-  at that moment is still skipped by `up`'s `portFree`. The prompt lists the records first.
+  branch without the project there) frees its ports in the registry until `up` (not on native Windows, where it does not
+  run), or for a main worktree also `check` in its project directory, records it again (for such a main, only once its
+  checkout has the project again); a port bound at that moment is still skipped by `up`'s `portFree`. The prompt lists
+  the records first.
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
@@ -362,14 +364,14 @@ These come from deliberate decisions; change them only on purpose and update the
     records no main, while `stop` and `rm` run (both drop it from the environment of sail and docker, and `down -v`
     picks what it removes by the pinned project name). Port variables are required only for `up` and only when detected
     (a file with `port_vars: []` still works).
-  - `up`'s order: main refusal, configuration, detected port variables and `checkOwnEnv`. Then, before the lock, a
-    registry read (used only for the base of the main's record and the alias keys), the main's `.env` (`mainPorts`, and
-    `mainEnvPorts` for variables that only the record keeps; neither in a bare layout) and the copy source of a new
-    `.env` (`readCopySource`; one that cannot be read fails here, or it is read under the lock instead if `.env` is gone
-    by then). Then `upLock`, the registry read again, `migrateAliases`, `recordMainRead`, the worktree's own `.env`
-    (`readOwnEnv`, or the copy source) with the override keys refused (`upOverrideKeys`), port allocation, then
-    `sailPath` right before the first write, so nothing is written without Sail and the order of the existing refusals
-    stays the same.
+  - `up`'s order: the native Windows refusal, main refusal, configuration, detected port variables and `checkOwnEnv`.
+    Then, before the lock, a registry read (used only for the base of the main's record and the alias keys), the main's
+    `.env` (`mainPorts`, and `mainEnvPorts` for variables that only the record keeps; neither in a bare layout) and the
+    copy source of a new `.env` (`readCopySource`; one that cannot be read fails here, or it is read under the lock
+    instead if `.env` is gone by then). Then `upLock`, the registry read again, `migrateAliases`, `recordMainRead`, the
+    worktree's own `.env` (`readOwnEnv`, or the copy source) with the override keys refused (`upOverrideKeys`), port
+    allocation, then `sailPath` right before the first write, so nothing is written without Sail and the order of the
+    existing refusals stays the same.
   - `rm` passes only the one compose file to `-f`, so `compose.override.yaml` is not read (volumes defined only there
     are left behind). A broken link named `compose.yaml` is skipped by `findMarker`, so a `docker-compose.yml` next to
     it is used.
@@ -432,6 +434,14 @@ These come from deliberate decisions; change them only on purpose and update the
   `validPort` holds; otherwise a new port is searched, so a hand-edited out-of-range value is not written back to `.env`.
 - **Sail sources `.env`.** `vendor/bin/sail` runs `source ./.env` (or `.env.$APP_ENV`), so `.env` is executed as shell
   code. `stop` does not refuse a symlinked `.env` for this reason: calling `sail` directly has the same exposure.
+- **`up` and `stop` refuse native Windows** (`nativeWindowsError`, the first statement of both, before `loadCtx`: no
+  git, no read, no lock, no write; `nativeWindows` is set false by `TestMain` so their tests run on the Windows CI).
+  There `os/exec` (`lookExtensions`, PATHEXT) runs Composer's `vendor\bin\sail.bat` for `vendor/bin/sail`; its
+  `bash "%BIN_TARGET%" %*` runs in `cmd.exe`, which looks for `bash` in the current directory (the project directory,
+  `runSail`'s `Dir`) before PATH, so a `bash.exe`, `bash.cmd` or the like there would run on the host; and Sail's
+  `bin/sail` exits at its `uname` check in Git Bash, MSYS2 or Cygwin before it sources `.env` (Sail supports Windows
+  only through WSL2, where the build is linux). `up` used to write `.env` and the registry before that failure. `rm`
+  runs docker directly and the other commands run no Sail, so they still run on Windows (#132).
 - **`SANCTUM_STATEFUL_DOMAINS`.** Only when `up` rewrites `APP_URL` and `.env` sets the key, `addStatefulDomain`
   appends the new `APP_URL`'s entry (lower-case host, `:port` unless it is the scheme's default; IPv6 canonical with
   brackets). It follows Sanctum's `fromFrontend`: an element equal (before trimming) to
@@ -454,13 +464,13 @@ These come from deliberate decisions; change them only on purpose and update the
   detection rule, so a hand-added variable may use any name compose does. A name in `reservedNames` (keys `up`
   writes, the `COMPOSE_*` and `DOCKER_*` settings docker compose and the docker CLI document, the BuildKit and buildx
   settings, the proxy names and `SSH_AUTH_SOCK`, the settings `bin/sail` reads, sources in the comment, `SAIL_FILES`, a
-  few shell names, and the Windows names docker needs, which `cleanEnv` drops from `sail.bat` (what `os/exec` runs
-  for `vendor/bin/sail` there) and docker, or Sail's source of `.env` overwrites (#118); case-insensitive) is
+  few shell names, and the Windows names docker needs, which `cleanEnv` drops from docker's environment in `rm` (#118;
+  `up` and `stop` run no Sail on native Windows, #132); case-insensitive) is
   refused on every OS, by `detectConfig` too, so `init` never writes a file that `loadConfig` refuses (only
   `SAIL_SHARE_SERVER_PORT` ends in `PORT`, so detection finds no other; see the configuration error rule above). Other
   `COMPOSE_*` and `DOCKER_*` names, such as `DOCKER_WEB_PORT`, are allowed on purpose: v0.8.1 handled them (#74). Keep
-  the shell and Windows parts short, add a key there when `up` starts to write it or when docker or `sail.bat` starts to
-  need one, and add a compose, docker, build or Sail setting when they start to read one; check the sources in the
+  the shell and Windows parts short, add a key there when `up` starts to write it or when docker starts to need one,
+  and add a compose, docker, build or Sail setting when they start to read one; check the sources in the
   comment again before each release. A repeated name (also compared case-insensitively) is refused, because `up` would
   assign two ports and `Set` keeps only the first line; `detectPortVars` yields each name once (`composePortRe` matches
   upper-case names only), and a test pins that.
