@@ -507,7 +507,7 @@ const (
 )
 
 // readCopySource reads the file a new .env is copied from: in a bare layout the worktree's own .env.example, otherwise
-// the main worktree's .env, or its .env.example when that is missing.
+// the main worktree's .env, or its .env.example when that is missing, and only when its directory is a project.
 func readCopySource(c *ctx) (*envFile, envSource, error) {
 	if c.bare { // first: the branches below read c.main, which is empty here
 		env, err := readOwnEnvExample(c.root)
@@ -515,6 +515,17 @@ func readCopySource(c *ctx) (*envFile, envSource, error) {
 			return nil, 0, err
 		}
 		return env, envFromOwnExample, nil
+	}
+	// The same test as the main's record (mainPorts): Sail sources the copy, so it must come from the project the user
+	// expects, never from an unrelated directory at that path. There is no fallback to another source.
+	if !isProjectDir(c.main) {
+		where := "the main worktree"
+		if c.main != c.mainTop {
+			where = "the main worktree's directory at the same relative path"
+		}
+		return nil, 0, fmt.Errorf("cannot copy .env: %s, %q, is not a project directory (no %s, nor %s with a compose "+
+			"file; the main worktree may be on a branch without the project); create .env in this worktree first",
+			where, c.main, configName, artisanName)
 	}
 	src := envFromMain
 	env, err := readEnv(filepath.Join(c.main, ".env"))

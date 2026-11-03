@@ -316,10 +316,12 @@ These come from deliberate decisions; change them only on purpose and update the
     of showing `mainTop` as the main worktree, and `up` copies `.env` from the worktree's own `.env.example`
     (`readOwnEnvExample`: a regular file only, since it comes from the branch checked out there).
   - The main worktree's counterpart (`counterpart`) is the same relative path there. It may not exist, but it must not
-    resolve outside the main worktree, because `up` copies `.env` from it and Sail sources it. Only the directory is
-    contained: the `.env` file in it may still be a link, as for a root project. A missing path is checked only
-    lexically, so a broken link in the middle passes, but nothing can be read through it. Windows junctions are not
-    followed by `EvalSymlinks`, here as for the compose check.
+    resolve outside the main worktree, because `up` copies `.env` from it and Sail sources it. `up` copies only from a
+    counterpart that is a project directory (`isProjectDir`, the test of the main's record; `readCopySource`, before
+    anything is written), and otherwise fails and says to create `.env` in the worktree first, with no fallback to
+    another source (#103). Only the directory is contained: the `.env` file in it may still be a link, as for a root
+    project. A missing path is checked only lexically, so a broken link in the middle passes, but nothing can be read
+    through it. Windows junctions are not followed by `EvalSymlinks`, here as for the compose check.
   - `isLaravelProject` checks `artisan` before the compose file, so a broken compose file in a directory without
     `artisan` (`docker/`, `.devcontainer/`) never stops the walk; an `artisan` that is not a regular file means "not a
     project".

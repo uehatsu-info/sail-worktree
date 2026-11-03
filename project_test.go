@@ -763,3 +763,46 @@ func TestWriteFileNoFollowMarksRefusals(t *testing.T) {
 		t.Errorf("an I/O error is marked as a refusal: %v", err)
 	}
 }
+
+// up does not copy .env from the main worktree's counterpart when it is not a project directory, even if it holds a
+// .env: Sail sources the copy, so it must come from the project. The refusal comes before the lock and any write (#103).
+func TestUpDoesNotCopyEnvFromANonProjectCounterpart(t *testing.T) {
+	for _, sub := range []bool{true, false} {
+		t.Run(fmt.Sprintf("subdir=%v", sub), func(t *testing.T) {
+			var main, root string
+			if sub {
+				m, wt := setupSubdirWorktreeRepo(t, true)
+				main, root = filepath.Join(m, "laravel"), filepath.Join(wt, "laravel")
+				writeFile(t, filepath.Join(main, "README.md"), "unrelated\n")
+			} else {
+				m, wt := setupWorktreeRepo(t)
+				if err := os.Remove(filepath.Join(m, configName)); err != nil {
+					t.Fatal(err)
+				}
+				main, root = m, wt
+			}
+			writeFile(t, filepath.Join(main, ".env"), "APP_KEY=unrelated\n")
+			writeFile(t, filepath.Join(main, ".env.example"), "APP_KEY=unrelated\n")
+			writeFakeSail(t, root)
+			calls := captureRunner(t)
+			locked := false
+			orig := upLock
+			t.Cleanup(func() { upLock = orig })
+			upLock = func() (func(), error) { locked = true; return orig() }
+			err := cmdUp(nil)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q, is not a project directory", main)) ||
+				!strings.Contains(err.Error(), "create .env in this worktree first") {
+				t.Fatalf("error = %v", err)
+			}
+			if sub != strings.Contains(err.Error(), "same relative path") {
+				t.Errorf("error = %v", err)
+			}
+			if _, err := os.Lstat(filepath.Join(root, ".env")); !os.IsNotExist(err) || len(*calls) != 0 || locked {
+				t.Errorf(".env written, sail ran or the lock was taken: %v, %v, %v", err, *calls, locked)
+			}
+			if reg, _ := loadRegistry(); len(reg.Worktrees) != 0 || len(reg.Mains) != 0 {
+				t.Errorf("registry = %+v", reg)
+			}
+		})
+	}
+}

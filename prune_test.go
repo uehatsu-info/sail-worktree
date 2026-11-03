@@ -656,7 +656,8 @@ func TestPrunedReplacedMainIsNotRecordedAgainFromAnOldBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	sub := projectDir(t, mustMkdir(t, filepath.Join(main, "laravel")))
-	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8123\n") // the source of the worktree's .env, still at the root
+	// The worktree has its own .env: since #103 up does not copy one from a main that is not a project there.
+	writeFile(t, filepath.Join(wt, ".env"), "APP_PORT=8123\n")
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{main: mainRec(80), sub: mainRec(80)}})
 	if out, err := runPrune(t, strings.NewReader(""), "-y"); err != nil ||
 		!strings.Contains(out, "removed 0 worktree record(s), 1 main worktree record(s)") {
