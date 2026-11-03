@@ -476,10 +476,12 @@ These come from deliberate decisions; change them only on purpose and update the
   show what `up` did there (#136). `up` there does not release a worktree record that an older version's `up` wrote
   into the Windows registry, so on native Windows `suggestion` (naming the worktree, as `check` runs anywhere) and a
   second `status` warning say to release it first by `rm --registry-only` on Windows (#148, #149; the hand edit of the
-  registry file stays in the README Notes as a fallback). `rm`'s refusals there do not point to `up` (#140): a missing
-  `.env` says that there is nothing to remove (`up` inside WSL2 writes the same `.env`), and a name mismatch
-  (`windowsMismatchMessage`) offers neither setting the name back nor the manual `down -v` command, since the name is
-  most likely the one `up` wrote inside WSL2, whose project runs on the same Docker daemon; both point to
+  registry file stays in the README Notes as a fallback). That warning comes only when the registry `status` read has
+  something `rm --registry-only` would release (#152; `heldRecord` on that read, whose alias folding stays in memory and
+  is never saved, so `status` still does not `migrate`), right after the first one. `rm`'s refusals there do not point
+  to `up` (#140): a missing `.env` says that there is nothing to remove (`up` inside WSL2 writes the same `.env`), and a
+  name mismatch (`windowsMismatchMessage`) offers neither setting the name back nor the manual `down -v` command, since
+  the name is most likely the one `up` wrote inside WSL2, whose project runs on the same Docker daemon; both point to
   `rm --registry-only` for a record that an older version's `up` wrote on Windows. `prune` keeps such a record (its
   directory exists), by choice.
 - **`SANCTUM_STATEFUL_DOMAINS`.** Only when `up` rewrites `APP_URL` and `.env` sets the key, `addStatefulDomain`

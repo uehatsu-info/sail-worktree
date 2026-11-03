@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -90,12 +91,8 @@ func cmdStatus(args []string) error {
 		r.warn("on native Windows this report uses this worktree's Windows path and the Windows registry; WSL2 sees " +
 			"the worktree under another path, so another compose project name, and has a registry of its own: run up " +
 			"and status there")
-		// Every worktree record in the Windows registry was written by an older version's up, as up is refused here
-		// (#148); rm --registry-only releases it without docker (#149).
-		r.warn("a worktree record that an older version's up wrote into the Windows registry is not released by up " +
-			"inside WSL2: run `sail-worktree rm --registry-only` here to release it (it runs no docker; containers " +
-			"that version created are left, `docker compose ls -a` lists them)")
 	}
+	hintAt := len(r.warnings) // the record hint, which needs the registry, goes right after the note
 	proj := c.projectName()
 	r.line("compose project:   %s", proj)
 	cfg, cfgErr := c.config()
@@ -130,12 +127,28 @@ func cmdStatus(args []string) error {
 	if cfg != nil {
 		vars = cfg.PortVars
 	}
-	statusPorts(c, r, env, vars, state)
+	reg := statusPorts(c, r, env, vars, state)
+	if nativeWindows && reg != nil {
+		windowsRecordHint(c, r, reg, hintAt)
+	}
 	if env != nil {
 		statusDuplicates(r, env, vars)
 		statusAppURL(r, env, vars)
 	}
 	return r.finish()
+}
+
+// windowsRecordHint warns, at position at of the warnings, about a worktree record in the Windows registry: only an
+// older version's up wrote one, as up is refused here (#148), and up inside WSL2 does not release it, while rm
+// --registry-only does (#149). It warns only when that command would release something (#152), by its own rule;
+// heldRecord folds the alias keys in reg's memory only (status never saves), so reg is not used after it.
+func windowsRecordHint(c *ctx, r *report, reg *Registry, at int) {
+	if _, _, changes := c.heldRecord(reg, reg.aliasesOf(c.root, c.main)); !changes {
+		return
+	}
+	r.warnings = slices.Insert(r.warnings, at, "a worktree record that an older version's up wrote into the "+
+		"Windows registry is not released by up inside WSL2: run `sail-worktree rm --registry-only` here to release "+
+		"it (it runs no docker; containers that version created are left, `docker compose ls -a` lists them)")
 }
 
 // currentBranch is the branch checked out in dir; best effort, since it is only shown.
@@ -200,12 +213,12 @@ func checkProjectName(r *report, env *envFile, want string) {
 
 // statusPorts shows each port variable with its .env and registry values and whether the host can bind it, and
 // reports the disagreements. state is docker's view of this project: a running project holds its own ports, so they
-// are not probed.
-func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) {
+// are not probed. It returns the registry it read, or nil when it could not be read.
+func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) *Registry {
 	reg, err := loadRegistry()
 	if err != nil {
 		r.problem("%v", err)
-		return
+		return nil
 	}
 	view := foldRegistry(reg)
 	mains := foldMains(reg)
@@ -249,6 +262,7 @@ func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) 
 				port, v.Name)
 		}
 	}
+	return reg
 }
 
 // statusDuplicates warns about port variables that .env sets on more than one line: status shows the first line, but

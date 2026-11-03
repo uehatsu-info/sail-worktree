@@ -582,25 +582,26 @@ func TestMainEnvUnreadableNamesTheCause(t *testing.T) {
 // another registry, so the hints send the user to run up and status there, and a warning says why.
 func TestStatusHintsOnNativeWindows(t *testing.T) {
 	cases := []struct {
-		name   string
-		mutate func(t *testing.T, wt string)
-		want   string // followed by the hint
+		name     string
+		mutate   func(t *testing.T, wt string)
+		want     string // followed by the hint
+		noRecord bool   // the registry has no record of the worktree, so no release hint
 	}{
 		{"missing .env", func(t *testing.T, wt string) {
 			if err := os.Remove(filepath.Join(wt, ".env")); err != nil {
 				t.Fatal(err)
 			}
-		}, ".env is missing; "},
+		}, ".env is missing; ", false},
 		{"project name missing", func(t *testing.T, wt string) { dropEnv(t, wt, "COMPOSE_PROJECT_NAME=") },
-			"COMPOSE_PROJECT_NAME is missing in .env; "},
+			"COMPOSE_PROJECT_NAME is missing in .env; ", false},
 		{"port variable missing", func(t *testing.T, wt string) { dropEnv(t, wt, "APP_PORT=") },
-			"APP_PORT is not set in .env; "},
+			"APP_PORT is not set in .env; ", false},
 		{"not in the registry", func(t *testing.T, _ string) { writeRegistry(t, map[string]map[string]int{}) },
-			"APP_PORT is not recorded in the registry; "},
+			"APP_PORT is not recorded in the registry; ", true},
 		{"APP_URL uses another port", func(t *testing.T, wt string) { setEnv(t, wt, "APP_URL", "http://localhost:9000") },
-			`APP_URL "http://localhost:9000" does not use APP_PORT 81; `},
+			`APP_URL "http://localhost:9000" does not use APP_PORT 81; `, false},
 		{"sanctum entry missing", func(t *testing.T, wt string) { appendEnv(t, wt, "SANCTUM_STATEFUL_DOMAINS=localhost:80") },
-			`SANCTUM_STATEFUL_DOMAINS lacks "localhost:81" for APP_URL; `},
+			`SANCTUM_STATEFUL_DOMAINS lacks "localhost:81" for APP_URL; `, false},
 	}
 	const note = "on native Windows this report uses this worktree's Windows path and the Windows registry"
 	release := func() string {
@@ -630,8 +631,9 @@ func TestStatusHintsOnNativeWindows(t *testing.T) {
 					t.Errorf("note shown = %v, WSL2 mentioned = %v, want %v:\n%s", strings.Contains(out, note),
 						strings.Contains(out, "WSL2"), windows, out)
 				}
-				if strings.Contains(out, release()) != windows {
-					t.Errorf("release hint shown = %v, want %v:\n%s", strings.Contains(out, release()), windows, out)
+				// Only a case that empties the registry leaves no record to release (#152).
+				if want := windows && !c.noRecord; strings.Contains(out, release()) != want {
+					t.Errorf("release hint shown = %v, want %v:\n%s", strings.Contains(out, release()), want, out)
 				}
 			})
 		}
@@ -659,5 +661,63 @@ func TestStatusHintsOnNativeWindows(t *testing.T) {
 	t.Cleanup(func() { nativeWindows = false })
 	if out, _, err := runStatus(t); err != nil || strings.Contains(out, "WSL2") {
 		t.Errorf("main worktree on native Windows: err = %v\n%s", err, out)
+	}
+}
+
+// On native Windows the hint to release an old Windows record is shown only when rm --registry-only would release
+// something: the worktree's key, an alias key, or an entry in its main worktree's list (#152). Elsewhere it never is.
+func TestStatusWindowsRecordHintNeedsARecord(t *testing.T) {
+	const note = "on native Windows this report uses this worktree's Windows path and the Windows registry"
+	const hint = "run `sail-worktree rm --registry-only` here to release it"
+	cases := []struct {
+		name   string
+		reg    func(t *testing.T, main, wt string)
+		record bool
+	}{
+		{"no record", func(t *testing.T, main, _ string) {
+			writeRegistryWithMains(t, map[string]map[string]int{"/other/wt": {"APP_PORT": 81}},
+				map[string]MainRecord{main: {Ports: map[string]int{"APP_PORT": 80}, Worktrees: []string{"/other/wt"}}})
+		}, false},
+		{"own key", func(t *testing.T, _, wt string) {
+			writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}})
+		}, true},
+		{"alias key", func(t *testing.T, _, wt string) {
+			alias := filepath.Join(t.TempDir(), "alias")
+			symlinkOrSkip(t, wt, alias)
+			writeRegistry(t, map[string]map[string]int{alias: {"APP_PORT": 81}})
+		}, true},
+		{"only in the main's list", func(t *testing.T, main, wt string) {
+			writeRegistryWithMains(t, nil, map[string]MainRecord{main: {Ports: map[string]int{"APP_PORT": 80},
+				Worktrees: []string{wt}}})
+		}, true},
+	}
+	for _, windows := range []bool{false, true} {
+		for _, c := range cases {
+			t.Run(fmt.Sprintf("%s windows=%v", c.name, windows), func(t *testing.T) {
+				main, wt := statusSetup(t, "")
+				c.reg(t, main, wt)
+				before, err := os.ReadFile(mustRegistryPath(t))
+				if err != nil {
+					t.Fatal(err)
+				}
+				nativeWindows = windows
+				t.Cleanup(func() { nativeWindows = false })
+				out, _, _ := runStatus(t)
+				if strings.Contains(out, note) != windows {
+					t.Errorf("note shown = %v, want %v:\n%s", strings.Contains(out, note), windows, out)
+				}
+				want := windows && c.record
+				if strings.Contains(out, hint) != want {
+					t.Errorf("hint shown = %v, want %v:\n%s", strings.Contains(out, hint), want, out)
+				}
+				// The two Windows warnings stay together, the note first.
+				if want && !strings.Contains(out, "run up and status there\n  - a worktree record that") {
+					t.Errorf("the hint does not follow the note:\n%s", out)
+				}
+				if after, err := os.ReadFile(mustRegistryPath(t)); err != nil || string(after) != string(before) {
+					t.Errorf("status changed the registry (err %v):\n%s", err, after)
+				}
+			})
+		}
 	}
 }
