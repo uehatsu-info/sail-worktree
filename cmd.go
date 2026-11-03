@@ -124,8 +124,8 @@ func (c *ctx) config() (*Config, error) { return c.cfg, c.cfgErr }
 
 // teardownConfig is config() for stop and rm. A reserved name found by detection does not block them: they write no
 // port variable, so the name cannot reach .env, and stopping or removing what runs should not wait for the compose
-// file to be fixed. stop still drops every detected name from sail's environment. A .sail-worktree.json that lists a
-// reserved name stays an error for them too, as a broken file always was.
+// file to be fixed. stop still drops every detected name from sail's environment, and rm from docker's. A
+// .sail-worktree.json that lists a reserved name stays an error for them too, as a broken file always was.
 func (c *ctx) teardownConfig() (*Config, error) {
 	if c.teardown != nil {
 		return c.teardown, nil
@@ -767,11 +767,7 @@ func cmdRm(args []string) error {
 	// Pass the project name, directory and compose file explicitly, and run without COMPOSE_* and the port variables
 	// from the environment, as stop does through runSail (shell values take precedence over .env when compose expands
 	// the file).
-	drop := make([]string, 0, len(cfg.PortVars))
-	for _, v := range cfg.PortVars {
-		drop = append(drop, v.Name)
-	}
-	if err := runner(c.root, cleanEnv(drop), "docker", rmArgs(proj, c.root, composePath)...); err != nil {
+	if err := runner(c.root, cleanEnv(cfg.portVarNames()), "docker", rmArgs(proj, c.root, composePath)...); err != nil {
 		return err
 	}
 	// Read the registry again after docker so that an update by another up during the removal is not lost. The lock is
@@ -820,11 +816,17 @@ func runSail(root string, cfg *Config, args []string) error {
 		return err
 	}
 	// Shell variables take precedence over .env, so drop the port variables to keep them in line with the assigned ports.
-	drop := make([]string, 0, len(cfg.PortVars))
-	for _, v := range cfg.PortVars {
-		drop = append(drop, v.Name)
+	return runner(root, cleanEnv(cfg.portVarNames()), sail, args...)
+}
+
+// portVarNames lists the names of the port variables, for cleanEnv to drop. stop (through runSail) and rm share it, so
+// that sail and docker run without the same names.
+func (c *Config) portVarNames() []string {
+	names := make([]string, 0, len(c.PortVars))
+	for _, v := range c.PortVars {
+		names = append(names, v.Name)
 	}
-	return runner(root, cleanEnv(drop), sail, args...)
+	return names
 }
 
 // cleanEnv returns the current environment without every variable that starts with COMPOSE_, SAIL_FILES and the
