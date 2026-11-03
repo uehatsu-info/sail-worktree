@@ -60,7 +60,7 @@ func TestReadEnvIfRegularDoesNotBlockOnFIFO(t *testing.T) {
 		t.Fatalf("cannot create a FIFO (set TMPDIR to a filesystem that supports them): %v", err)
 	}
 	done := make(chan bool, 1)
-	go func() { _, ok := readEnvIfRegular(p); done <- ok }()
+	go func() { _, err := readEnvIfRegular(p); done <- err == nil }()
 	select {
 	case ok := <-done:
 		if ok {
@@ -186,5 +186,34 @@ func TestLockFailsAtOnceWhereWaitingCannotHelp(t *testing.T) {
 	_, err := lockRegistry()
 	if err == nil || !strings.Contains(err.Error(), "cannot create the registry lock") || time.Since(start) > 10*time.Second {
 		t.Errorf("err = %v after %v", err, time.Since(start))
+	}
+}
+
+func TestReadOwnEnvRefusesHardLink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	writeFile(t, real, "A=1\n")
+	if err := os.Link(real, filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readOwnEnv(real); !errors.Is(err, errEnvHardLinked) || !strings.Contains(err.Error(), "hard-linked") {
+		t.Errorf("err = %v", err)
+	}
+	// Other readers only refuse links of their own path.
+	if _, err := readEnvIfRegular(real); err != nil {
+		t.Errorf("readEnvIfRegular: %v", err)
+	}
+}
+
+func TestUpDoesNotReadAHardLinkSwappedInAfterTheCheck(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	_, err := upWithEnvSwapped(t, wt, func(target, env string) {
+		if err := os.Link(target, env); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if err == nil || !errors.Is(err, errEnvHardLinked) || errors.Is(err, errNotOwnFile) ||
+		!strings.Contains(err.Error(), "hard-linked") || strings.Contains(err.Error(), "COMPOSE_FILE") {
+		t.Fatalf("err = %v", err)
 	}
 }

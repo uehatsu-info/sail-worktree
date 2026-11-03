@@ -527,3 +527,39 @@ func TestStatusLabelsReplacedMainHolders(t *testing.T) {
 		t.Errorf("err = %v; missing %q in:\n%s", err, want, out)
 	}
 }
+
+func TestStatusReportsAnEnvLargerThan1MiB(t *testing.T) {
+	_, wt := statusSetup(t, "")
+	envPath := filepath.Join(wt, ".env")
+	b, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, envPath, string(b)+envPadding(maxSmallFile))
+	out, _, err := runStatus(t)
+	if err == nil || !strings.Contains(out, ".env cannot be read") || !strings.Contains(out, "larger than 1 MiB") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+}
+
+// mainEnvUnreadable names the cause from an Lstat, in the words of the read's refusals.
+func TestMainEnvUnreadableNamesTheCause(t *testing.T) {
+	dir := t.TempDir()
+	env := filepath.Join(dir, ".env")
+	if got := mainEnvUnreadable(dir); !strings.Contains(got, "cannot be read") {
+		t.Errorf("missing: %s", got)
+	}
+	if err := os.Mkdir(env, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := mainEnvUnreadable(dir); !strings.Contains(got, errEnvNotRegular.Error()) {
+		t.Errorf("directory: %s", got)
+	}
+	if err := os.Remove(env); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, env, envPadding(maxSmallFile+1))
+	if got := mainEnvUnreadable(dir); !strings.Contains(got, errEnvTooLarge.Error()) {
+		t.Errorf("large: %s", got)
+	}
+}

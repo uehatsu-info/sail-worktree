@@ -218,8 +218,8 @@ var reservedNames = map[string]string{
 	"EXPERIMENTAL_BUILDKIT_SOURCE_POLICY": buildSetting,
 }
 
-// maxSmallFile bounds what readSmallFile reads from a compose file or .sail-worktree.json, and what
-// readEnvIfRegular reads from a .env; readEnvIfRegular refuses a larger file with ok false instead of an error.
+// maxSmallFile bounds what readSmallFile reads from a compose file or .sail-worktree.json, and what every .env read
+// takes from a .env; a larger .env is refused with errEnvTooLarge rather than cut.
 const maxSmallFile = 1 << 20
 
 // readSmallFile reads a regular file of at most maxSmallFile bytes. Links are followed (a linked compose file works for
