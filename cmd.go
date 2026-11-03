@@ -693,18 +693,10 @@ func windowsMismatchMessage(got, shown string) string {
 		"so rm refuses.", got, shown) +
 		"\nIf up ran inside WSL2, .env has the name WSL2 uses (it sees this worktree under another path): run rm " +
 		"inside WSL2, which also releases the ports in its own registry." +
-		fmt.Sprintf("\nA port record that an older version wrote here on Windows (before up stopped running on native "+
-			"Windows) is released by editing %s by hand (see the README Notes).", registryPathShown()) +
+		"\nA port record that an older version wrote here on Windows (before up stopped running on native Windows) " +
+		"is released by `sail-worktree rm --registry-only`, which runs no docker." +
 		"\nDo not change COMPOSE_PROJECT_NAME to make rm run here: rm also runs `docker compose down -v` for the " +
 		"name in .env, which removes that project's volumes (database data) and cannot be undone."
-}
-
-// registryPathShown names the registry file for the hand edit that rm's Windows messages point to.
-func registryPathShown() string {
-	if p, err := registryPath(); err == nil {
-		return fmt.Sprintf("%q", p)
-	}
-	return `%APPDATA%\sail-worktree\registry.json`
 }
 
 // warnStopTarget warns before stop when .env seems to point at another compose file or project.
@@ -728,7 +720,8 @@ func warnStopTarget(c *ctx) {
 	}
 }
 
-// parseYes reads the arguments of rm and prune: -y or --yes skips the confirmation, and any other argument is refused.
+// parseYes reads the arguments of rm (through parseRmArgs) and prune: -y or --yes skips the confirmation, and any
+// other argument is refused.
 func parseYes(args []string) (bool, error) {
 	yes := false
 	for _, a := range args {
@@ -752,10 +745,27 @@ func confirm(prompt string) bool {
 	return false
 }
 
+// parseRmArgs reads rm's arguments: --registry-only, and -y as parseYes reads it.
+func parseRmArgs(args []string) (yes, registryOnly bool, err error) {
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--registry-only" {
+			registryOnly = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	yes, err = parseYes(rest)
+	return yes, registryOnly, err
+}
+
 func cmdRm(args []string) error {
-	yes, err := parseYes(args)
+	yes, registryOnly, err := parseRmArgs(args)
 	if err != nil {
 		return err
+	}
+	if registryOnly {
+		return rmRegistryOnly(yes)
 	}
 	c, err := loadCtx()
 	if err != nil {
@@ -777,7 +787,7 @@ func cmdRm(args []string) error {
 		if nativeWindows { // up is refused here, so do not point to it (#140)
 			return fmt.Errorf("cannot read .env (up does not run on native Windows, and up inside WSL2 writes this "+
 				"same .env, so most likely there is no project here for rm to remove; a port record that an older version wrote "+
-				"here is released by editing %s by hand, see the README Notes): %w", registryPathShown(), err)
+				"here is released by `sail-worktree rm --registry-only`, which runs no docker): %w", err)
 		}
 		return fmt.Errorf("cannot read .env (run this in a worktree where up has been run): %w", err)
 	} else if err != nil {
@@ -832,15 +842,85 @@ func cmdRm(args []string) error {
 		return fmt.Errorf("docker finished removing, but the port assignments cannot be read: %w", err)
 	}
 	reg.migrateAliases(c.root, c.main, aliases)
-	delete(reg.Worktrees, c.root)
-	if !c.bare { // a bare layout records no main worktree
-		reg.forgetWorktree(c.main, c.root)
-	}
+	c.release(reg)
 	if err := reg.save(); err != nil {
 		return err
 	}
 	unlock()
 	fmt.Fprintln(stdout, "released the port assignments")
+	return nil
+}
+
+// release removes this worktree's record from reg: its key and its entry in the main worktree's list. The caller has
+// folded the alias keys into root with migrateAliases.
+func (c *ctx) release(reg *Registry) {
+	delete(reg.Worktrees, c.root)
+	if !c.bare { // a bare layout records no main worktree
+		reg.forgetWorktree(c.main, c.root)
+	}
+}
+
+// heldRecord folds the alias keys found before into root (in reg's memory only) and returns root's ports, whether it
+// has a key, and whether release would change reg (a key or an entry in the main worktree's list).
+func (c *ctx) heldRecord(reg *Registry, aliases []string) (ports map[string]int, keyed, changes bool) {
+	reg.migrateAliases(c.root, c.main, aliases)
+	ports, keyed = reg.Worktrees[c.root]
+	return ports, keyed, keyed || (!c.bare && slices.Contains(reg.Mains[c.main].Worktrees, c.root))
+}
+
+// rmRegistryOnly is rm --registry-only (#149): it releases this worktree's registry record without down -v, for a record
+// whose .env holds another name (on native Windows, the one up wrote inside WSL2). It reads neither .env nor the
+// configuration and runs no docker, so the guards of down -v do not apply; the main worktree is still refused.
+func rmRegistryOnly(yes bool) error {
+	c, err := loadCtx()
+	if err != nil {
+		return err
+	}
+	if c.isMain() {
+		return fmt.Errorf("cannot run in the main worktree")
+	}
+	pre, err := loadRegistry()
+	if err != nil {
+		return err
+	}
+	aliases := pre.aliasesOf(c.root, c.main)
+	shown, keyed, changes := c.heldRecord(pre, aliases)
+	if !changes {
+		fmt.Fprintf(stdout, "no registry record of %q to release\n", c.root)
+		return nil
+	}
+	fmt.Fprintf(stdout, "This releases only the registry record of worktree %q (ports: %s).\n", c.root,
+		cell(portsCell(shown)))
+	fmt.Fprintln(stdout, "Its containers, networks, volumes and built images are not touched "+
+		"(`docker compose ls -a` lists them).")
+	if !yes && !confirm("Release the record? [y/N] ") {
+		return nil
+	}
+	unlock, err := lockRegistry()
+	if err != nil {
+		return fmt.Errorf("the registry could not be locked, so nothing was released (run rm --registry-only again): %w", err)
+	}
+	defer unlock()
+	reg, err := loadRegistry()
+	if err != nil {
+		return err
+	}
+	ports, keyedNow, changesNow := c.heldRecord(reg, aliases)
+	if !changesNow {
+		fmt.Fprintf(stdout, "no registry record of %q to release\n", c.root)
+		return nil
+	}
+	// Release only what the user confirmed, as prune does: an up that recorded other ports meanwhile wins.
+	if keyedNow != keyed || !maps.Equal(ports, shown) {
+		return fmt.Errorf("the registry record of %q changed after the prompt, so nothing was released (run rm "+
+			"--registry-only again)", c.root)
+	}
+	c.release(reg)
+	if err := reg.save(); err != nil {
+		return err
+	}
+	unlock()
+	fmt.Fprintf(stdout, "released the registry record of %q (containers, networks and volumes were not touched)\n", c.root)
 	return nil
 }
 

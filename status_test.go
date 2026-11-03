@@ -603,12 +603,10 @@ func TestStatusHintsOnNativeWindows(t *testing.T) {
 			`SANCTUM_STATEFUL_DOMAINS lacks "localhost:81" for APP_URL; `},
 	}
 	const note = "on native Windows this report uses this worktree's Windows path and the Windows registry"
-	// The hand edit names the registry of the test's config directory, set by statusSetup.
 	release := func() string {
 		return "  - a worktree record that an older version's up wrote into the Windows registry is not released " +
-			"by up inside WSL2: first run rm here while .env still has the name that version wrote (rm runs `docker " +
-			"compose down -v` for that name, removing its volumes; do not change the name to make it run), or edit " +
-			registryPathShown() + " by hand (see the README Notes)\n"
+			"by up inside WSL2: run `sail-worktree rm --registry-only` here to release it (it runs no docker; " +
+			"containers that version created are left, `docker compose ls -a` lists them)\n"
 	}
 	for _, windows := range []bool{false, true} {
 		hint := "run up\n"
