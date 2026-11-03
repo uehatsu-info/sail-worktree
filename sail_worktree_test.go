@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -658,6 +659,36 @@ func TestRmPassesPinnedArguments(t *testing.T) {
 	}
 }
 
+// A shell variable named like a port variable of .sail-worktree.json would override .env when compose expands the
+// compose file, so rm drops it as stop does; DOCKER_HOST is kept on purpose. (The detected configuration is covered by
+// TestDetectedReservedNameRefusedOnlyByUpAndInit.)
+func TestRmDropsShellPortVariables(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+projectName(main, wt, wt)+
+		"\nAPP_PORT=81\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services: {}\n")
+	// Windows compares names case-insensitively, so this one name stands for every case there.
+	t.Setenv("app_port", "not-a-port")
+	t.Setenv("DOCKER_HOST", "unix:///keep.sock")
+	calls := captureRunner(t)
+	if err := cmdRm([]string{"-y"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 || (*calls)[0].name != "docker" {
+		t.Fatalf("calls = %+v", *calls)
+	}
+	for _, kv := range (*calls)[0].env {
+		if k, _, _ := strings.Cut(kv, "="); strings.EqualFold(k, "APP_PORT") {
+			t.Errorf("%s reaches docker", kv)
+		}
+	}
+	if !slices.Contains((*calls)[0].env, "DOCKER_HOST=unix:///keep.sock") {
+		t.Error("DOCKER_HOST was removed")
+	}
+}
+
 func TestUpWritesEnvAndCleansSailEnvironment(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	writeFile(t, filepath.Join(main, ".env"), "APP_URL=http://localhost\nSESSION_COOKIE=old\nSESSION_COOKIE=older\n")
@@ -769,8 +800,26 @@ func TestStopAllowsSymlinkEnv(t *testing.T) {
 	if err := cmdStop(nil); err != nil || len(*calls) != 1 {
 		t.Fatalf("stop: err=%v calls=%v", err, *calls)
 	}
-	if warn.Len() != 0 {
-		t.Errorf("a linked .env is not read: %s", warn)
+	// The link is not read, so its project name is not compared; the warning says that .env was not checked.
+	if strings.Contains(warn.String(), "other-project") || !strings.Contains(warn.String(), ".env was not checked") ||
+		!strings.Contains(warn.String(), "symbolic link") {
+		t.Errorf("warning: %s", warn)
+	}
+}
+
+// A .env larger than 1 MiB is not read (as status and the main record do), and stop says it could not check it.
+func TestStopWarnsThatATooLargeEnvWasNotChecked(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(wt, ".env"), "COMPOSE_FILE=other.yml\n"+envPadding(maxSmallFile))
+	warn := captureStderr(t)
+	calls := captureRunner(t)
+	if err := cmdStop(nil); err != nil || len(*calls) != 1 {
+		t.Fatalf("stop: err=%v calls=%v", err, *calls)
+	}
+	if strings.Contains(warn.String(), "has COMPOSE_FILE") || !strings.Contains(warn.String(), ".env was not checked") ||
+		!strings.Contains(warn.String(), "larger than 1 MiB") {
+		t.Errorf("warning: %s", warn)
 	}
 }
 
@@ -838,26 +887,27 @@ func TestRmRefusesProfiles(t *testing.T) {
 
 func TestReadEnvIfRegularSkipsNonRegular(t *testing.T) {
 	dir := t.TempDir()
-	if _, ok := readEnvIfRegular(filepath.Join(dir, "missing")); ok {
-		t.Error("read a missing file")
+	// A missing file keeps the unwrapped error, which stop and readMainEnv tell apart from a refusal.
+	if _, err := readEnvIfRegular(filepath.Join(dir, "missing")); !os.IsNotExist(err) {
+		t.Errorf("missing file: err = %v", err)
 	}
 	real := filepath.Join(dir, "real")
 	if err := os.WriteFile(real, []byte("A=1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if e, ok := readEnvIfRegular(real); !ok {
-		t.Error("cannot read a regular file")
+	if e, err := readEnvIfRegular(real); err != nil {
+		t.Errorf("cannot read a regular file: %v", err)
 	} else if v, _ := e.Get("A"); v != "1" {
 		t.Errorf("A=%q", v)
 	}
 	// An extra check: the rest of the test needs no link, so do not skip the whole test on Windows.
 	if trySymlink(t, real, filepath.Join(dir, "link")) {
-		if _, ok := readEnvIfRegular(filepath.Join(dir, "link")); ok {
-			t.Error("read a link")
+		if _, err := readEnvIfRegular(filepath.Join(dir, "link")); !errors.Is(err, errEnvNotRegular) {
+			t.Errorf("link: err = %v", err)
 		}
 	}
-	if _, ok := readEnvIfRegular(dir); ok {
-		t.Error("read a directory")
+	if _, err := readEnvIfRegular(dir); !errors.Is(err, errEnvNotRegular) || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("directory: err = %v", err)
 	}
 }
 
@@ -878,14 +928,17 @@ func TestReadEnvIfRegularRefusesALargerFile(t *testing.T) {
 	}
 	p := filepath.Join(dir, "env")
 	writeFile(t, p, fit)
-	if e, ok := readEnvIfRegular(p); !ok {
-		t.Error("cannot read a file of exactly maxSmallFile bytes")
-	} else if v, _ := e.Get("A"); v != want {
-		t.Errorf("the last line was cut: A=%q", v)
-	}
-	writeFile(t, p, fit+"B=2\n")
-	if _, ok := readEnvIfRegular(p); ok {
-		t.Error("a file larger than maxSmallFile was read (cut)")
+	for name, read := range map[string]func(string) (*envFile, error){"readEnvIfRegular": readEnvIfRegular, "readEnv": readEnv} {
+		writeFile(t, p, fit)
+		if e, err := read(p); err != nil {
+			t.Errorf("%s cannot read a file of exactly maxSmallFile bytes: %v", name, err)
+		} else if v, _ := e.Get("A"); v != want {
+			t.Errorf("%s cut the last line: A=%q", name, v)
+		}
+		writeFile(t, p, fit+"B=2\n")
+		if _, err := read(p); !errors.Is(err, errEnvTooLarge) || !strings.Contains(err.Error(), "larger than 1 MiB") {
+			t.Errorf("%s read a file larger than maxSmallFile: err = %v", name, err)
+		}
 	}
 }
 
@@ -910,8 +963,8 @@ func TestUpKeepsTheMainRecordWhenTheMainEnvIsTooLarge(t *testing.T) {
 	if got := reg.Mains[main].Ports["APP_PORT"]; got != 8200 {
 		t.Errorf("the record was replaced from a cut .env: APP_PORT=%d", got)
 	}
-	if !strings.Contains(errOut.String(), mainEnvUnreadable(main)) {
-		t.Errorf("no warning: %q", errOut.String())
+	if !strings.Contains(errOut.String(), mainEnvUnreadable(main)) || !strings.Contains(errOut.String(), "is larger than 1 MiB") {
+		t.Errorf("no warning that names the cause: %q", errOut.String())
 	}
 }
 
@@ -1842,30 +1895,42 @@ func setupBareWorktreeRepo(t *testing.T) (bare, mainWt, wt string) {
 }
 
 func TestParseMainWorktree(t *testing.T) {
-	bareOut := "worktree /r/app.git\nbare\n\nworktree /r/app-feat\nHEAD abc\nbranch refs/heads/feat\n"
-	if p, bare, err := parseMainWorktree(bareOut, false); err != nil || p != "/r/app.git" || !bare {
+	base := filepath.ToSlash(realTempDir(t))
+	app, appGit, feat := base+"/app", base+"/app.git", base+"/app-feat"
+	bareOut := "worktree " + appGit + "\nbare\n\nworktree " + feat + "\nHEAD abc\nbranch refs/heads/feat\n"
+	if p, bare, err := parseMainWorktree(bareOut, false, false); err != nil || p != appGit || !bare {
 		t.Errorf("bare listing: %q %v %v", p, bare, err)
 	}
-	normal := "worktree /r/app\nHEAD abc\nbranch refs/heads/main\n\nworktree /r/app-feat\nbare\n"
-	if p, bare, err := parseMainWorktree(normal, false); err != nil || p != "/r/app" || bare {
+	normal := "worktree " + app + "\nHEAD abc\nbranch refs/heads/main\n\nworktree " + feat + "\nbare\n"
+	if p, bare, err := parseMainWorktree(normal, false, false); err != nil || p != app || bare {
 		t.Errorf("a bare line of a later record counts: %q %v %v", p, bare, err)
 	}
 	crlf := strings.ReplaceAll(bareOut, "\n", "\r\n")
-	if p, bare, err := parseMainWorktree(crlf, true); err != nil || p != "/r/app.git" || !bare {
+	if p, bare, err := parseMainWorktree(crlf, false, true); err != nil || p != appGit || !bare {
 		t.Errorf("CRLF listing on Windows: %q %v %v", p, bare, err)
 	}
-	for _, bad := range []string{"", "worktree \nbare\n\nworktree /r/app-feat\n"} {
-		if _, _, err := parseMainWorktree(bad, false); err == nil {
+	if p, bare, err := parseMainWorktree(strings.ReplaceAll(bareOut, "\n", "\x00"), true, false); err != nil || p != appGit || !bare {
+		t.Errorf("-z listing: %q %v %v", p, bare, err)
+	}
+	for _, bad := range []string{"", "worktree \nbare\n\nworktree " + feat + "\n", "worktree r/app\n", "worktree \"r/app\n"} {
+		if _, _, err := parseMainWorktree(bad, false, false); err == nil {
 			t.Errorf("accepted %q", bad)
+		}
+		if _, _, err := parseMainWorktree(strings.ReplaceAll(bad, "\n", "\x00"), true, false); err == nil {
+			t.Errorf("accepted %q with -z", bad)
 		}
 	}
 	// A bare line of the next record does not count for the main one, even without a blank line between them.
-	if _, bare, err := parseMainWorktree("worktree /r/app\nworktree /r/app.git\nbare\n", false); err != nil || bare {
+	if _, bare, err := parseMainWorktree("worktree "+app+"\nworktree "+appGit+"\nbare\n", false, false); err != nil || bare {
 		t.Errorf("a later record's bare line counts: %v %v", bare, err)
 	}
-	// A path that starts with a quote is returned as git printed it (ps skips it; see parseWorktreeList).
-	if p, _, err := parseMainWorktree("worktree \"r/app\n", false); err != nil || p != `"r/app` {
+	// An absolute path whose name starts with a quote is returned as git printed it, and with -z a name with a newline
+	// is read whole.
+	if p, _, err := parseMainWorktree("worktree "+base+"/\"app\n", false, false); err != nil || p != base+`/"app` {
 		t.Errorf("leading quote: %q %v", p, err)
+	}
+	if p, _, err := parseMainWorktree("worktree "+base+"/a\nb\x00bare\x00\x00", true, false); err != nil || p != base+"/a\nb" {
+		t.Errorf("newline with -z: %q %v", p, err)
 	}
 }
 
@@ -1873,18 +1938,109 @@ func TestParseWorktreeRecords(t *testing.T) {
 	out := "bare\nworktree /r/app\nHEAD 1\nbranch refs/heads/main\nworktree /r/a\nprunable gone\n\ndetached\n\nworktree \"q\nbare\n"
 	// A bare line before the first record and a key after a blank line belong to no record; a worktree line starts a
 	// record without a blank line before it; the path is kept as git printed it.
-	got := parseWorktreeRecords(out, false)
+	got := parseWorktreeRecords(out, false, false)
 	want := []worktreeInfo{{Path: "/r/app", Branch: "main"}, {Path: "/r/a", Prunable: true}, {Path: `"q`, Bare: true}}
 	if !slices.Equal(got, want) {
 		t.Errorf("records = %+v, want %+v", got, want)
 	}
+	// The same rules hold for NUL-separated fields.
+	if got := parseWorktreeRecords(strings.ReplaceAll(out, "\n", "\x00"), true, false); !slices.Equal(got, want) {
+		t.Errorf("-z records = %+v, want %+v", got, want)
+	}
 	crlf := "worktree /r/app\r\nbare\r\n\r\nworktree /r/b\r\n"
-	if got := parseWorktreeRecords(crlf, true); len(got) != 2 || got[0].Path != "/r/app" || !got[0].Bare || got[1].Path != "/r/b" {
+	if got := parseWorktreeRecords(crlf, false, true); len(got) != 2 || got[0].Path != "/r/app" || !got[0].Bare || got[1].Path != "/r/b" {
 		t.Errorf("CRLF on Windows = %+v", got)
 	}
 	// Elsewhere \r may be part of a name, so it stays (and "\r" alone is no blank line).
-	if got := parseWorktreeRecords(crlf, false); len(got) != 2 || got[0].Path != "/r/app\r" || got[0].Bare {
+	if got := parseWorktreeRecords(crlf, false, false); len(got) != 2 || got[0].Path != "/r/app\r" || got[0].Bare {
 		t.Errorf("CRLF elsewhere = %+v", got)
+	}
+}
+
+// A name with a newline that looks like the start of another record is one path with -z, and a forged record in the
+// line format; a reason with a newline stays one field.
+func TestParseWorktreeRecordsZKeepsNewlines(t *testing.T) {
+	forged := "/r/x\nworktree /r/forged\nbare"
+	z := "worktree /r/app\x00HEAD 1\x00branch refs/heads/main\x00\x00" +
+		"worktree " + forged + "\x00HEAD 2\x00locked why\nworktree /r/l\x00prunable gone\nworktree /r/p\x00\x00" +
+		"worktree \"q\x00detached\x00\x00"
+	got := parseWorktreeRecords(z, true, false)
+	want := []worktreeInfo{{Path: "/r/app", Branch: "main"}, {Path: forged, Prunable: true}, {Path: `"q`, Detached: true}}
+	if !slices.Equal(got, want) {
+		t.Errorf("-z records = %+v, want %+v", got, want)
+	}
+	lines := "worktree /r/app\n\nworktree " + forged + "\n"
+	if got := parseWorktreeRecords(lines, false, false); len(got) != 3 || got[2].Path != "/r/forged" || !got[2].Bare {
+		t.Errorf("line records = %+v (the documented limit of the line format)", got)
+	}
+}
+
+func TestRunWorktreeListFallsBackOnlyWhenGitRefusesZ(t *testing.T) {
+	repo := realTempDir(t)
+	runGit(t, repo, "init", "-q")
+	// A real usage error (exit 129) for the first call, as an older git gives for -z; it needs a repository, since
+	// outside one git exits with 128 first.
+	var calls [][]string
+	out, z, err := runWorktreeList(func(args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		if len(calls) == 1 {
+			_, err := gitRaw(repo, "worktree", "list", "--porcelain", "--no-such-switch")
+			return nil, err
+		}
+		return []byte("worktree /r/app\n"), nil
+	})
+	if err != nil || z || out != "worktree /r/app\n" || len(calls) != 2 || slices.Contains(calls[1], "-z") || !slices.Contains(calls[0], "-z") {
+		t.Errorf("fallback: %q %v %v, calls %q", out, z, err, calls)
+	}
+	// Any other failure is not retried: a timeout or a broken repository could cost a second run.
+	_, notRepo := gitRaw(repo, "-C", filepath.Join(repo, "missing"), "worktree", "list") // exit status 128
+	for _, fail := range []error{errors.New("killed"), fmt.Errorf("git: %w", exec.ErrNotFound), notRepo} {
+		calls = nil
+		if _, _, err := runWorktreeList(func(args ...string) ([]byte, error) {
+			calls = append(calls, args)
+			return nil, fail
+		}); err == nil || len(calls) != 1 {
+			t.Errorf("%v: err %v, calls %q", fail, err, calls)
+		}
+	}
+	calls = nil
+	if out, z, err := runWorktreeList(func(args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		return []byte("worktree /r/app\x00\x00"), nil
+	}); err != nil || !z || out != "worktree /r/app\x00\x00" || len(calls) != 1 {
+		t.Errorf("-z: %q %v %v, calls %q", out, z, err, calls)
+	}
+}
+
+// git itself, through mainWorktree and listWorktrees: the names with a newline and a leading quote that the line format
+// misreads or ps skipped. Neither character is allowed in a Windows file name; the parser tests cover them there.
+func TestWorktreeListReadsNewlineAndQuoteNames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a Windows file name cannot contain a newline or a double quote")
+	}
+	main, _ := setupWorktreeRepo(t)
+	if _, err := gitRaw(main, "worktree", "list", "--porcelain", "-z"); usageRefused(err) {
+		t.Skip("git before 2.36 has no -z, and the line format misreads these names by design")
+	}
+	base := filepath.Dir(main)
+	forged := filepath.Join(base, "forged")
+	nl := filepath.Join(base, "x\nworktree "+forged)
+	quote := filepath.Join(base, `"q`)
+	runGit(t, main, "worktree", "add", "-q", "-b", "nl", nl)
+	runGit(t, main, "worktree", "add", "-q", "-b", "quote", quote)
+	if p, _, err := mainWorktree(quote); err != nil || p != main {
+		t.Errorf("mainWorktree = %q %v", p, err)
+	}
+	l, err := listWorktrees(nl, anyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, w := range l {
+		paths = append(paths, w.Path)
+	}
+	if !slices.Contains(paths, nl) || !slices.Contains(paths, quote) || slices.Contains(paths, forged) || paths[0] != main {
+		t.Errorf("listed %q", paths)
 	}
 }
 
@@ -1997,5 +2153,144 @@ func TestUpInABareLayoutRunsInTheMainBranchWorktree(t *testing.T) {
 		t.Fatal("no .env")
 	} else if v, _ := e.Get("APP_PORT"); v == "" || v == "80" {
 		t.Errorf("APP_PORT=%q, want a port above the default", v)
+	}
+}
+
+// Every .env read refuses a file larger than 1 MiB and says so: up's own .env, the copy source and the bare layout's
+// .env.example (#108).
+func TestUpRefusesAnEnvLargerThan1MiB(t *testing.T) {
+	large := "APP_NAME=x\n" + envPadding(maxSmallFile)
+	t.Run("own", func(t *testing.T) {
+		_, wt := setupWorktreeRepo(t)
+		writeFakeSail(t, wt)
+		writeFile(t, filepath.Join(wt, ".env"), large)
+		calls := captureRunner(t)
+		captureStdout(t)
+		err := cmdUp(nil)
+		if err == nil || !strings.Contains(err.Error(), "larger than 1 MiB") {
+			t.Fatalf("err = %v", err)
+		}
+		if b, _ := os.ReadFile(filepath.Join(wt, ".env")); string(b) != large {
+			t.Error(".env was rewritten")
+		}
+		if len(*calls) != 0 {
+			t.Errorf("sail ran: %v", *calls)
+		}
+	})
+	t.Run("copy source", func(t *testing.T) {
+		main, wt := setupWorktreeRepo(t)
+		writeFakeSail(t, wt)
+		writeFile(t, filepath.Join(main, ".env"), large)
+		captureRunner(t)
+		captureStdout(t)
+		captureStderr(t)
+		err := cmdUp(nil)
+		if err == nil || !strings.Contains(err.Error(), "cannot read the source .env") || !strings.Contains(err.Error(), "larger than 1 MiB") {
+			t.Fatalf("err = %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
+			t.Error(".env was written")
+		}
+	})
+	t.Run("bare env.example", func(t *testing.T) {
+		_, _, wt := setupBareWorktreeRepo(t)
+		writeFakeSail(t, wt)
+		writeFile(t, filepath.Join(wt, ".env.example"), large)
+		captureRunner(t)
+		captureStdout(t)
+		err := cmdUp(nil)
+		if err == nil || !strings.Contains(err.Error(), "cannot copy .env") || !strings.Contains(err.Error(), "larger than 1 MiB") {
+			t.Fatalf("err = %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
+			t.Error(".env was written")
+		}
+	})
+}
+
+func TestRmRefusesAnEnvLargerThan1MiB(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeRmFixtures(t, main, wt)
+	envPath := filepath.Join(wt, ".env")
+	b, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, envPath, string(b)+envPadding(maxSmallFile))
+	calls := captureRunner(t)
+	in := strings.NewReader("y\n")
+	old := stdin
+	stdin = in
+	t.Cleanup(func() { stdin = old })
+	captureStdout(t)
+	err = cmdRm(nil)
+	if err == nil || !strings.Contains(err.Error(), "larger than 1 MiB") || strings.Contains(err.Error(), "where up has been run") {
+		t.Fatalf("err = %v", err)
+	}
+	if in.Len() == 0 || len(*calls) != 0 {
+		t.Errorf("rm went on: stdin read=%v calls=%v", in.Len() == 0, *calls)
+	}
+}
+
+// upWithEnvSwapped runs up in wt, whose .env passes checkOwnEnv, after swap replaces .env while up waits for the lock
+// with a link to a file that has COMPOSE_FILE (#114). Without the read's own check, up would read that file and fail on
+// COMPOSE_FILE before its write could refuse the link, so the error tells where the link was refused.
+func upWithEnvSwapped(t *testing.T, wt string, swap func(target, env string)) (target string, err error) {
+	t.Helper()
+	writeFakeSail(t, wt)
+	env := filepath.Join(wt, ".env")
+	writeFile(t, env, "APP_NAME=own\n")
+	target = filepath.Join(t.TempDir(), "other.env")
+	writeFile(t, target, "COMPOSE_FILE=other.yml\nAPP_NAME=other\n")
+	old := upLock
+	upLock = func() (func(), error) {
+		if err := os.Remove(env); err != nil {
+			t.Fatal(err)
+		}
+		swap(target, env)
+		return lockRegistry()
+	}
+	t.Cleanup(func() { upLock = old })
+	calls := captureRunner(t)
+	captureStdout(t)
+	captureStderr(t)
+	err = cmdUp(nil)
+	if len(*calls) != 0 {
+		t.Errorf("sail ran: %v", *calls)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "COMPOSE_FILE=other.yml\nAPP_NAME=other\n" {
+		t.Errorf("the link target was rewritten: %q", b)
+	}
+	return target, err
+}
+
+func TestUpDoesNotReadALinkSwappedInAfterTheCheck(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	_, err := upWithEnvSwapped(t, wt, func(target, env string) { symlinkOrSkip(t, target, env) })
+	if err == nil || !errors.Is(err, errEnvNotRegular) || errors.Is(err, errNotOwnFile) ||
+		!strings.Contains(err.Error(), "symbolic link") || strings.Contains(err.Error(), "COMPOSE_FILE") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestReadOwnEnv(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := readOwnEnv(filepath.Join(dir, "missing")); !os.IsNotExist(err) {
+		t.Errorf("missing file: err = %v", err)
+	}
+	real := filepath.Join(dir, "real")
+	writeFile(t, real, "A=1\n")
+	if e, err := readOwnEnv(real); err != nil {
+		t.Errorf("cannot read a regular file: %v", err)
+	} else if v, _ := e.Get("A"); v != "1" {
+		t.Errorf("A=%q", v)
+	}
+	if trySymlink(t, real, filepath.Join(dir, "link")) {
+		if _, err := readOwnEnv(filepath.Join(dir, "link")); !errors.Is(err, errEnvNotRegular) {
+			t.Errorf("link: err = %v", err)
+		}
+	}
+	if _, err := readOwnEnv(dir); !errors.Is(err, errEnvNotRegular) {
+		t.Errorf("directory: err = %v", err)
 	}
 }

@@ -167,9 +167,9 @@ func statusEnv(c *ctx, r *report) *envFile {
 	} else {
 		r.line(".env:              ok")
 	}
-	env, ok := readEnvIfRegular(path)
-	if !ok {
-		r.problem(".env cannot be read")
+	env, err := readEnvIfRegular(path)
+	if err != nil {
+		r.problem(".env cannot be read: %v", err)
 		return nil
 	}
 	if k, ok := env.overrideKey(upOverrideKeys); ok {

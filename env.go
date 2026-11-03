@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // composePortRe matches a host-side port mapping such as '${APP_PORT:-80}:80'. The ":" after "}" keeps environment
@@ -53,38 +54,82 @@ type envFile struct {
 	lines []string
 }
 
+// The refusals of the .env reads wrap these after the quoted path. Each text is the cause, so that a message built
+// without the read's error (mainEnvUnreadable) names it in the same words.
+var (
+	errEnvTooLarge   = errors.New("is larger than 1 MiB")
+	errEnvNotRegular = errors.New("is a symbolic link or not a regular file")
+	errEnvHardLinked = errors.New("is hard-linked to another file")
+)
+
+// readEnv reads path through a link: the source a new .env is copied from (up copies the main worktree's .env through a
+// link). Like every .env read it refuses a file larger than maxSmallFile rather than cut it.
 func readEnv(path string) (*envFile, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return parseEnv(f)
+	return parseEnvFile(f, path)
+}
+
+// parseEnvFile reads at most maxSmallFile bytes of f: a cut could drop a port variable silently, so a larger file is
+// refused.
+func parseEnvFile(f *os.File, path string) (*envFile, error) {
+	b, err := io.ReadAll(io.LimitReader(f, maxSmallFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxSmallFile {
+		return nil, fmt.Errorf("%q %w", path, errEnvTooLarge)
+	}
+	return parseEnv(bytes.NewReader(b))
 }
 
 // readEnvIfRegular reads path only if it is a regular file: stop's warning, status, the main worktree's .env for the
-// mains record (up and check, through readMainEnv) and the .env.example a bare layout copies. Links, FIFOs and devices
-// are not read and ok is false. So that open does not block even if the path is swapped for a FIFO between Lstat and
-// open, it opens with O_NONBLOCK (which does not affect reading a regular file) and Stats the opened fd again. A file
-// larger than maxSmallFile is refused (ok is false) rather than cut, since a cut could drop a port variable silently.
-func readEnvIfRegular(path string) (*envFile, bool) {
-	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
-		return nil, false
+// mains record (up and check, through readMainEnv) and the .env.example a bare layout copies. A missing file returns
+// the error of Lstat unwrapped (os.IsNotExist); links, FIFOs and devices are refused with errEnvNotRegular, a file
+// larger than maxSmallFile with errEnvTooLarge.
+func readEnvIfRegular(path string) (*envFile, error) {
+	return readRegularEnv(path, false)
+}
+
+// readOwnEnv reads the worktree's own .env, which up and rm write, by the rule of checkOwnEnv: so that a link swapped in
+// after checkOwnEnv is not read either, it is also refused at the read, and so is (on Unix) a file with other hard
+// links. Errors are those of readEnvIfRegular.
+func readOwnEnv(path string) (*envFile, error) {
+	return readRegularEnv(path, true)
+}
+
+// readRegularEnv reads path for readEnvIfRegular and readOwnEnv. So that open does not block even if the path is
+// swapped for a FIFO between Lstat and open, it opens with O_NONBLOCK (which does not affect reading a regular file)
+// and Stats the opened fd again. On Unix a link swapped in after the Lstat fails the open with ELOOP (O_NOFOLLOW), which
+// is refused like one the Lstat saw; on Windows the Lstat is the only link check, as in writeFileNoFollow.
+func readRegularEnv(path string, refuseHardLink bool) (*envFile, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q %w", path, errEnvNotRegular)
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|openNonBlock|openNoFollow, 0)
-	if err != nil {
-		return nil, false
+	if errors.Is(err, syscall.ELOOP) {
+		return nil, fmt.Errorf("%q %w", path, errEnvNotRegular)
+	} else if err != nil {
+		return nil, err
 	}
 	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return nil, false
+	if fi, err = f.Stat(); err != nil {
+		return nil, err
 	}
-	b, err := io.ReadAll(io.LimitReader(f, maxSmallFile+1))
-	if err != nil || len(b) > maxSmallFile {
-		return nil, false
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q %w", path, errEnvNotRegular)
 	}
-	e, err := parseEnv(bytes.NewReader(b))
-	return e, err == nil
+	if refuseHardLink && hasMultipleLinks(fi) {
+		return nil, fmt.Errorf("%q %w", path, errEnvHardLinked)
+	}
+	return parseEnvFile(f, path)
 }
 
 func parseEnv(r io.Reader) (*envFile, error) {

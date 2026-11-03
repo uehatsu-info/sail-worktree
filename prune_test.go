@@ -381,6 +381,18 @@ func movedRoot(t *testing.T) (root, sub string) {
 	return root, sub
 }
 
+// aliasOfMovedRoot returns a main key recorded through a link (base/work is now a link to base/data) whose project has
+// since moved from the repository root into laravel/, and the key of the project there: both moves at once (#105).
+func aliasOfMovedRoot(t *testing.T) (alias, sub string) {
+	t.Helper()
+	base := realTempDir(t)
+	root := mustMkdir(t, filepath.Join(base, "data", "app"))
+	writeFile(t, filepath.Join(root, "README.md"), "x")
+	sub = projectDir(t, mustMkdir(t, filepath.Join(root, "laravel")))
+	symlinkOrSkip(t, filepath.Join(base, "data"), filepath.Join(base, "work"))
+	return filepath.Join(base, "work", "app"), sub
+}
+
 func TestReplacedMainRecordsAreWarnedAndPruned(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -390,6 +402,10 @@ func TestReplacedMainRecordsAreWarnedAndPruned(t *testing.T) {
 		{"alias", aliasMain, func(_, live string) string { return fmt.Sprintf("its real path %q has its own record", live) }},
 		{"moved root", movedRoot, func(_, live string) string {
 			return fmt.Sprintf("it is no longer a project directory and main worktree %q below it is recorded", live)
+		}},
+		{"alias of a moved root", aliasOfMovedRoot, func(_, live string) string {
+			return fmt.Sprintf("its real path %q is no longer a project directory and main worktree %q below it is "+
+				"recorded", filepath.Dir(live), live)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -439,6 +455,22 @@ func TestMainRecordsThatAreNotReplaced(t *testing.T) {
 			return alias, real
 		}, both, false},
 		{"old root with no record below it", movedRoot, alone, true},
+		{"alias of a moved root with no record below it", aliasOfMovedRoot, alone, true},
+		{"alias whose real path is still a project", func(t *testing.T) (string, string) {
+			alias, sub := aliasOfMovedRoot(t)
+			projectDir(t, filepath.Dir(sub))
+			return alias, sub
+		}, both, false},
+		{"alias whose real path is refused by validKey, with a record below it", func(t *testing.T) (string, string) {
+			alias, sub := aliasOfMovedRoot(t)
+			rp := filepath.Dir(sub)
+			orig := keyLinksOK
+			t.Cleanup(func() { keyLinksOK = orig })
+			// Only rp is refused (refuseKeyLinks would refuse the record below too), so that the test sees the usableDir
+			// check on the real path alone.
+			keyLinksOK = func(k string) bool { return k != rp && orig(k) }
+			return alias, sub
+		}, both, true},
 		{"old root that is still a project", func(t *testing.T) (string, string) {
 			root, sub := movedRoot(t)
 			return projectDir(t, root), sub

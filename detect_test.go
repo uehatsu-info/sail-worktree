@@ -593,7 +593,8 @@ func TestReservedPortVarNames(t *testing.T) {
 		"EXPERIMENTAL_BUILDKIT_SOURCE_POLICY",
 		"BUILDX_BAKE_DISABLE_VARS_ENV_LOOKUP", "BUILDX_BAKE_FILE", "BUILDX_BAKE_FILE_RELATIVE_PATHS",
 		"BUILDX_BAKE_FILE_SEPARATOR", "BUILDX_BAKE_GIT_ADVICE", "BUILDX_BAKE_GIT_AUTH_HEADER",
-		"BUILDX_BAKE_GIT_AUTH_TOKEN", "BUILDX_BAKE_GIT_SSH", "BUILDX_BUILDER", "BUILDX_CONFIG", "BUILDX_CPU_PROFILE",
+		"BUILDX_BAKE_GIT_AUTH_TOKEN", "BUILDX_BAKE_GIT_SSH", "BUILDX_BAKE_PATH_SEPARATOR", "BUILDX_BUILDER",
+		"BUILDX_CONFIG", "BUILDX_CPU_PROFILE",
 		"BUILDX_EXPERIMENTAL", "BUILDX_GIT_CHECK_DIRTY", "BUILDX_GIT_INFO", "BUILDX_GIT_LABELS", "BUILDX_MEM_PROFILE",
 		"BUILDX_METADATA_PROVENANCE", "BUILDX_METADATA_WARNINGS", "BUILDX_NO_DEFAULT_ATTESTATIONS",
 		"BUILDX_NO_DEFAULT_LOAD", "BUILDX_NO_DEFAULT_OCI_ARTIFACT", "BUILDX_SEND_GIT_QUERY_AS_INPUT",
@@ -671,11 +672,11 @@ func TestDetectedReservedNameRefusedOnlyByUpAndInit(t *testing.T) {
 	if err := cmdRm([]string{"-y"}); err != nil {
 		t.Fatalf("rm: %v", err)
 	}
-	// rm keeps the shell value (cleanEnv(nil)); down -v removes by the pinned project name.
+	// rm drops the shell value too, as stop does; down -v removes by the pinned project name.
 	rm := (*calls)[len(*calls)-1]
-	if len(*calls) != 2 || rm.name != "docker" || !slices.Contains(rm.env, "SAIL_SHARE_SERVER_PORT=1") ||
+	if len(*calls) != 2 || rm.name != "docker" || slices.Contains(rm.env, "SAIL_SHARE_SERVER_PORT=1") ||
 		!slices.Contains(rm.args, projectName(main, wt, wt)) {
-		t.Errorf("rm: %s %v", rm.name, rm.args)
+		t.Errorf("rm: %s %v (env %v)", rm.name, rm.args, rm.env)
 	}
 	if b, _ := os.ReadFile(filepath.Join(wt, ".env")); string(b) != env {
 		t.Errorf("stop or rm wrote .env: %q", b)

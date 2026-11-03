@@ -285,7 +285,8 @@ func cmdUp(args []string) error {
 			basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad, kept: kept, keptOK: keptOK})
 	}
 	src := envOwn
-	env, err := readEnv(envPath)
+	// Without following a link: one swapped in after checkOwnEnv would be read and its content written back here.
+	env, err := readOwnEnv(envPath)
 	if os.IsNotExist(err) && preSrcEnv != nil {
 		env, src = preSrcEnv, preSrc
 	} else if os.IsNotExist(err) {
@@ -462,7 +463,8 @@ func readMainEnv(dir string) (env *envFile, ok bool) {
 	} else if err != nil {
 		return nil, false
 	}
-	return readEnvIfRegular(envPath)
+	env, err := readEnvIfRegular(envPath)
+	return env, err == nil
 }
 
 // portsFromEnv applies the rule of mainPorts to the variables of defaults; env may be nil (no .env). A value is read
@@ -491,9 +493,21 @@ func warnMainEnv(main string) {
 }
 
 // mainEnvUnreadable is the warning when mainPorts cannot read the main's .env. A link is not followed here although
-// up copies .env through one: only reading ports into the shared registry is held to the read-only commands' rule.
+// up copies .env through one: only reading ports into the shared registry is held to the read-only commands' rule. The
+// cause comes from one Lstat, not from the read that failed (mainPorts reports only ok), so it is "cannot be read" when
+// the file changed in between.
 func mainEnvUnreadable(main string) string {
-	return fmt.Sprintf("%q is not a regular file or cannot be read, so the main worktree's ports are not recorded", filepath.Join(main, ".env"))
+	p := filepath.Join(main, ".env")
+	cause := "cannot be read"
+	if fi, err := os.Lstat(p); err == nil {
+		switch {
+		case !fi.Mode().IsRegular():
+			cause = errEnvNotRegular.Error()
+		case fi.Size() > maxSmallFile:
+			cause = errEnvTooLarge.Error()
+		}
+	}
+	return fmt.Sprintf("%q %s, so the main worktree's ports are not recorded", p, cause)
 }
 
 // envSource is where up took .env from. It is remembered to tailor the guidance in the refusal error.
@@ -552,9 +566,9 @@ func readOwnEnvExample(root string) (*envFile, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	env, ok := readEnvIfRegular(p)
-	if !ok {
-		return nil, fmt.Errorf("cannot copy .env from %q: it is not a regular file or cannot be read; create .env first", p)
+	env, err := readEnvIfRegular(p)
+	if err != nil {
+		return nil, fmt.Errorf("cannot copy .env: %w; create .env first", err)
 	}
 	return env, nil
 }
@@ -630,10 +644,14 @@ func nameMismatchError(got, want string) error {
 }
 
 // warnStopTarget warns before stop when .env seems to point at another compose file or project.
-// It is best effort and cannot detect overrides by shell expressions. It does nothing unless .env is a regular file.
+// It is best effort and cannot detect overrides by shell expressions. It reads .env only if it is a regular file of at
+// most 1 MiB, and says so when it could not check one that exists.
 func warnStopTarget(c *ctx) {
-	env, ok := readEnvIfRegular(filepath.Join(c.root, ".env"))
-	if !ok {
+	env, err := readEnvIfRegular(filepath.Join(c.root, ".env"))
+	if os.IsNotExist(err) {
+		return
+	} else if err != nil {
+		fmt.Fprintf(stderr, "warning: .env was not checked for settings that make stop stop another project: %s\n", escapeControl(err.Error()))
 		return
 	}
 	if k, ok := env.overrideKey(upOverrideKeys); ok {
@@ -690,9 +708,11 @@ func cmdRm(args []string) error {
 	if err := checkOwnEnv(envPath); err != nil {
 		return err
 	}
-	env, err := readEnv(envPath)
-	if err != nil {
+	env, err := readOwnEnv(envPath)
+	if os.IsNotExist(err) {
 		return fmt.Errorf("cannot read .env (run this in a worktree where up has been run): %w", err)
+	} else if err != nil {
+		return fmt.Errorf("cannot read .env: %w", err)
 	}
 	if k, ok := env.overrideKey(rmOverrideKeys); ok {
 		return fmt.Errorf(".env has %s, so rm cannot continue (it could point at another compose file or set of services); remove that line from .env before rm", k)
@@ -724,8 +744,14 @@ func cmdRm(args []string) error {
 		"and built images of project %q. Continue? [y/N] ", proj)) {
 		return nil
 	}
-	// Pass the project name, directory and compose file explicitly, and run without COMPOSE_* from the environment.
-	if err := runner(c.root, cleanEnv(nil), "docker", rmArgs(proj, c.root, composePath)...); err != nil {
+	// Pass the project name, directory and compose file explicitly, and run without COMPOSE_* and the port variables
+	// from the environment, as stop does through runSail (shell values take precedence over .env when compose expands
+	// the file).
+	drop := make([]string, 0, len(cfg.PortVars))
+	for _, v := range cfg.PortVars {
+		drop = append(drop, v.Name)
+	}
+	if err := runner(c.root, cleanEnv(drop), "docker", rmArgs(proj, c.root, composePath)...); err != nil {
 		return err
 	}
 	// Read the registry again after docker so that an update by another up during the removal is not lost. The lock is
