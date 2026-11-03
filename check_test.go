@@ -214,11 +214,14 @@ func TestCheckTellsAWorktreeToRunUp(t *testing.T) {
 	for _, want := range []string{
 		fmt.Sprintf("keeps it: main worktree %q APP_PORT", main),
 		fmt.Sprintf("worktree %q APP_PORT (of %q)", wt, main),
-		fmt.Sprintf("fix: run `sail-worktree up` in %q", wt),
+		fmt.Sprintf("fix: run `sail-worktree up` in %q (it assigns another port)", wt),
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "WSL2") {
+		t.Errorf("WSL2 is mentioned outside native Windows:\n%s", out)
 	}
 }
 
@@ -753,5 +756,21 @@ func TestCheckInABareLayoutRecordsNoMain(t *testing.T) {
 	reg, _ := loadRegistry()
 	if _, ok := reg.Mains[bare]; ok || len(reg.Mains) != 0 {
 		t.Errorf("mains = %v", reg.Mains)
+	}
+}
+
+func TestCheckTellsAWorktreeToRunUpInsideWSL2(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeFile(t, filepath.Join(main, ".env"), "APP_PORT=8123\n")
+	saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 8123}}})
+	nativeWindows = true
+	t.Cleanup(func() { nativeWindows = false })
+	out, err := runCheck(t)
+	if err == nil || !strings.Contains(err.Error(), "found 1 problem") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	want := fmt.Sprintf("fix: run `sail-worktree up` in %q inside WSL2 and run check there (WSL2 has a registry of its own)", wt)
+	if !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
 	}
 }

@@ -36,7 +36,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry), `runWorktreeList`/`usageRefused`/`errNoZ` (`git worktree list --porcelain -z`; when git before 2.36 refuses it, run once more without `-z` only with `allowLines`, for the repository the user runs in), `parseWorktreeRecords` (the parser `ps` shares, for both formats; paths come unquoted, so without `-z` a path with a newline is misread) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart (`counterpart`, `isProjectDir`), `surelyNotProject` (the same rule on registry keys, `Lstat` only) |
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey`/`foldMains` (aliases folded in memory, replaced mains marked), `psPortsCell`, `listWorktrees`/`parseWorktreeList` (on `parseWorktreeRecords`; git through `runGitList`), `attribute`, `cell`/`jsonEscape` |
-| `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
+| `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `upHint`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
 | `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `staleWorktreeKey`, `recheckReplaced`, `prunedMain` (`stillPrunable`), `pruneLock` (the lock `prune` takes, replaced by tests) |
 | `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `readMains`, `refreshMains`, `checkConflicts`, `notProjectMain`, `holder`, `suggestion` |
@@ -448,7 +448,10 @@ These come from deliberate decisions; change them only on purpose and update the
   `runSail`'s `Dir`) before PATH, so a `bash.exe`, `bash.cmd` or the like there would run on the host; and Sail's
   `bin/sail` exits at its `uname` check in Git Bash, MSYS2 or Cygwin before it sources `.env` (Sail supports Windows
   only through WSL2, where the build is linux). `up` used to write `.env` and the registry before that failure. `rm`
-  runs docker directly and the other commands run no Sail, so they still run on Windows (#132).
+  runs docker directly and the other commands run no Sail, so they still run on Windows (#132). There `status` and
+  `check` word their hints to run `up` for WSL2 (`upHint`, `suggestion`), and `status` warns once in a linked worktree
+  that WSL2 sees it under another path (so another project name) and has another registry, so a Windows report does
+  not show what `up` did there (#136).
 - **`SANCTUM_STATEFUL_DOMAINS`.** Only when `up` rewrites `APP_URL` and `.env` sets the key, `addStatefulDomain`
   appends the new `APP_URL`'s entry (lower-case host, `:port` unless it is the scheme's default; IPv6 canonical with
   brackets). It follows Sanctum's `fromFrontend`: an element equal (before trimming) to
