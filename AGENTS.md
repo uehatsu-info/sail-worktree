@@ -31,9 +31,9 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `upLock` (the lock `up` takes, replaced by tests), `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnv`/`readEnvIfRegular`/`readOwnEnv` (`readRegularEnv`, `parseEnvFile`, the 1 MiB limit), `writeFileNoFollow` |
-| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`projectMarkers` (main records a move left behind) |
+| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`markedBelow`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
-| `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry), `parseWorktreeRecords` (the `git worktree list --porcelain` parser `ps` shares; paths come unquoted, and `-z` needs git 2.36, so a path with a newline is misread) |
+| `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry), `runWorktreeList`/`usageRefused` (`git worktree list --porcelain -z`, run once more without `-z` when git before 2.36 refuses it), `parseWorktreeRecords` (the parser `ps` shares, for both formats; paths come unquoted, so without `-z` a path with a newline is misread) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart (`counterpart`, `isProjectDir`) |
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey`/`foldMains` (aliases folded in memory, replaced mains marked), `psPortsCell`, `listWorktrees`/`parseWorktreeList` (on `parseWorktreeRecords`), `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
@@ -97,18 +97,19 @@ These come from deliberate decisions; change them only on purpose and update the
   worktrees; it reads only a regular file and warns that it could not check an existing `.env` it refused).
 - **`rm` is guarded.** It recomputes the project name and requires `COMPOSE_PROJECT_NAME` in `.env` to match exactly.
   Every refusing check runs *before* the confirmation prompt. It pins `--project-name`, `--project-directory` and `-f`,
-  and runs without `COMPOSE_*` from the environment. Values from `.env` are untrusted: they are shown with `%+q`, and
-  only names matching `safeProjectName` are put into a suggested shell command. The compose file is resolved through its
-  links (`composeInsideProject`) and refused unless its real path is a regular file inside the project directory; `-f`
-  gets that real path, so do not "simplify" it back to `Join(root, compose)`. Only `rm` has this check: `up`, `stop` and
-  `init` do not run docker with `-f` (Sail finds the file itself), so their `os.Stat` and read of the compose file (to
-  find the project and detect port variables) are not a regression. Limits: Windows junctions are not followed (Go 1.23+
-  `EvalSymlinks`), a link swapped after the check is not caught, and what the compose file refers to is not checked
-  (relative `include:` and `extends:` paths of a file reached through a link are resolved from its target's directory).
-  A compose file that is a hard link to a file outside the project directory is not detected, by choice: a path check
-  cannot see one, only the link count could, and compose files are sometimes shared that way. A plain checkout cannot
-  create one because git stores no hard links, but a script or the user can. Hard-link detection exists only for the
-  files this tool writes (`.env`, `.sail-worktree.json`), and only on Unix.
+  and runs without `COMPOSE_*`, `SAIL_FILES` and the port variables from the environment (`cleanEnv`). Values from
+  `.env` are untrusted: they are shown with `%+q`, and only names matching `safeProjectName` are put into a suggested
+  shell command. The compose file is resolved through its links (`composeInsideProject`) and refused unless its real
+  path is a regular file inside the project directory; `-f` gets that real path, so do not "simplify" it back to
+  `Join(root, compose)`. Only `rm` has this check: `up`, `stop` and `init` do not run docker with `-f` (Sail finds the
+  file itself), so their `os.Stat` and read of the compose file (to find the project and detect port variables) are not
+  a regression. Limits: Windows junctions are not followed (Go 1.23+ `EvalSymlinks`), a link swapped after the check is
+  not caught, and what the compose file refers to is not checked (relative `include:` and `extends:` paths of a file
+  reached through a link are resolved from its target's directory). A compose file that is a hard link to a file outside
+  the project directory is not detected, by choice: a path check cannot see one, only the link count could, and compose
+  files are sometimes shared that way. A plain checkout cannot create one because git stores no hard links, but a script
+  or the user can. Hard-link detection exists only for the files this tool writes (`.env`, `.sail-worktree.json`), and
+  only on Unix.
 - **`ps`, `ports` and `status` only read.** They never `save` or `migrate` the registry (`foldRegistry` folds symlink
   aliases in a copy), never write `.env` or `.sail-worktree.json`, and never source `.env`. Registry keys are untrusted:
   a key that fails `validKey` (absolute and clean, and on Windows a drive-letter path, an allow-list, because a UNC or
@@ -133,8 +134,9 @@ These come from deliberate decisions; change them only on purpose and update the
   runs in the registry directories of other repositories (`gitInRegistryDirs` is off), because git itself looks at paths
   from that repository's metadata (`gitdir` targets, a `.git` file's `gitdir:`), and a UNC or device path there can open
   a network connection; those entries are `unattributed`. Elsewhere git runs there only through `listWorktrees`
-  (`worktree list` with `core.fsmonitor=false`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_COMMON_DIR`
-  removed); the worktree paths such a listing prints come from that repository's metadata (git itself still reads them),
+  (`worktree list --porcelain -z`, without `-z` if git refuses it (`runWorktreeList`), with `core.fsmonitor=false`,
+  `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_COMMON_DIR` removed); the worktree paths such a listing prints
+  come from that repository's metadata (git itself still reads them),
   so `parseWorktreeList` drops a record whose path fails `registryPathOK` (`validKey`) before anything looks at it (a
   refused main record drops the listing). The listing of the repository the user runs in passes `anyPath`. External
   queries go through `runOutput` (explicit env, timeout, no stdin, stdout capped while read). docker is asked once
@@ -201,27 +203,29 @@ These come from deliberate decisions; change them only on purpose and update the
   that are stale by `staleWorktreeKey` (the rule of `worktrees` keys: an older version recorded aliases there too, and
   one of a live worktree is kept). Main keys are never folded, so without `replacedMain` a record that a move left
   behind would conflict with the new one for ever. `replacedMain` is tested only for a key that passes `usableDir`, and
-  finds a record replaced in two cases. One is an alias whose real path is a usable key of its own. The other is a key
-  that is its own real path and a directory without project markers, while a usable key that is its own real path and
-  has markers lies strictly below it; the markers (`projectMarkers`) are `.sail-worktree.json`, or `artisan` and a
-  compose file, looked at with `Lstat` only, so a link counts and an error other than not-exist counts as present. A
-  `realPath` failure keeps the record, a main without such a second record keeps its ports, and git is not asked.
-  `validKey` always comes first, so an invalid key is never looked at (on Windows its walk reads only the elements and
-  links on the way, up to the first refused link). It lists and asks (package `stdin`/`stdout`, `-y` skips) without the
-  lock, then takes `lockRegistry`, reads the registry again and removes only listed records that are still recorded and
-  still unusable (with the same per-kind test), saving only when something was removed; records that became unusable
-  after the prompt are left for the next run, because the user did not confirm them. A replaced main is tested again
-  after the prompt and before the lock (`recheckReplaced`, so that the lock is not held while it reads the filesystem)
-  and under the lock only compared in the registry (`stillPrunable`: its record equals the listed one, and the record
-  that replaces it is still there). It never writes `.env` or `.sail-worktree.json` and runs neither docker, sail nor
-  git: the containers, networks and volumes of a removed worktree are left alone and the output says so (`docker compose
-  ls -a`). Untrusted keys are printed with `%q` and port names through `cell`. A directory that is only out of reach for
-  the moment counts as missing. So removing the record of a project that is still in use (one on a disk that is out of
-  reach for the moment, on Windows one run from a UNC path or through a link to one, which is not a usable key, or a
-  main whose checkout has no project markers at the moment while a main record with markers lies below it: a branch
-  without the project there) frees its ports in the registry until `up`, or for a main worktree also `check` in its
-  project directory, records it again; a port bound at that moment is still skipped by `up`'s `portFree`. The prompt
-  lists the records first.
+  finds a record replaced in two cases. One is an alias whose real path is a usable key of its own. The other is a
+  directory without project markers, while a usable key that is its own real path and has markers lies strictly below it
+  (`markedBelow`). That directory is the key when it is its own real path, or the real path of an alias that has no
+  record of its own, which must pass `usableDir` before its markers are looked at (#105). The markers (`projectMarkers`)
+  are `.sail-worktree.json`, or `artisan` and a compose file, looked at with `Lstat` only, so a link counts and an error
+  other than not-exist counts as present. A `realPath` failure keeps the record, a main without such a second record
+  keeps its ports, and git is not asked. `validKey` always comes first, so an invalid key is never looked at (on Windows
+  its walk reads only the elements and links on the way, up to the first refused link). It lists and asks (package
+  `stdin`/`stdout`, `-y` skips) without the lock, then takes `lockRegistry`, reads the registry again and removes only
+  listed records that are still recorded and still unusable (with the same per-kind test), saving only when something
+  was removed; records that became unusable after the prompt are left for the next run, because the user did not confirm
+  them. A replaced main is tested again after the prompt and before the lock (`recheckReplaced`, so that the lock is not
+  held while it reads the filesystem) and under the lock only compared in the registry (`stillPrunable`: its record
+  equals the listed one, and the record that replaces it is still there). It never writes `.env` or
+  `.sail-worktree.json` and runs neither docker, sail nor git: the containers, networks and volumes of a removed
+  worktree are left alone and the output says so (`docker compose ls -a`). Untrusted keys are printed with `%q` and port
+  names through `cell`. A directory that is only out of reach for the moment counts as missing. So removing the record
+  of a project that is still in use (one on a disk that is out of reach for the moment, on Windows one run from a UNC
+  path or through a link to one, which is not a usable key, or a main whose checkout, reached directly or through an
+  alias key, has no project markers at the moment while a main record with markers lies below it: a branch without the
+  project there) frees its ports in the registry until `up`, or for a main worktree also `check` in its project
+  directory, records it again; a port bound at that moment is still skipped by `up`'s `portFree`. The prompt lists the
+  records first.
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
@@ -268,11 +272,16 @@ These come from deliberate decisions; change them only on purpose and update the
   A main record is attributed only to the main (first) worktree of a listing (`attributeMain`). On Windows only the
   current repository's worktrees are listed (`gitInRegistryDirs`). One command runs git at most once in a directory, a
   failure included, and adds a repository's listing once (`registryView.list`), since each run may take its timeout.
+  The one exception is inside that attempt: when git refuses `-z` (exit status 129, git before 2.36; a repository cannot
+  cause that status), `runWorktreeList` runs the listing once more without it, and the result of the second run is what
+  counts. Such an old git reads the repository's configuration before it refuses the switch, so both runs can be slow.
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
-  case-insensitively) from the environment passed to `sail` and `docker`. It must never return `nil`: a `nil`
-  `exec.Cmd.Env` inherits the whole parent environment. A port variable named `COMPOSE_X_PORT` (allowed, as it is no
-  compose setting) is removed on both counts and reaches compose only through the `.env` that `up` writes, as every
-  port variable does; a `DOCKER_X_PORT` is removed as a port variable, while `DOCKER_HOST` and the like are kept.
+  case-insensitively) from the environment passed to `sail` (`up`, `stop`) and to `docker compose down` in `rm`, because
+  shell values take precedence over `.env`; the read-only docker queries pass no names to drop (`cleanEnv(nil)`). It
+  must never return `nil`: a `nil` `exec.Cmd.Env` inherits the whole parent environment. A port variable named
+  `COMPOSE_X_PORT` (allowed, as it is no compose setting) is removed on both counts and reaches compose only through the
+  `.env` that `up` writes, as every port variable does; a `DOCKER_X_PORT` is removed as a port variable, while
+  `DOCKER_HOST` and the like are kept.
 - **Paths are real paths.** The worktree root, the main worktree and the project directory are resolved through
   symlinks, because the project name contains a hash of the project directory. `Registry.migrate` merges keys an older
   version recorded under a symlinked path, and replaces aliases of root in the current main's `worktrees` list (the only
@@ -329,9 +338,9 @@ These come from deliberate decisions; change them only on purpose and update the
     port variable, and detection yields only `*PORT` names, so the name cannot be `DOCKER_HOST` or `PATH`. Only
     `SAIL_SHARE_SERVER_PORT` (read by Sail's `share`) ends in `PORT` (a test pins it): without `.sail-worktree.json`, a
     compose file that maps it stops `up` and `init`, `status` reports a configuration problem and `check` warns and
-    records no main, while `stop` and `rm` run (`stop` drops it from sail's environment; `rm` keeps a shell value, with
-    which compose only expands the compose file, and `down -v` picks what it removes by the pinned project name). Port
-    variables are required only for `up` and only when detected (a file with `port_vars: []` still works).
+    records no main, while `stop` and `rm` run (both drop it from the environment of sail and docker, and `down -v`
+    picks what it removes by the pinned project name). Port variables are required only for `up` and only when detected
+    (a file with `port_vars: []` still works).
   - `up`'s order: main refusal, configuration, detected port variables and `checkOwnEnv`. Then, before the lock, a
     registry read (used only for the base of the main's record and the alias keys), the main's `.env` (`mainPorts`, and
     `mainEnvPorts` for variables that only the record keeps; neither in a bare layout) and the copy source of a new

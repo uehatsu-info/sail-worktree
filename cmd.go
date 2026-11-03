@@ -733,8 +733,14 @@ func cmdRm(args []string) error {
 		"and built images of project %q. Continue? [y/N] ", proj)) {
 		return nil
 	}
-	// Pass the project name, directory and compose file explicitly, and run without COMPOSE_* from the environment.
-	if err := runner(c.root, cleanEnv(nil), "docker", rmArgs(proj, c.root, composePath)...); err != nil {
+	// Pass the project name, directory and compose file explicitly, and run without COMPOSE_* and the port variables
+	// from the environment, as stop does through runSail (shell values take precedence over .env when compose expands
+	// the file).
+	drop := make([]string, 0, len(cfg.PortVars))
+	for _, v := range cfg.PortVars {
+		drop = append(drop, v.Name)
+	}
+	if err := runner(c.root, cleanEnv(drop), "docker", rmArgs(proj, c.root, composePath)...); err != nil {
 		return err
 	}
 	// Read the registry again after docker so that an update by another up during the removal is not lost. The lock is

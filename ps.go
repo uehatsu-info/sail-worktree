@@ -60,17 +60,16 @@ type worktreeInfo struct {
 	Prunable bool
 }
 
-// parseWorktreeList reads the porcelain output (parseWorktreeRecords) and keeps the records whose path can be used.
-// A path that is empty or starts with a double quote is skipped (git prints paths unquoted, but older versions of this
-// tool took such a name for a quoted one and the rule is kept; a name with a newline is misread without -z), and so is
-// a path that usable refuses, before anything looks at that path; if that is the main worktree's record the whole
-// listing is dropped (nil), since every index and the project name depend on it. Paths are made real as far as they
-// exist.
-func parseWorktreeList(out string, usable func(string) bool) []worktreeInfo {
+// parseWorktreeList reads the porcelain output (parseWorktreeRecords; with -z when z is set) and keeps the records
+// whose path can be used. A path that is not absolute (an empty one included, or one that looks C-quoted) is skipped,
+// and so is one that usable refuses, before anything looks at that path; if that is the main worktree's record the
+// whole listing is dropped (nil), since every index and the project name depend on it. Paths are made real as far as
+// they exist.
+func parseWorktreeList(out string, z bool, usable func(string) bool) []worktreeInfo {
 	var list []worktreeInfo
-	for i, w := range parseWorktreeRecords(out, runtime.GOOS == "windows") {
-		// The raw text is checked first: filepath.Clean would turn "" into ".".
-		ok := w.Path != "" && !strings.HasPrefix(w.Path, `"`)
+	for i, w := range parseWorktreeRecords(out, z, runtime.GOOS == "windows") {
+		// The raw text is checked before filepath.Clean, which could make an odd path look usable.
+		ok := filepath.IsAbs(w.Path)
 		if ok {
 			w.Path = filepath.Clean(w.Path)
 			ok = usable(w.Path)
@@ -129,15 +128,16 @@ var registryPathOK = validKey
 var gitInRegistryDirs = runtime.GOOS != "windows"
 
 // listWorktrees lists the worktrees of the repository that contains dir (the first one is the main worktree), keeping
-// only the paths usable accepts. Only `worktree list` is used, with fsmonitor off, so that a repository's own
-// configuration cannot start a program.
+// only the paths usable accepts. Only `worktree list` is used (runWorktreeList), with fsmonitor off, so that a
+// repository's own configuration cannot start a program.
 func listWorktrees(dir string, usable func(string) bool) ([]worktreeInfo, error) {
-	out, err := runOutput(dir, gitListEnv(), 10*time.Second, "git",
-		"-c", "core.fsmonitor=false", "worktree", "list", "--porcelain")
+	out, z, err := runWorktreeList(func(args ...string) ([]byte, error) {
+		return runOutput(dir, gitListEnv(), 10*time.Second, "git", append([]string{"-c", "core.fsmonitor=false"}, args...)...)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("git worktree list: %w", err)
 	}
-	list := parseWorktreeList(string(out), usable)
+	list := parseWorktreeList(out, z, usable)
 	if len(list) == 0 {
 		return nil, fmt.Errorf("git worktree list: cannot read the main worktree's path")
 	}
