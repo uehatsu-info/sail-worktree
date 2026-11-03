@@ -285,7 +285,8 @@ func cmdUp(args []string) error {
 			basePorts: base.Ports, baseDefaults: base.Defaults, baseHad: baseHad, kept: kept, keptOK: keptOK})
 	}
 	src := envOwn
-	env, err := readEnv(envPath)
+	// Without following a link: one swapped in after checkOwnEnv would be read and its content written back here.
+	env, err := readOwnEnv(envPath)
 	if os.IsNotExist(err) && preSrcEnv != nil {
 		env, src = preSrcEnv, preSrc
 	} else if os.IsNotExist(err) {
@@ -696,7 +697,7 @@ func cmdRm(args []string) error {
 	if err := checkOwnEnv(envPath); err != nil {
 		return err
 	}
-	env, err := readEnv(envPath)
+	env, err := readOwnEnv(envPath)
 	if os.IsNotExist(err) {
 		return fmt.Errorf("cannot read .env (run this in a worktree where up has been run): %w", err)
 	} else if err != nil {

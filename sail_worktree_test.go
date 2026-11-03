@@ -2098,3 +2098,66 @@ func TestRmRefusesAnEnvLargerThan1MiB(t *testing.T) {
 		t.Errorf("rm went on: stdin read=%v calls=%v", in.Len() == 0, *calls)
 	}
 }
+
+// upWithEnvSwapped runs up in wt, whose .env passes checkOwnEnv, after swap replaces .env while up waits for the lock
+// with a link to a file that has COMPOSE_FILE (#114). Without the read's own check, up would read that file and fail on
+// COMPOSE_FILE before its write could refuse the link, so the error tells where the link was refused.
+func upWithEnvSwapped(t *testing.T, wt string, swap func(target, env string)) (target string, err error) {
+	t.Helper()
+	writeFakeSail(t, wt)
+	env := filepath.Join(wt, ".env")
+	writeFile(t, env, "APP_NAME=own\n")
+	target = filepath.Join(t.TempDir(), "other.env")
+	writeFile(t, target, "COMPOSE_FILE=other.yml\nAPP_NAME=other\n")
+	old := upLock
+	upLock = func() (func(), error) {
+		if err := os.Remove(env); err != nil {
+			t.Fatal(err)
+		}
+		swap(target, env)
+		return lockRegistry()
+	}
+	t.Cleanup(func() { upLock = old })
+	calls := captureRunner(t)
+	captureStdout(t)
+	captureStderr(t)
+	err = cmdUp(nil)
+	if len(*calls) != 0 {
+		t.Errorf("sail ran: %v", *calls)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "COMPOSE_FILE=other.yml\nAPP_NAME=other\n" {
+		t.Errorf("the link target was rewritten: %q", b)
+	}
+	return target, err
+}
+
+func TestUpDoesNotReadALinkSwappedInAfterTheCheck(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	_, err := upWithEnvSwapped(t, wt, func(target, env string) { symlinkOrSkip(t, target, env) })
+	if err == nil || !errors.Is(err, errEnvNotRegular) || errors.Is(err, errNotOwnFile) ||
+		!strings.Contains(err.Error(), "symbolic link") || strings.Contains(err.Error(), "COMPOSE_FILE") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestReadOwnEnv(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := readOwnEnv(filepath.Join(dir, "missing")); !os.IsNotExist(err) {
+		t.Errorf("missing file: err = %v", err)
+	}
+	real := filepath.Join(dir, "real")
+	writeFile(t, real, "A=1\n")
+	if e, err := readOwnEnv(real); err != nil {
+		t.Errorf("cannot read a regular file: %v", err)
+	} else if v, _ := e.Get("A"); v != "1" {
+		t.Errorf("A=%q", v)
+	}
+	if trySymlink(t, real, filepath.Join(dir, "link")) {
+		if _, err := readOwnEnv(filepath.Join(dir, "link")); !errors.Is(err, errEnvNotRegular) {
+			t.Errorf("link: err = %v", err)
+		}
+	}
+	if _, err := readOwnEnv(dir); !errors.Is(err, errEnvNotRegular) {
+		t.Errorf("directory: err = %v", err)
+	}
+}

@@ -30,7 +30,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 |---|---|
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `upLock` (the lock `up` takes, replaced by tests), `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
-| `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnv`/`readEnvIfRegular` (`parseEnvFile`, the 1 MiB limit), `writeFileNoFollow` |
+| `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnv`/`readEnvIfRegular`/`readOwnEnv` (`readRegularEnv`, `parseEnvFile`, the 1 MiB limit), `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry), `parseWorktreeRecords` (the `git worktree list --porcelain` parser `ps` shares; paths come unquoted, and `-z` needs git 2.36, so a path with a newline is misread) |
@@ -81,14 +81,16 @@ does not verify the symlink-refusal paths (nor the optional link check in the `r
 These come from deliberate decisions; change them only on purpose and update the tests and both READMEs.
 
 - **`.env` and `.sail-worktree.json` are never written through a link.** `up` and `rm` refuse a symlinked or
-  hard-linked `.env` (`checkOwnEnv`). Both files are written by `writeFileNoFollow`: `Lstat` (the only link check on
+  hard-linked `.env` (`checkOwnEnv`), and read it by the same rule (`readOwnEnv`: `Lstat`, a no-follow open, a regular
+  file not hard-linked on Unix), so a link swapped in after the check is not read (on Windows the `Lstat` is the only
+  check). Both files are written by `writeFileNoFollow`: `Lstat` (the only link check on
   Windows), open with `O_NOFOLLOW|O_NONBLOCK`, check that the opened file is regular and (Unix) not hard-linked, then
   truncate. Its refusals wrap `errNotOwnFile`, so `init` adds advice only to them. A new `.env` is created with mode
   0600 and a new `.sail-worktree.json` with 0644; an existing file keeps its mode. Duplicate keys that `up` writes are
   collapsed to the first line. Reading is asymmetric on purpose: `up`, `stop` and `rm` read a symlinked
   `.sail-worktree.json`; only writing refuses links, so do not "unify" the two. Every `.env` read (`readEnv`,
-  `readEnvIfRegular`) refuses a file larger than 1 MiB (`maxSmallFile`) rather than cut it (`errEnvTooLarge`), and a
-  refusal names its cause.
+  `readEnvIfRegular`, `readOwnEnv`) refuses a file larger than 1 MiB (`maxSmallFile`) rather than cut it
+  (`errEnvTooLarge`), and a refusal names its cause.
 - **Override keys differ per command.** `up` refuses `COMPOSE_FILE`, `COMPOSE_ENV_FILES` and `SAIL_FILES` in `.env`
   (compose would not read the ports and project name `up` writes). `COMPOSE_PROFILES` is allowed. `rm` also refuses
   `COMPOSE_PROFILES` because it cannot be undone. `stop` refuses nothing and only warns (best effort, non-main
@@ -334,9 +336,10 @@ These come from deliberate decisions; change them only on purpose and update the
     registry read (used only for the base of the main's record and the alias keys), the main's `.env` (`mainPorts`, and
     `mainEnvPorts` for variables that only the record keeps; neither in a bare layout) and the copy source of a new
     `.env` (`readCopySource`; one that cannot be read fails here, or it is read under the lock instead if `.env` is gone
-    by then). Then `upLock`, the registry read again, `migrateAliases`, `recordMainRead`, the worktree's own `.env` (or
-    the copy source) with the override keys refused (`upOverrideKeys`), port allocation, then `sailPath` right before
-    the first write, so nothing is written without Sail and the order of the existing refusals stays the same.
+    by then). Then `upLock`, the registry read again, `migrateAliases`, `recordMainRead`, the worktree's own `.env`
+    (`readOwnEnv`, or the copy source) with the override keys refused (`upOverrideKeys`), port allocation, then
+    `sailPath` right before the first write, so nothing is written without Sail and the order of the existing refusals
+    stays the same.
   - `rm` passes only the one compose file to `-f`, so `compose.override.yaml` is not read (volumes defined only there
     are left behind). A broken link named `compose.yaml` is skipped by `findMarker`, so a `docker-compose.yml` next to
     it is used.
@@ -443,6 +446,8 @@ These come from deliberate decisions; change them only on purpose and update the
 - A refusal that must happen before the prompt is tested by checking that stdin was not consumed and no command ran.
 - Compare messages that quote a path with `fmt.Sprintf("%q", path)` or `strconv.Quote`, never with a hand-written
   backslash string, so the same test passes on Windows.
+- `readOwnEnv`'s refusal of a link swapped in between its `Lstat` and `open` (`ELOOP`) cannot be tested
+  deterministically; the swap tests of `up` cover only the `Lstat` stage.
 - `readEnvIfRegular`'s defense against a path swapped for a FIFO between `Lstat` and `open` cannot be tested
   deterministically; the FIFO test only covers the `Lstat` stage.
 
