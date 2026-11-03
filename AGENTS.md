@@ -453,15 +453,17 @@ These come from deliberate decisions; change them only on purpose and update the
   a `validPort` default (`validatePortVars`), because `up` writes `NAME=port` into `.env`; the names are not held to the
   detection rule, so a hand-added variable may use any name compose does. A name in `reservedNames` (keys `up`
   writes, the `COMPOSE_*` and `DOCKER_*` settings docker compose and the docker CLI document, the BuildKit and buildx
-  settings, the proxy names and `SSH_AUTH_SOCK`, the settings `bin/sail` reads, sources in the comment,
-  `SAIL_FILES`, a few shell names; case-insensitive, as `cleanEnv` drops them) is refused, by `detectConfig`
-  too, so `init` never writes a file that `loadConfig` refuses (only `SAIL_SHARE_SERVER_PORT` ends in `PORT`, so
-  detection finds no other; see the configuration error rule above). Other `COMPOSE_*` and `DOCKER_*` names, such as
-  `DOCKER_WEB_PORT`, are allowed on purpose: v0.8.1 handled them (#74). Keep the shell part short, add a key there when
-  `up` starts to write it, and add a compose, docker, build or Sail setting when they start to read one; check the
-  sources in the comment again before each release. A repeated name (also compared
-  case-insensitively) is refused, because `up` would assign two ports and `Set` keeps only the first line;
-  `detectPortVars` yields each name once (`composePortRe` matches upper-case names only), and a test pins that.
+  settings, the proxy names and `SSH_AUTH_SOCK`, the settings `bin/sail` reads, sources in the comment, `SAIL_FILES`, a
+  few shell names, and the Windows names docker needs, which `cleanEnv` drops from `sail.bat` (what `os/exec` runs
+  for `vendor/bin/sail` there) and docker, or Sail's source of `.env` overwrites (#118); case-insensitive) is
+  refused on every OS, by `detectConfig` too, so `init` never writes a file that `loadConfig` refuses (only
+  `SAIL_SHARE_SERVER_PORT` ends in `PORT`, so detection finds no other; see the configuration error rule above). Other
+  `COMPOSE_*` and `DOCKER_*` names, such as `DOCKER_WEB_PORT`, are allowed on purpose: v0.8.1 handled them (#74). Keep
+  the shell and Windows parts short, add a key there when `up` starts to write it or when docker or `sail.bat` starts to
+  need one, and add a compose, docker, build or Sail setting when they start to read one; check the sources in the
+  comment again before each release. A repeated name (also compared case-insensitively) is refused, because `up` would
+  assign two ports and `Set` keeps only the first line; `detectPortVars` yields each name once (`composePortRe` matches
+  upper-case names only), and a test pins that.
 
 ## Testing notes
 

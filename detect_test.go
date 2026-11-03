@@ -582,9 +582,10 @@ func TestDetectionListsARepeatedVariableOnce(t *testing.T) {
 func TestReservedPortVarNames(t *testing.T) {
 	// Written out so that the list cannot lose one unnoticed: the keys up writes, the shell and Sail names, and the
 	// settings that send compose to other files or docker to another daemon, the proxy and SSH agent names, the
-	// BuildKit and buildx settings, and the names Sail's bin/sail reads. The map's own keys are checked too, which
-	// catches a key that is not upper-case.
+	// BuildKit and buildx settings, the names Sail's bin/sail reads, and the Windows names docker needs.
+	// The map's own keys are checked too, which catches a key that is not upper-case.
 	reserved := []string{"SHELL", "USER", "PWD", "IFS", "APP_SERVICE", "WWWGROUP", "PATH", "HOME", "WWWUSER", "APP_ENV",
+		"SYSTEMROOT", "USERPROFILE", "PROGRAMFILES", "PROGRAMDATA",
 		"COMPOSE_PROJECT_NAME", "SESSION_COOKIE", "APP_URL", "SANCTUM_STATEFUL_DOMAINS", "SAIL_FILES",
 		"COMPOSE_FILE", "COMPOSE_ENV_FILES", "COMPOSE_PROFILES", "COMPOSE_PATH_SEPARATOR", "COMPOSE_DISABLE_ENV_FILE",
 		"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
