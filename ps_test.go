@@ -1000,7 +1000,7 @@ func TestPsListsMainWorktreeRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "app (main)") || strings.Contains(out, "8080") || strings.Contains(out, "APP_PORT=90") {
+	if !strings.Contains(out, "app (main)") || containsNumber(out, "8080") || strings.Contains(out, "APP_PORT=90") {
 		t.Errorf("table:\n%s", out)
 	}
 	if !strings.Contains(errOut, "registry entries not listed: 1") { // the gone main still holds its port

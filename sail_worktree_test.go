@@ -2463,3 +2463,9 @@ func TestReadOwnEnv(t *testing.T) {
 		t.Errorf("directory: err = %v", err)
 	}
 }
+
+// containsNumber reports whether s holds n as a number of its own, not inside a longer name: the temporary
+// directories that some outputs show have random letters and digits in their names.
+func containsNumber(s, n string) bool {
+	return regexp.MustCompile(`(^|[^0-9A-Za-z])` + regexp.QuoteMeta(n) + `([^0-9A-Za-z]|$)`).MatchString(s)
+}
