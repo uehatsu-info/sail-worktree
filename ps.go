@@ -45,6 +45,7 @@ const (
 	stateStale        = "stale"        // the worktree or directory is gone, or the key is invalid
 	stateUnattributed = "unattributed" // the directory exists but no listed worktree holds it
 	stateReplaced     = "replaced"     // a main record that another record replaced (replacedMain)
+	stateNotProject   = "not-project"  // a main record of a directory that is surely not a project (notProjectMain)
 	// docker's view of the compose project.
 	stateRunning = "running" // at least one container runs
 	stateStopped = "stopped" // containers exist, none runs
@@ -178,13 +179,17 @@ func foldRegistry(r *Registry) map[string]map[string]int {
 type mainView struct {
 	rec        MainRecord
 	replacedBy string // the record that replaces it (replacedMain), or ""
+	notProject bool   // its directory is surely not a project (notProjectMain); never set with replacedBy
 }
 
 // foldMains returns the main records keyed as the read-only views show them; it is never saved. A record that another
-// replaces (replacedMain, which check warns about) keeps its key and is marked. Otherwise a usable alias key whose real
-// path has no record of its own is shown under that real path (the smallest alias, as in foldRegistry), so that it is
-// attributed to its repository. A further alias of the same path keeps its key instead of being dropped as
-// foldRegistry drops one: check counts every main record as a holder, and the views must find the same conflicts.
+// replaces (replacedMain, which check warns about) keeps its key and is marked, and so does, tested next as in check, a
+// record of a directory that is surely not a project (notProjectMain): check warns about both under their keys, so such
+// an alias is not shown under its real path (it is not-project, not unattributed, and without --all it may not be
+// attributed at all, as a replaced one). Otherwise a usable alias key whose real path has no record of its own is
+// shown under that real path (the smallest alias, as in foldRegistry), so that it is attributed to its repository. A
+// further alias of the same path keeps its key instead of being dropped as foldRegistry drops one: check counts every
+// main record as a holder, and the views must find the same conflicts.
 func foldMains(r *Registry) map[string]mainView {
 	out := make(map[string]mainView, len(r.Mains))
 	for _, k := range slices.Sorted(maps.Keys(r.Mains)) {
@@ -192,6 +197,8 @@ func foldMains(r *Registry) map[string]mainView {
 		key := k
 		if by, _ := r.replacedMain(k); by != "" {
 			v.replacedBy = by
+		} else if notProjectMain(k) {
+			v.notProject = true
 		} else if usableDir(k) { // validKey first, so an invalid key is never resolved
 			if rp, err := realPath(k); err == nil && rp != k {
 				_, recorded := r.Mains[rp]
@@ -443,8 +450,12 @@ func mainEntries(reg *Registry, v *registryView) (entries []entry, hidden int) {
 		default: // placeSkipped: another repository's record, left out without all
 			continue
 		}
-		if mains[key].replacedBy != "" { // replacedMain needs a usable key, so the entry is never stale
+		// replacedMain and notProjectMain need a usable key, so the entry is never stale.
+		switch {
+		case mains[key].replacedBy != "":
 			e.State = stateReplaced
+		case mains[key].notProject:
+			e.State = stateNotProject
 		}
 		entries = append(entries, e)
 	}

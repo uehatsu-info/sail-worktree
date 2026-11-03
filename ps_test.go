@@ -988,6 +988,7 @@ func TestPsListsMainWorktreeRecords(t *testing.T) {
 	withGitInRegistryDirs(t, true)
 	main, wt := setupWorktreeRepo(t)
 	otherMain, _ := newRepoWithWorktree(t, realTempDir(t), "other", "x")
+	projectDir(t, otherMain) // not marked not-project (#125)
 	gone := filepath.Join(realTempDir(t), "gone")
 	writeRegistryWithMains(t, map[string]map[string]int{wt: {"APP_PORT": 81}}, map[string]MainRecord{
 		main:      viewMain(map[string]int{"APP_PORT": 80}),
@@ -1039,6 +1040,7 @@ func TestPsMainOfAnotherRepositoryWithoutGit(t *testing.T) {
 	withGitInRegistryDirs(t, false) // as on Windows
 	setupWorktreeRepo(t)
 	otherMain, _ := newRepoWithWorktree(t, realTempDir(t), "other", "x")
+	projectDir(t, otherMain)
 	writeRegistryWithMains(t, nil, map[string]MainRecord{otherMain: viewMain(map[string]int{"APP_PORT": 80})})
 	es := psJSON(t, "--all")
 	if len(es) != 1 || es[0].Kind != kindMain || es[0].State != stateUnattributed || es[0].Worktree != "" {
@@ -1151,6 +1153,8 @@ func TestPsAllRunsGitOncePerDirectory(t *testing.T) {
 	if err := os.Mkdir(plain, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	projectDir(t, plain)
+	projectDir(t, otherWt) // projects, so that their main records are not marked not-project (#125)
 	// Both directories are recorded twice, as a worktree and as a main.
 	writeRegistryWithMains(t,
 		map[string]map[string]int{wt: {"APP_PORT": 81}, otherWt: {"APP_PORT": 82}, plain: {"APP_PORT": 83}},
@@ -1285,6 +1289,58 @@ func TestPsFoldsMainKeysAndMarksReplacedRecords(t *testing.T) {
 	}
 	out, _, _ := runPs(t, "--all")
 	if !strings.Contains(out, "replaced") {
+		t.Errorf("table:\n%s", out)
+	}
+	if after, _ := os.ReadFile(mustRegistryPath(t)); string(after) != string(before) {
+		t.Errorf("the registry changed:\n%s\n---\n%s", before, after)
+	}
+}
+
+// aliasNotProject returns a main key through a link (base/work is a link to base/data) to a directory that is surely
+// not a project, and that directory.
+func aliasNotProject(t *testing.T) (alias, real string) {
+	t.Helper()
+	base := realTempDir(t)
+	real = mustMkdir(t, filepath.Join(base, "data", "x"))
+	symlinkOrSkip(t, filepath.Join(base, "data"), filepath.Join(base, "work"))
+	return filepath.Join(base, "work", "x"), real
+}
+
+// ps marks a main record of a directory that is surely not a project as check warns about it (#125), after replaced
+// records (which stay replaced) and only once the record is placed, so ps without --all still leaves out records of
+// other directories.
+func TestPsMarksMainRecordsThatAreNotProjects(t *testing.T) {
+	main, _ := setupWorktreeRepo(t)
+	withGitInRegistryDirs(t, false)
+	inMain := mustMkdir(t, filepath.Join(main, "docs")) // listed in this repository, no project markers
+	plain := realTempDir(t)
+	alias, _ := aliasNotProject(t)
+	stale, live := aliasMain(t)
+	root, sub := movedRoot(t)
+	writeRegistryWithMains(t, nil, map[string]MainRecord{
+		inMain: viewMain(map[string]int{"APP_PORT": 89}),
+		plain:  viewMain(map[string]int{"APP_PORT": 90}),
+		alias:  viewMain(map[string]int{"APP_PORT": 91}),
+		stale:  viewMain(map[string]int{"APP_PORT": 92}),
+		live:   viewMain(map[string]int{"APP_PORT": 93}),
+		root:   viewMain(map[string]int{"APP_PORT": 94}),
+		sub:    viewMain(map[string]int{"APP_PORT": 95}),
+	})
+	before, _ := os.ReadFile(mustRegistryPath(t))
+	if es := psJSON(t); len(es) != 1 || es[0].Dir != inMain || es[0].State != stateNotProject {
+		t.Errorf("entries = %+v", es)
+	}
+	got := map[string]string{}
+	for _, e := range psJSON(t, "--all") {
+		got[e.Dir] = e.State
+	}
+	want := map[string]string{inMain: stateNotProject, plain: stateNotProject, alias: stateNotProject,
+		stale: stateReplaced, live: stateUnattributed, root: stateReplaced, sub: stateUnattributed}
+	if !maps.Equal(got, want) {
+		t.Errorf("--all states = %v, want %v", got, want)
+	}
+	out, _, _ := runPs(t, "--all")
+	if strings.Count(out, "not-project") != 3 {
 		t.Errorf("table:\n%s", out)
 	}
 	if after, _ := os.ReadFile(mustRegistryPath(t)); string(after) != string(before) {

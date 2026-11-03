@@ -281,9 +281,10 @@ func parsePort(s string) (int, bool) {
 
 // otherHolders lists, sorted, the registry entries other than self that record port, and then the main worktree
 // records that do, with check's labels (holder.String). Every main record counts, also one of a directory that is gone,
-// because up avoids them all and would move this port on its next run; one that another record replaced says so. A
-// worktree's main is not named: the line is about this worktree's port, and the holder's own directory already tells
-// which record to look at.
+// because up avoids them all and would move this port on its next run; one that another record replaced says so, and
+// one that is not a project is labelled "(not a project)" after holder.String, which check shares (foldMains never
+// marks a record both ways). A worktree's main is not named: the line is about this worktree's port, and the holder's
+// own directory already tells which record to look at.
 func otherHolders(view map[string]map[string]int, mains map[string]mainView, self string, port int) []string {
 	// A value that is not a port number holds nothing, as in check and ports. The callers pass a valid port or 0, and
 	// an equal recorded value is then valid too.
@@ -291,6 +292,7 @@ func otherHolders(view map[string]map[string]int, mains map[string]mainView, sel
 		return nil
 	}
 	var hs []holder
+	notProject := map[string]bool{} // main dirs; worktree holders never carry the label
 	for dir, ports := range view {
 		if dir == self {
 			continue
@@ -302,6 +304,7 @@ func otherHolders(view map[string]map[string]int, mains map[string]mainView, sel
 		}
 	}
 	for dir, m := range mains {
+		notProject[dir] = m.notProject
 		for name, p := range m.rec.Ports {
 			if p == port {
 				hs = append(hs, holder{main: true, dir: dir, name: name, port: p, replacedBy: m.replacedBy})
@@ -321,6 +324,9 @@ func otherHolders(view map[string]map[string]int, mains map[string]mainView, sel
 	out := make([]string, len(hs))
 	for i, h := range hs {
 		out[i] = h.String()
+		if h.main && notProject[h.dir] {
+			out[i] += " (not a project)"
+		}
 	}
 	return out
 }
