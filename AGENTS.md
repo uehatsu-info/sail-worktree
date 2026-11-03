@@ -31,7 +31,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `upLock` (the lock `up` takes, replaced by tests), `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnv`/`readEnvIfRegular`/`readOwnEnv` (`readRegularEnv`, `parseEnvFile`, the 1 MiB limit), `writeFileNoFollow` |
-| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`markedBelow`/`projectMarkers` (main records a move left behind) |
+| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`/`openRegular`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`markedBelow`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry), `runWorktreeList`/`usageRefused`/`errNoZ` (`git worktree list --porcelain -z`; when git before 2.36 refuses it, run once more without `-z` only with `allowLines`, for the repository the user runs in), `parseWorktreeRecords` (the parser `ps` shares, for both formats; paths come unquoted, so without `-z` a path with a newline is misread) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart (`counterpart`, `isProjectDir`), `surelyNotProject` (the same rule on registry keys, `Lstat` only) |
@@ -41,7 +41,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `staleWorktreeKey`, `recheckReplaced`, `prunedMain` (`stillPrunable`), `pruneLock` (the lock `prune` takes, replaced by tests) |
 | `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `readMains`, `refreshMains`, `checkConflicts`, `notProjectMain`, `holder`, `suggestion` |
 | `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `claimStale`/`claimPath`, `releaser`, `lockTiming` |
-| `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, hard link count) |
+| `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, `O_NOCTTY`, hard link count) |
 | `sanctum.go` | `SANCTUM_STATEFUL_DOMAINS`: `statefulDomain`, `strIs`, `sanctumUnquote`, `statefulDisabled`, `addStatefulDomain` |
 | `sail_worktree_test.go`, `project_test.go`, `detect_test.go`, `sanctum_test.go`, `ps_test.go`, `registry_test.go`, `lock_test.go`, `status_test.go`, `portsview_test.go`, `check_test.go`, `prune_test.go`, `links_unix_test.go` | Tests |
 | `.github/workflows/ci.yml`, `release.yml`, `.github/dependabot.yml`, `.goreleaser.yaml` | CI and release |
@@ -83,16 +83,19 @@ These come from deliberate decisions; change them only on purpose and update the
 - **`.env` and `.sail-worktree.json` are never written through a link.** `up` and `rm` refuse a symlinked or
   hard-linked `.env` (`checkOwnEnv`), and read it by the same rule (`readOwnEnv`: `Lstat`, a no-follow open, a regular
   file not hard-linked on Unix), so a link swapped in after the check is not read (on Windows the `Lstat` is the only
-  check). Both files are written by `writeFileNoFollow`: `Lstat` (the only link check on
-  Windows), open with `O_NOFOLLOW|O_NONBLOCK`, check that the opened file is regular and (Unix) not hard-linked, then
-  truncate. Its refusals wrap `errNotOwnFile`, so `init` adds advice only to them. A new `.env` is created with mode
-  0600 and a new `.sail-worktree.json` with 0644; an existing file keeps its mode. Duplicate keys that `up` writes are
-  collapsed to the first line. Reading is asymmetric on purpose: `up`, `stop` and `rm` read a symlinked
-  `.sail-worktree.json`; only writing refuses links, so do not "unify" the two. Every `.env` read (`readEnv`,
-  `readEnvIfRegular`, `readOwnEnv`) refuses a file larger than 1 MiB (`maxSmallFile`) rather than cut it
-  (`errEnvTooLarge`), and a refusal names its cause. `readEnv` (the copy source of a new `.env`) follows links, but
-  opens with `O_NONBLOCK` and refuses the opened file unless it is regular ("is not a regular file", as
-  `readSmallFile`), so a FIFO there does not hang `up` (#123).
+  check). Both files are written by `writeFileNoFollow`: `Lstat` (the only link check on Windows), open with
+  `O_NOFOLLOW|O_NONBLOCK|O_NOCTTY`, check that the opened file is regular and (Unix) not hard-linked, then truncate.
+  Its refusals wrap `errNotOwnFile`, so `init` adds advice only to them. A new `.env` is created with mode 0600 and a
+  new `.sail-worktree.json` with 0644; an existing file keeps its mode. Duplicate keys that `up` writes are collapsed
+  to the first line. Reading is asymmetric on purpose: `up`, `stop` and `rm` read a symlinked `.sail-worktree.json`;
+  only writing refuses links, so do not "unify" the two. Every `.env` read (`readEnv`, `readEnvIfRegular`,
+  `readOwnEnv`) refuses a file larger than 1 MiB (`maxSmallFile`) rather than cut it (`errEnvTooLarge`), and a refusal
+  names its cause. `readEnv` (the copy source of a new `.env`) follows links, but opens only a regular file
+  (`openRegular`, shared with `readSmallFile`): a `Stat` before the open refuses anything else ("is not a regular
+  file"), so a device is not opened (some act on open, #131), and the open, with `O_NONBLOCK|O_NOCTTY`, is checked
+  again with `f.Stat()`, so a FIFO swapped in between does not hang `up` (#123). On Unix every open of these reads and
+  writes has `O_NOCTTY`. Limit: a path swapped for a device between the `Stat` (or `Lstat`) and the open is still
+  opened, and only refused after it.
 - **Override keys differ per command.** `up` refuses `COMPOSE_FILE`, `COMPOSE_ENV_FILES` and `SAIL_FILES` in `.env`
   (compose would not read the ports and project name `up` writes). `COMPOSE_PROFILES` is allowed. `rm` also refuses
   `COMPOSE_PROFILES` because it cannot be undone. `stop` refuses nothing and only warns (best effort, non-main
@@ -351,8 +354,9 @@ These come from deliberate decisions; change them only on purpose and update the
   - Detection (`detectConfig`, `detectPortVars`) takes only host port mappings (`${X_PORT:-n}:`) with a default between
     1 and 65535, because `up` rewrites every variable it detects; a usual `environment:` entry such as
     `DB_PORT=${DB_PORT:-3306}` must not match. It is a line heuristic, not a YAML parser: only `- ...` list lines are
-    read. The compose file and `.sail-worktree.json` are read with `readSmallFile` (non-blocking open, regular file, at
-    most 1 MiB, an error rather than a cut).
+    read. The compose file and `.sail-worktree.json` are read with `readSmallFile` (`openRegular`: a regular file by a
+    `Stat` before the open and again after it, a non-blocking open with `O_NOCTTY`, at most 1 MiB, an error rather
+    than a cut).
   - A configuration error is kept in `ctx.cfgErr` and returned by `ctx.config()` after the main-worktree refusal; no
     command reads `ctx.cfg` directly. `stop` fails on it too, as it did with a broken file. The exception: `stop` and
     `rm` take a reserved name found by detection (`reservedPortVarError`, through `ctx.teardownConfig()`): they write no
@@ -482,6 +486,10 @@ These come from deliberate decisions; change them only on purpose and update the
   deterministically; the swap tests of `up` cover only the `Lstat` stage.
 - `readEnvIfRegular`'s defense against a path swapped for a FIFO between `Lstat` and `open` cannot be tested
   deterministically; the FIFO test only covers the `Lstat` stage.
+- The same holds for `readEnv` and `readSmallFile` (`openRegular`): a swap for a FIFO or a device between the `Stat`
+  and the open cannot be produced deterministically, so their FIFO tests cover only the `Stat` stage. The device test
+  shows that the refusal comes before the open with a FIFO of mode 0 (an open would fail with "permission denied"; the
+  FIFO paths are skipped as root). `O_NOCTTY` is not tested; it is checked by reading.
 
 ## CI and release
 
