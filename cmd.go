@@ -693,18 +693,10 @@ func windowsMismatchMessage(got, shown string) string {
 		"so rm refuses.", got, shown) +
 		"\nIf up ran inside WSL2, .env has the name WSL2 uses (it sees this worktree under another path): run rm " +
 		"inside WSL2, which also releases the ports in its own registry." +
-		fmt.Sprintf("\nA port record that an older version wrote here on Windows (before up stopped running on native "+
-			"Windows) is released by editing %s by hand (see the README Notes).", registryPathShown()) +
+		"\nA port record that an older version wrote here on Windows (before up stopped running on native Windows) " +
+		"is released by `sail-worktree rm --registry-only`, which runs no docker." +
 		"\nDo not change COMPOSE_PROJECT_NAME to make rm run here: rm also runs `docker compose down -v` for the " +
 		"name in .env, which removes that project's volumes (database data) and cannot be undone."
-}
-
-// registryPathShown names the registry file for the hand edit that rm's Windows messages point to.
-func registryPathShown() string {
-	if p, err := registryPath(); err == nil {
-		return fmt.Sprintf("%q", p)
-	}
-	return `%APPDATA%\sail-worktree\registry.json`
 }
 
 // warnStopTarget warns before stop when .env seems to point at another compose file or project.
@@ -795,7 +787,7 @@ func cmdRm(args []string) error {
 		if nativeWindows { // up is refused here, so do not point to it (#140)
 			return fmt.Errorf("cannot read .env (up does not run on native Windows, and up inside WSL2 writes this "+
 				"same .env, so most likely there is no project here for rm to remove; a port record that an older version wrote "+
-				"here is released by editing %s by hand, see the README Notes): %w", registryPathShown(), err)
+				"here is released by `sail-worktree rm --registry-only`, which runs no docker): %w", err)
 		}
 		return fmt.Errorf("cannot read .env (run this in a worktree where up has been run): %w", err)
 	} else if err != nil {

@@ -404,13 +404,7 @@ func nameMismatchEscapesUntrustedNames(t *testing.T) {
 // name and run rm again" nor the manual down -v command: the name is most likely the one up wrote inside WSL2, whose
 // project runs on the same Docker daemon (#140). Elsewhere the message stays as the tests above pin it.
 func TestNameMismatchErrorOnNativeWindows(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("AppData", t.TempDir())
-	reg, err := registryPath()
-	if err != nil {
-		t.Fatal(err)
-	}
-	windowsOnly := []string{"inside WSL2", fmt.Sprintf("%q", reg), "by hand", "README Notes", "`docker compose down -v`"}
+	windowsOnly := []string{"inside WSL2", "`sail-worktree rm --registry-only`", "`docker compose down -v`"}
 	for _, windows := range []bool{false, true} {
 		nativeWindows = windows
 		t.Cleanup(func() { nativeWindows = false })
@@ -445,10 +439,6 @@ func TestNameMismatchErrorOnNativeWindows(t *testing.T) {
 // neither message points to up.
 func TestRmRefusalsOnNativeWindows(t *testing.T) {
 	_, wt := setupWorktreeRepo(t)
-	reg, err := registryPath()
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, windows := range []bool{false, true} {
 		nativeWindows = windows
 		t.Cleanup(func() { nativeWindows = false })
@@ -477,7 +467,7 @@ func TestRmRefusalsOnNativeWindows(t *testing.T) {
 			if points := strings.Contains(msg, "where up has been run") || strings.Contains(msg, "set COMPOSE_PROJECT_NAME in .env to"); points == windows {
 				t.Errorf("windows=%v env=%q: old remedy shown=%v: %s", windows, env, points, msg)
 			}
-			for _, want := range []string{"inside WSL2", fmt.Sprintf("%q", reg), "README Notes"} {
+			for _, want := range []string{"inside WSL2", "`sail-worktree rm --registry-only`"} {
 				if strings.Contains(msg, want) != windows {
 					t.Errorf("windows=%v env=%q: contains(%q) = %v: %s", windows, env, want, !windows, msg)
 				}

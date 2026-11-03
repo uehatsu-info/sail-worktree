@@ -354,14 +354,13 @@ func isDir(p string) bool {
 func suggestion(h holder, reserved map[int]bool) string {
 	if !h.main {
 		// On native Windows up is refused, so the record was written by an older version's up, and up inside WSL2
-		// (another registry, another project name) does not release it (#148). rm comes first: once up inside WSL2
-		// rewrites the name in .env, rm refuses here and only the hand edit is left.
+		// (another registry, another project name) does not release it (#148). rm --registry-only releases it whatever
+		// name .env holds, without docker (#149).
 		if nativeWindows {
-			return fmt.Sprintf("in %q on Windows, run `sail-worktree rm` while its .env still has the name an older "+
-				"version's up wrote here (rm runs `docker compose down -v` for that name, removing its volumes; do not "+
-				"change the name to make it run), or else edit %s by hand (see the README Notes): up inside WSL2 does not "+
-				"release this Windows record; then run `sail-worktree up` in it inside WSL2 and run check there (WSL2 has "+
-				"a registry of its own)", h.dir, registryPathShown())
+			return fmt.Sprintf("in %q on Windows, run `sail-worktree rm --registry-only` (it releases only this record, "+
+				"which an older version's up wrote here and up inside WSL2 does not release; containers that version "+
+				"created are left, `docker compose ls -a` lists them); then run `sail-worktree up` in it inside WSL2 and "+
+				"run check there (WSL2 has a registry of its own)", h.dir)
 		}
 		return fmt.Sprintf("run `sail-worktree up` in %q (it assigns another port)", h.dir)
 	}

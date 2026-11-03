@@ -770,12 +770,10 @@ func TestCheckTellsAWorktreeToRunUpInsideWSL2(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "found 1 problem") {
 		t.Fatalf("err = %v\n%s", err, out)
 	}
-	want := fmt.Sprintf("fix: in %q on Windows, run `sail-worktree rm` while its .env still has the name an older "+
-		"version's up wrote here (rm runs `docker compose down -v` for that name, removing its volumes; do not "+
-		"change the name to make it run), or else edit %s by hand (see the README Notes): up inside WSL2 does not "+
-		"release this Windows record; then run `sail-worktree up` in it inside WSL2 and run check there (WSL2 has a "+
-		"registry of its own)",
-		wt, registryPathShown())
+	want := fmt.Sprintf("fix: in %q on Windows, run `sail-worktree rm --registry-only` (it releases only this "+
+		"record, which an older version's up wrote here and up inside WSL2 does not release; containers that version "+
+		"created are left, `docker compose ls -a` lists them); then run `sail-worktree up` in it inside WSL2 and run "+
+		"check there (WSL2 has a registry of its own)", wt)
 	if !strings.Contains(out, want) {
 		t.Errorf("missing %q in:\n%s", want, out)
 	}
