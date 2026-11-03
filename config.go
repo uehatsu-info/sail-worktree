@@ -91,13 +91,16 @@ const (
 	proxySetting    = "docker and other programs read it as their proxy setting"
 	sshAgentSetting = "docker and ssh use it to reach the SSH agent"
 	buildSetting    = "docker build (BuildKit, buildx) reads it from the environment"
+	windowsNeeds    = "Windows programs, docker among them, need it"
+	dockerOnWindows = "docker on Windows finds its configuration, plugins or certificates through it"
 )
 
 // reservedNames holds, upper-case, the keys up writes itself (keep it in step with up), SAIL_FILES, the shell and Sail
 // names whose loss breaks sail, the settings Sail's bin/sail reads (the names it exports with a default, other than the
 // port variables APP_PORT and DB_PORT, and its other SAIL_* names), the COMPOSE_* and DOCKER_* settings that docker
-// compose and the docker CLI document, the build settings of BuildKit and buildx, and the proxy and SSH agent names
-// that docker reads. Sources (checked 2026-11; check them again before each release):
+// compose and the docker CLI document, the build settings of BuildKit and buildx, the proxy and SSH agent names
+// that docker reads, and the Windows names that docker needs. They are refused on every OS, as .sail-worktree.json is
+// committed and shared. Sources (checked 2026-11; check them again before each release):
 //   - https://docs.docker.com/compose/how-tos/environment-variables/envvars/ (with the names it lists as unsupported
 //     in Compose V2, which an older docker-compose still reads)
 //   - https://docs.docker.com/reference/cli/docker/#environment-variables (plus DOCKER_CONTENT_TRUST*, which older
@@ -107,6 +110,16 @@ const (
 //     https://github.com/docker/buildx; both are reserved)
 //   - https://docs.docker.com/engine/cli/proxy/ (the proxy names)
 //   - https://docs.docker.com/reference/cli/docker/buildx/build/#ssh (SSH_AUTH_SOCK)
+//   - Windows: cleanEnv drops a port variable from the environment of sail.bat (what os/exec's lookExtensions runs for
+//     vendor/bin/sail, Composer's proxy that runs bash) and of docker in rm. os/exec restores only SYSTEMROOT, and then
+//     Sail's source of .env overwrites it. SYSTEMROOT: golang.org/issue/25210 (DLLs); USERPROFILE: os.UserHomeDir,
+//     which docker/cli v29.7.2 cli/config/config.go uses for ~/.docker with no fallback on Windows (empty, it is a
+//     relative .docker); PROGRAMFILES: cli-plugins/manager/manager_windows.go (the compose plugin); PROGRAMDATA:
+//     internal/registry/config.go (certs.d), all in https://github.com/docker/cli. Left out, as neither docker/cli nor
+//     sail.bat reads them: WINDIR, TEMP and TMP, APPDATA and LOCALAPPDATA, PATHEXT (docker runs plugins by their .exe
+//     name), COMSPEC (golang.org/issue/56555: a process that starts a batch file needs it; this tool starts sail.bat
+//     with its own environment, and nothing below it starts one) and XDG_RUNTIME_DIR (a rootless setup puts the socket
+//     in DOCKER_HOST or a context).
 //   - the SAIL_* names in laravel/sail 1.x bin/sail (the names it only forwards into the container, COLORTERM and
 //     its AGENT_ENV_VARS, are not settings and are left out, #111)
 //
@@ -126,6 +139,12 @@ var reservedNames = map[string]string{
 	"PWD":                  shellNeeds,
 	"IFS":                  shellNeeds,
 	"UID":                  shellNeeds, // read-only in bash: sourcing .env stops at it, so the rest is skipped
+	// As port variables on Windows, cleanEnv would drop them from the environment of sail.bat and docker, and
+	// SYSTEMROOT, which os/exec restores, Sail's source of .env would overwrite.
+	"SYSTEMROOT":   windowsNeeds, // DLL loading, Winsock among them
+	"USERPROFILE":  dockerOnWindows,
+	"PROGRAMFILES": dockerOnWindows,
+	"PROGRAMDATA":  dockerOnWindows,
 	// Sail's script reads these; APP_ENV also chooses the .env file it sources.
 	"APP_SERVICE": sailUses,
 	"WWWUSER":     sailUses,
