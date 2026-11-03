@@ -563,3 +563,79 @@ func TestMainEnvUnreadableNamesTheCause(t *testing.T) {
 		t.Errorf("large: %s", got)
 	}
 }
+
+// On native Windows up is refused, and inside WSL2 the worktree has another path (so another project name) and
+// another registry, so the hints send the user to run up and status there, and a warning says why.
+func TestStatusHintsOnNativeWindows(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(t *testing.T, wt string)
+		want   string // followed by the hint
+	}{
+		{"missing .env", func(t *testing.T, wt string) {
+			if err := os.Remove(filepath.Join(wt, ".env")); err != nil {
+				t.Fatal(err)
+			}
+		}, ".env is missing; "},
+		{"project name missing", func(t *testing.T, wt string) { dropEnv(t, wt, "COMPOSE_PROJECT_NAME=") },
+			"COMPOSE_PROJECT_NAME is missing in .env; "},
+		{"port variable missing", func(t *testing.T, wt string) { dropEnv(t, wt, "APP_PORT=") },
+			"APP_PORT is not set in .env; "},
+		{"not in the registry", func(t *testing.T, _ string) { writeRegistry(t, map[string]map[string]int{}) },
+			"APP_PORT is not recorded in the registry; "},
+		{"APP_URL uses another port", func(t *testing.T, wt string) { setEnv(t, wt, "APP_URL", "http://localhost:9000") },
+			`APP_URL "http://localhost:9000" does not use APP_PORT 81; `},
+		{"sanctum entry missing", func(t *testing.T, wt string) { appendEnv(t, wt, "SANCTUM_STATEFUL_DOMAINS=localhost:80") },
+			`SANCTUM_STATEFUL_DOMAINS lacks "localhost:81" for APP_URL; `},
+	}
+	const note = "on native Windows this report uses this worktree's Windows path and the Windows registry"
+	for _, windows := range []bool{false, true} {
+		hint := "run up\n"
+		if windows {
+			hint = "run up and status inside WSL2\n"
+		}
+		for _, c := range cases {
+			t.Run(fmt.Sprintf("%s windows=%v", c.name, windows), func(t *testing.T) {
+				_, wt := statusSetup(t, "")
+				c.mutate(t, wt)
+				nativeWindows = windows
+				t.Cleanup(func() { nativeWindows = false })
+				out, _, err := runStatus(t)
+				if err == nil || !strings.Contains(err.Error(), "problem(s)") {
+					t.Fatalf("err = %v\n%s", err, out)
+				}
+				if !strings.Contains(out, c.want+hint) {
+					t.Errorf("output lacks %q:\n%s", c.want+hint, out)
+				}
+				if strings.Contains(out, note) != windows || strings.Contains(out, "WSL2") != windows {
+					t.Errorf("note shown = %v, WSL2 mentioned = %v, want %v:\n%s", strings.Contains(out, note),
+						strings.Contains(out, "WSL2"), windows, out)
+				}
+			})
+		}
+		t.Run(fmt.Sprintf("duplicate lines windows=%v", windows), func(t *testing.T) {
+			statusSetup(t, "APP_PORT=81\n")
+			nativeWindows = windows
+			t.Cleanup(func() { nativeWindows = false })
+			out, _, err := runStatus(t)
+			if err != nil {
+				t.Fatalf("err = %v\n%s", err, out)
+			}
+			want := "(Laravel's Dotenv the first); run up, which keeps only the first\n"
+			if windows {
+				want = "(Laravel's Dotenv the first); up keeps only the first (run up and status inside WSL2)\n"
+			}
+			if !strings.Contains(out, want) || strings.Contains(out, note) != windows {
+				t.Errorf("output lacks %q or the note is wrong:\n%s", want, out)
+			}
+		})
+	}
+	// The main worktree's report ends before the note: up does not run there on any system.
+	main, _ := statusSetup(t, "")
+	t.Chdir(main)
+	nativeWindows = true
+	t.Cleanup(func() { nativeWindows = false })
+	if out, _, err := runStatus(t); err != nil || strings.Contains(out, "WSL2") {
+		t.Errorf("main worktree on native Windows: err = %v\n%s", err, out)
+	}
+}

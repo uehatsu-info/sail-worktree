@@ -353,6 +353,10 @@ func isDir(p string) bool {
 // main worktree's .env is never written by this tool, so a free port is proposed. reserved gains the proposed port.
 func suggestion(h holder, reserved map[int]bool) string {
 	if !h.main {
+		if nativeWindows { // up is refused here, and WSL2 has a registry of its own (see upHint in status.go)
+			return fmt.Sprintf("run `sail-worktree up` in %q inside WSL2 and run check there (WSL2 has a registry of "+
+				"its own)", h.dir)
+		}
 		return fmt.Sprintf("run `sail-worktree up` in %q (it assigns another port)", h.dir)
 	}
 	got, err := allocatePorts([]PortVar{{Name: h.name, Default: h.port}}, nil, reserved, probePort)

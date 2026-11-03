@@ -86,6 +86,11 @@ func cmdStatus(args []string) error {
 		r.line("this is the main worktree: up and rm do not run here; check records its ports (up does too, in a worktree)")
 		return nil
 	}
+	if nativeWindows {
+		r.warn("on native Windows this report uses this worktree's Windows path and the Windows registry; WSL2 sees " +
+			"the worktree under another path, so another compose project name, and has a registry of its own: run up " +
+			"and status there")
+	}
 	proj := c.projectName()
 	r.line("compose project:   %s", proj)
 	cfg, cfgErr := c.config()
@@ -145,7 +150,7 @@ func statusEnv(c *ctx, r *report) *envFile {
 	if err != nil {
 		if os.IsNotExist(err) {
 			r.line(".env:              missing")
-			r.problem(".env is missing; run up")
+			r.problem(".env is missing; %s", upHint())
 		} else {
 			r.line(".env:              unreadable")
 			r.problem("cannot look at .env: %v", err)
@@ -182,7 +187,7 @@ func checkProjectName(r *report, env *envFile, want string) {
 	got, ok := env.Get("COMPOSE_PROJECT_NAME")
 	switch {
 	case !ok || got == "":
-		r.problem("COMPOSE_PROJECT_NAME is missing in .env; run up")
+		r.problem("COMPOSE_PROJECT_NAME is missing in .env; %s", upHint())
 	case got != want:
 		r.problem("COMPOSE_PROJECT_NAME in .env is %+q, but this worktree's name is %+q", got, want)
 	}
@@ -207,7 +212,7 @@ func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) 
 		envPort, haveEnv := 0, false
 		if env != nil {
 			if s, ok := env.Get(v.Name); !ok {
-				r.problem("%s is not set in .env; run up", v.Name)
+				r.problem("%s is not set in .env; %s", v.Name, upHint())
 			} else if p, ok := parsePort(s); !ok {
 				// The value is not shown: a port variable name comes from a committed file and may be any key.
 				r.problem("%s in .env is not a port number", v.Name)
@@ -220,7 +225,7 @@ func statusPorts(c *ctx, r *report, env *envFile, vars []PortVar, state string) 
 			r.problem("%s is recorded as %d in the registry, which is not a port number", v.Name, regPort)
 			regPort, haveReg = 0, false
 		} else if !haveReg {
-			r.problem("%s is not recorded in the registry; run up", v.Name)
+			r.problem("%s is not recorded in the registry; %s", v.Name, upHint())
 		}
 		if haveEnv && haveReg && envPort != regPort {
 			r.problem("%s is %d in .env but %d in the registry", v.Name, envPort, regPort)
@@ -250,9 +255,22 @@ func statusDuplicates(r *report, env *envFile, vars []PortVar) {
 		names = append(names, v.Name)
 	}
 	for _, name := range env.duplicateKeys(names) {
+		fix := "run up, which keeps only the first"
+		if nativeWindows {
+			fix = "up keeps only the first (" + upHint() + ")"
+		}
 		r.warn("%s is set on more than one line in .env; status shows the first line, but Sail and compose use the "+
-			"last (Laravel's Dotenv the first); run up, which keeps only the first", cell(name))
+			"last (Laravel's Dotenv the first); %s", cell(name), fix)
 	}
+}
+
+// upHint is the advice to run up. On native Windows up is refused (nativeWindowsError), and inside WSL2 the worktree
+// has another path, so another project name, and another registry: what up fixes there only status there shows.
+func upHint() string {
+	if nativeWindows {
+		return "run up and status inside WSL2"
+	}
+	return "run up"
 }
 
 // parsePort reads a port number from an .env value.
@@ -364,13 +382,13 @@ func statusAppURL(r *report, env *envFile, vars []PortVar) {
 		return
 	}
 	if u.Port() != strconv.Itoa(appPort) {
-		r.problem("APP_URL %q does not use APP_PORT %d; run up", u.String(), appPort)
+		r.problem("APP_URL %q does not use APP_PORT %d; %s", u.String(), appPort, upHint())
 		return
 	}
 	// addStatefulDomain edits what it is given, so it gets a copy; nothing here is written.
 	added, warning := addStatefulDomain(&envFile{lines: append([]string(nil), env.lines...)}, u)
 	if added != "" {
-		r.problem("%s lacks %q for APP_URL; run up", sanctumKey, added)
+		r.problem("%s lacks %q for APP_URL; %s", sanctumKey, added, upHint())
 	}
 	if warning != "" {
 		r.warn("%s", warning)
