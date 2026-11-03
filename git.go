@@ -74,7 +74,7 @@ func mainWorktree(dir string) (path string, bare bool, err error) {
 	out, z, err := runWorktreeList(func(args ...string) ([]byte, error) {
 		out, err := gitRaw(dir, args...) // wraps the *exec.ExitError with %w
 		return []byte(out), err
-	})
+	}, true) // the user's own repository: its paths are the user's own
 	if err != nil {
 		return "", false, err
 	}
@@ -89,17 +89,24 @@ func mainWorktree(dir string) (path string, bare bool, err error) {
 	return filepath.Clean(p), bare, nil
 }
 
+// errNoZ is the error of a listing that may not fall back to the line format when git refuses -z.
+var errNoZ = errors.New("git before 2.36 cannot list worktrees with -z")
+
 // runWorktreeList runs `worktree list --porcelain -z` through run (which adds the caller's git options, environment
 // and timeout) and returns its output and whether it is NUL-separated. Only git 2.36 and later have -z; an older one
-// refuses it as an unknown switch, and then the listing is asked once more without it. That is the only case in which
-// one listing runs git twice in a directory.
-func runWorktreeList(run func(args ...string) ([]byte, error)) (out string, z bool, err error) {
+// refuses it as an unknown switch. Then, if allowLines is set, the listing is asked once more without it (the only case
+// in which one listing runs git twice in a directory); otherwise it fails with errNoZ. The line format misreads a path
+// with a newline, so it is allowed only for the repository the user runs in.
+func runWorktreeList(run func(args ...string) ([]byte, error), allowLines bool) (out string, z bool, err error) {
 	b, err := run("worktree", "list", "--porcelain", "-z")
 	if err == nil {
 		return string(b), true, nil
 	}
 	if !usageRefused(err) {
 		return "", false, err
+	}
+	if !allowLines {
+		return "", false, errNoZ
 	}
 	b, err = run("worktree", "list", "--porcelain")
 	if err != nil {
@@ -132,8 +139,8 @@ func parseMainWorktree(out string, z, windows bool) (path string, bare bool, err
 // path or a reason with a newline stays whole; otherwise they are lines, and since git does not quote paths, a path
 // with a newline is misread (git before 2.36). Path is git's text untouched (nothing here looks at the filesystem), so
 // each caller decides what it accepts. Without z, \r is removed only on Windows, where git may end lines with it;
-// elsewhere it may be part of a name. The listing of another repository goes through parseWorktreeList, which
-// filters a path before anything looks at it. worktreeInfo is declared in ps.go.
+// elsewhere it may be part of a name. The listing of another repository is never in the line format and goes
+// through parseWorktreeList, which filters a path before anything looks at it. worktreeInfo is declared in ps.go.
 func parseWorktreeRecords(out string, z, windows bool) []worktreeInfo {
 	sep := "\n"
 	if z {
