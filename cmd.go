@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
@@ -207,7 +208,25 @@ var runner = runCmdEnv
 // upLock takes the registry lock for up; tests replace it to act between the reads before it and the lock.
 var upLock = lockRegistry
 
+// nativeWindows is true on native Windows (not in WSL2, where the build is linux). Tests replace it.
+var nativeWindows = runtime.GOOS == "windows"
+
+// nativeWindowsError refuses up and stop on native Windows. There os/exec runs Composer's vendor\bin\sail.bat, which
+// runs bash through cmd.exe: cmd.exe looks for it in the project directory before PATH, so a bash.exe, bash.cmd or the
+// like there would run on the host, and Sail's own script stops at its OS check in Git Bash, MSYS2 or Cygwin anyway
+// (Sail supports Windows only through WSL2). It comes before anything is read or written, so up leaves nothing behind.
+func nativeWindowsError(command string) error {
+	if !nativeWindows {
+		return nil
+	}
+	return fmt.Errorf("%s does not run on native Windows: Laravel Sail supports Windows only through WSL2; "+
+		"run the Linux build of sail-worktree inside WSL2", command)
+}
+
 func cmdUp(args []string) error {
+	if err := nativeWindowsError("up"); err != nil {
+		return err
+	}
 	c, err := loadCtx()
 	if err != nil {
 		return err
@@ -591,6 +610,9 @@ func upOverrideError(key string, src envSource) error {
 }
 
 func cmdStop(args []string) error {
+	if err := nativeWindowsError("stop"); err != nil {
+		return err
+	}
 	c, err := loadCtx()
 	if err != nil {
 		return err

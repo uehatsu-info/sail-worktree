@@ -277,6 +277,13 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
+// TestMain runs every test as if not on native Windows, so that the up and stop tests also run on the Windows CI;
+// TestUpAndStopRefuseNativeWindows sets it back.
+func TestMain(m *testing.M) {
+	nativeWindows = false
+	os.Exit(m.Run())
+}
+
 // Creates a main worktree and a linked worktree, and changes into the linked one.
 // HOME and XDG_CONFIG_HOME point at temporary directories so that the real user's registry and settings are not touched.
 func setupWorktreeRepo(t *testing.T) (main, wt string) {
@@ -739,6 +746,48 @@ func TestUpWritesEnvAndCleansSailEnvironment(t *testing.T) {
 	env := strings.Join((*calls)[0].env, "\n")
 	if strings.Contains(env, "APP_PORT=") || strings.Contains(env, "COMPOSE_PROFILES=") {
 		t.Error("port variables or COMPOSE_* are left in sail's environment")
+	}
+}
+
+func TestUpAndStopRefuseNativeWindows(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	calls := captureRunner(t)
+	nativeWindows = true
+	t.Cleanup(func() { nativeWindows = false })
+	commands := []struct {
+		name string
+		run  func([]string) error
+	}{{"up", cmdUp}, {"stop", cmdStop}}
+	refused := func(where string) {
+		t.Helper()
+		for _, c := range commands {
+			err := c.run(nil)
+			if err == nil || !strings.Contains(err.Error(), c.name+" does not run on native Windows") ||
+				!strings.Contains(err.Error(), "inside WSL2") {
+				t.Errorf("%s on native Windows (%s): %v", c.name, where, err)
+			}
+		}
+	}
+	refused("in a worktree")
+	// Outside a repository the refusal still comes first: it is made before git is asked for the worktree.
+	t.Chdir(t.TempDir())
+	refused("outside a repository")
+	t.Chdir(wt)
+	if len(*calls) != 0 {
+		t.Errorf("sail ran %d times", len(*calls))
+	}
+	if _, err := os.Lstat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
+		t.Errorf(".env was written: %v", err)
+	}
+	reg, err := registryPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{reg, reg + ".lock"} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Errorf("%s was written: %v", p, err)
+		}
 	}
 }
 
