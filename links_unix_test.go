@@ -367,3 +367,49 @@ func TestReadsRefuseADeviceBeforeOpeningIt(t *testing.T) {
 		}
 	}
 }
+
+// loadRegistry opens only a regular file (#134): a FIFO at the registry path does not block every command, and a
+// device, directly or through a link, is refused before the open. Like the tests above, only the Stat before the open
+// is checked deterministically.
+func TestLoadRegistryRefusesAFIFOOrADevice(t *testing.T) {
+	p := emptyRegistryPath(t)
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Fatalf("cannot create a FIFO (set TMPDIR to a filesystem that supports them): %v", err)
+	}
+	notRegular := strconv.Quote(p) + " is not a regular file"
+	// This part shows only that nothing blocks: the Stat after a non-blocking open would refuse the FIFO as well.
+	done := make(chan error, 1)
+	go func() { _, err := loadRegistry(); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), notRegular) {
+			t.Errorf("FIFO: err = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked on a FIFO")
+	}
+
+	// A FIFO without permissions shows that the refusal comes before the open: an open fails with EACCES for anyone
+	// but root. The Stat after the open would refuse /dev/null as well.
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fifo, 0); err != nil {
+		t.Fatal(err)
+	}
+	targets := []string{os.DevNull}
+	if os.Geteuid() != 0 {
+		targets = append(targets, fifo)
+	}
+	for _, target := range targets {
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+		symlinkOrSkip(t, target, p)
+		if _, err := loadRegistry(); err == nil || !strings.Contains(err.Error(), notRegular) {
+			t.Errorf("link to %s: err = %v", target, err)
+		}
+	}
+}

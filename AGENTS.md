@@ -31,7 +31,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `upLock` (the lock `up` takes, replaced by tests), `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), `nativeWindows`/`nativeWindowsError` (`up` and `stop` refused on native Windows), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnv`/`readEnvIfRegular`/`readOwnEnv` (`readRegularEnv`, `parseEnvFile`, the 1 MiB limit), `writeFileNoFollow` |
-| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`/`openRegular`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`markedBelow`/`projectMarkers` (main records a move left behind) |
+| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`/`readBounded`/`openRegular`, the port registry (`loadRegistry`, `maxRegistryFile`, `writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`markedBelow`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry), `runWorktreeList`/`usageRefused`/`errNoZ` (`git worktree list --porcelain -z`; when git before 2.36 refuses it, run once more without `-z` only with `allowLines`, for the repository the user runs in), `parseWorktreeRecords` (the parser `ps` shares, for both formats; paths come unquoted, so without `-z` a path with a newline is misread) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart (`counterpart`, `isProjectDir`), `surelyNotProject` (the same rule on registry keys, `Lstat` only) |
@@ -91,11 +91,11 @@ These come from deliberate decisions; change them only on purpose and update the
   only writing refuses links, so do not "unify" the two. Every `.env` read (`readEnv`, `readEnvIfRegular`,
   `readOwnEnv`) refuses a file larger than 1 MiB (`maxSmallFile`) rather than cut it (`errEnvTooLarge`), and a refusal
   names its cause. `readEnv` (the copy source of a new `.env`) follows links, but opens only a regular file
-  (`openRegular`, shared with `readSmallFile`): a `Stat` before the open refuses anything else ("is not a regular
-  file"), so a device is not opened (some act on open, #131), and the open, with `O_NONBLOCK|O_NOCTTY`, is checked
-  again with `f.Stat()`, so a FIFO swapped in between does not hang `up` (#123). On Unix every open of these reads and
-  writes has `O_NOCTTY`. Limit: a path swapped for a device between the `Stat` (or `Lstat`) and the open is still
-  opened, and only refused after it.
+  (`openRegular`, shared with `readSmallFile` and `loadRegistry` through `readBounded`): a `Stat` before the open
+  refuses anything else ("is not a regular file"), so a device is not opened (some act on open, #131), and the open,
+  with `O_NONBLOCK|O_NOCTTY`, is checked again with `f.Stat()`, so a FIFO swapped in between does not hang `up` (#123).
+  On Unix every open of these reads and writes has `O_NOCTTY`. Limit: a path swapped for a device between the `Stat`
+  (or `Lstat`) and the open is still opened, and only refused after it.
 - **Override keys differ per command.** `up` refuses `COMPOSE_FILE`, `COMPOSE_ENV_FILES` and `SAIL_FILES` in `.env`
   (compose would not read the ports and project name `up` writes). `COMPOSE_PROFILES` is allowed. `rm` also refuses
   `COMPOSE_PROFILES` because it cannot be undone. `stop` refuses nothing and only warns (best effort, non-main
@@ -391,7 +391,10 @@ These come from deliberate decisions; change them only on purpose and update the
   (`renameRetries`). A process killed between the temporary file and the rename leaves a harmless `.registry-*.tmp`,
   and the directory is not synced (atomicity, not durability). Do not go back to `os.WriteFile`: its
   truncate-then-write window is what a race smoke test covers. This is the registry only; `.env` and
-  `.sail-worktree.json` keep `writeFileNoFollow`.
+  `.sail-worktree.json` keep `writeFileNoFollow`. `loadRegistry` reads it through `readBounded` (`openRegular`, #134):
+  links are followed, since the save keeps one, but only a regular file is opened, so a FIFO does not hang every
+  command and a device is not opened; a missing file (or a dangling link) is an empty registry, and a file larger than
+  `maxRegistryFile` (16 MiB) is an error rather than cut, as a cut registry would be saved with records dropped.
 - **Registry handling in `rm`.** Read the registry once before the prompt (to fail early on a broken file, and to find
   the alias keys to release, `aliasesOf`; this never refuses) and again after `docker` (so an update made meanwhile by
   another `up` is not lost); release the worktree only after docker succeeds. The lock is taken after docker and before
@@ -496,10 +499,10 @@ These come from deliberate decisions; change them only on purpose and update the
   deterministically; the swap tests of `up` cover only the `Lstat` stage.
 - `readEnvIfRegular`'s defense against a path swapped for a FIFO between `Lstat` and `open` cannot be tested
   deterministically; the FIFO test only covers the `Lstat` stage.
-- The same holds for `readEnv` and `readSmallFile` (`openRegular`): a swap for a FIFO or a device between the `Stat`
-  and the open cannot be produced deterministically, so their FIFO tests cover only the `Stat` stage. The device test
-  shows that the refusal comes before the open with a FIFO of mode 0 (an open would fail with "permission denied"; the
-  FIFO paths are skipped as root). `O_NOCTTY` is not tested; it is checked by reading.
+- The same holds for `readEnv`, `readSmallFile` and `loadRegistry` (`openRegular`): a swap for a FIFO or a device
+  between the `Stat` and the open cannot be produced deterministically, so their FIFO tests cover only the `Stat`
+  stage. The device tests show that the refusal comes before the open with a FIFO of mode 0 (an open would fail with
+  "permission denied"; the FIFO paths are skipped as root). `O_NOCTTY` is not tested; it is checked by reading.
 
 ## CI and release
 
