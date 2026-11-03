@@ -494,19 +494,63 @@ func TestIsProjectDir(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(badConfig, configName), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	artisanDir := realTempDir(t)
+	if err := os.Mkdir(filepath.Join(artisanDir, artisanName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	composeDir := mk(artisanName)
+	if err := os.Mkdir(filepath.Join(composeDir, "compose.yaml"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for name, c := range map[string]struct {
-		dir  string
-		want bool
+		dir             string
+		want, surelyNot bool
 	}{
-		"plain directory":                {mk("README.md"), false},
-		"configuration":                  {mk(configName), true},
-		"artisan and compose file":       {mk(artisanName, "docker-compose.yml"), true},
-		"artisan alone":                  {mk(artisanName), false},
-		"compose file alone":             {mk("compose.yaml"), false},
-		"configuration that is a folder": {badConfig, false},
+		"plain directory":                {mk("README.md"), false, true},
+		"configuration":                  {mk(configName), true, false},
+		"artisan and compose file":       {mk(artisanName, "docker-compose.yml"), true, false},
+		"artisan alone":                  {mk(artisanName), false, true},
+		"compose file alone":             {mk("compose.yaml"), false, true},
+		"configuration that is a folder": {badConfig, false, true},
+		"artisan that is a folder":       {artisanDir, false, true},
+		"compose file that is a folder":  {composeDir, false, true},
 	} {
 		if got := isProjectDir(c.dir); got != c.want {
 			t.Errorf("%s: isProjectDir = %v, want %v", name, got, c.want)
+		}
+		if got := surelyNotProject(c.dir); got != c.surelyNot {
+			t.Errorf("%s: surelyNotProject = %v, want %v", name, got, c.surelyNot)
+		}
+	}
+}
+
+// surelyNotProject does not follow a marker that is a link: whatever it leads to, the directory is in doubt and its
+// record is kept (#102).
+func TestSurelyNotProjectLeavesLinkedMarkersInDoubt(t *testing.T) {
+	target := filepath.Join(realTempDir(t), "target")
+	writeFile(t, target, "")
+	for _, c := range []struct {
+		name, link string
+		files      []string // regular files next to the link
+		dangling   bool
+	}{
+		{"configuration", configName, nil, false},
+		{"dangling configuration", configName, nil, true},
+		{"artisan", artisanName, []string{"compose.yaml"}, false},
+		{"compose file", "compose.yaml", []string{artisanName}, false},
+		{"dangling compose file", "compose.yaml", []string{artisanName}, true},
+	} {
+		dir := realTempDir(t)
+		for _, f := range c.files {
+			writeFile(t, filepath.Join(dir, f), "")
+		}
+		to := target
+		if c.dangling {
+			to = filepath.Join(dir, "missing")
+		}
+		symlinkOrSkip(t, to, filepath.Join(dir, c.link))
+		if surelyNotProject(dir) {
+			t.Errorf("%s: a linked marker was taken as absent or followed", c.name)
 		}
 	}
 }
@@ -717,5 +761,48 @@ func TestWriteFileNoFollowMarksRefusals(t *testing.T) {
 	}
 	if err := writeFileNoFollow(filepath.Join(dir, "missing", "f"), []byte("x"), 0o600); err == nil || errors.Is(err, errNotOwnFile) {
 		t.Errorf("an I/O error is marked as a refusal: %v", err)
+	}
+}
+
+// up does not copy .env from the main worktree's counterpart when it is not a project directory, even if it holds a
+// .env: Sail sources the copy, so it must come from the project. The refusal comes before the lock and any write (#103).
+func TestUpDoesNotCopyEnvFromANonProjectCounterpart(t *testing.T) {
+	for _, sub := range []bool{true, false} {
+		t.Run(fmt.Sprintf("subdir=%v", sub), func(t *testing.T) {
+			var main, root string
+			if sub {
+				m, wt := setupSubdirWorktreeRepo(t, true)
+				main, root = filepath.Join(m, "laravel"), filepath.Join(wt, "laravel")
+				writeFile(t, filepath.Join(main, "README.md"), "unrelated\n")
+			} else {
+				m, wt := setupWorktreeRepo(t)
+				if err := os.Remove(filepath.Join(m, configName)); err != nil {
+					t.Fatal(err)
+				}
+				main, root = m, wt
+			}
+			writeFile(t, filepath.Join(main, ".env"), "APP_KEY=unrelated\n")
+			writeFile(t, filepath.Join(main, ".env.example"), "APP_KEY=unrelated\n")
+			writeFakeSail(t, root)
+			calls := captureRunner(t)
+			locked := false
+			orig := upLock
+			t.Cleanup(func() { upLock = orig })
+			upLock = func() (func(), error) { locked = true; return orig() }
+			err := cmdUp(nil)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q, is not a project directory", main)) ||
+				!strings.Contains(err.Error(), "create .env in this worktree first") {
+				t.Fatalf("error = %v", err)
+			}
+			if sub != strings.Contains(err.Error(), "same relative path") {
+				t.Errorf("error = %v", err)
+			}
+			if _, err := os.Lstat(filepath.Join(root, ".env")); !os.IsNotExist(err) || len(*calls) != 0 || locked {
+				t.Errorf(".env written, sail ran or the lock was taken: %v, %v, %v", err, *calls, locked)
+			}
+			if reg, _ := loadRegistry(); len(reg.Worktrees) != 0 || len(reg.Mains) != 0 {
+				t.Errorf("registry = %+v", reg)
+			}
+		})
 	}
 }

@@ -201,12 +201,56 @@ func configOrLaravel(dir string) (string, bool, error) {
 }
 
 // isProjectDir reports whether dir itself is a project directory by lookupProject's rule (configOrLaravel: markers
-// through links, regular files only). An error counts as "not a project", as lookupProject would fail there. It is
-// stricter on purpose than prune's projectMarkers (Lstat, anything present counts), which must not remove a record
-// that may still be a project.
+// through links, regular files only). An error counts as "not a project", as lookupProject would fail there. up and
+// check record a main only when it holds; for registry keys, which must not be followed through links, check and
+// prune use surelyNotProject, and replacedMain the looser projectMarkers.
 func isProjectDir(dir string) bool {
 	_, ok, err := configOrLaravel(dir)
 	return err == nil && ok
+}
+
+// surelyNotProject reports whether dir is not a project directory by isProjectDir's rule, looked at with Lstat only, as
+// dir is an untrusted registry key: a marker that is a link is not followed, because on Windows validKey walks only the
+// key and the link could lead to a network path. A link, a non-redirecting reparse point (ModeIrregular, such as a
+// cloud placeholder) or an error other than not-exist leaves it in doubt, and then it returns false: keeping a record
+// only reserves ports, removing a live one frees them. So it implies !isProjectDir.
+func surelyNotProject(dir string) bool {
+	// kind is "" when the name is absent, "file" for a regular file, "other" for anything else that is surely not a
+	// regular file, and "doubt" when only following it would tell.
+	kind := func(name string) string {
+		fi, err := os.Lstat(filepath.Join(dir, name))
+		switch {
+		case os.IsNotExist(err):
+			return ""
+		case err != nil, fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0:
+			return "doubt"
+		case fi.Mode().IsRegular():
+			return "file"
+		}
+		return "other"
+	}
+	switch kind(configName) {
+	case "file", "doubt":
+		return false
+	case "other":
+		return true // findMarker's error: not a project
+	}
+	switch kind(artisanName) {
+	case "", "other": // isLaravelProject: an artisan that is not a regular file means "not a project"
+		return true
+	case "doubt":
+		return false
+	}
+	for _, n := range composeNames {
+		switch kind(n) {
+		case "":
+			continue
+		case "other":
+			return true // findMarker's error
+		}
+		return false // a regular compose file, or one in doubt
+	}
+	return true
 }
 
 // lookupProject finds the project directory for up, stop and rm. detected is true when there is no

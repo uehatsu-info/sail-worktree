@@ -148,12 +148,13 @@ type mainRefresh struct {
 
 // readMains reads the ports of every recorded main worktree with the rule of mainPorts and the recorded defaults. A key
 // is used as a directory only after validKey, and a main whose .env cannot be read is left out (its record is kept).
-// The port variables are the recorded defaults' keys, so a variable added to the configuration counts from the next
-// check, as its port does.
+// So is a main that is not a project directory (notProjectMain): up and check would not record it, and refreshing it
+// would keep reserving its defaults. The port variables are the recorded defaults' keys, so a variable added to the
+// configuration counts from the next check, as its port does.
 func readMains(reg *Registry) map[string]mainRefresh {
 	out := map[string]mainRefresh{}
 	for k, rec := range reg.Mains {
-		if !usableDir(k) {
+		if !usableDir(k) || notProjectMain(k) {
 			continue
 		}
 		ports, duplicates, ok := mainEnvPorts(k, rec.Defaults)
@@ -229,9 +230,9 @@ func (h holder) String() string {
 }
 
 // checkConflicts reports ports with more than one holder. Records of directories that no longer exist (or keys that
-// are not absolute clean paths) and main records that another record replaced (replacedMain) are left out with a
-// warning: up still keeps their ports free, but they cannot be in use, and a deleted clone or a moved project must not
-// make check fail for ever.
+// are not absolute clean paths), main records that another record replaced (replacedMain) and main records of
+// directories that are not projects (notProjectMain) are left out with a warning: up still keeps their ports free, but
+// they cannot be in use, and a deleted clone or a moved project must not make check fail for ever.
 // Entries of a main record's linked worktrees that prune removes are warned about too, although they hold no ports.
 func checkConflicts(r *report, reg *Registry) {
 	// A suggestion must avoid every port up treats as taken: alias keys and stale records included. used returns a
@@ -248,6 +249,10 @@ func checkConflicts(r *report, reg *Registry) {
 		}
 		if by, why := reg.replacedMain(k); by != "" {
 			r.warn("the record of main worktree %q keeps ports free, but %s: %s", k, why, cell(portsCell(rec.Ports)))
+			continue
+		}
+		if notProjectMain(k) {
+			r.warn("the record of main worktree %q keeps ports free, but %s: %s", k, notProjectReason, cell(portsCell(rec.Ports)))
 			continue
 		}
 		live = append(live, k)
@@ -328,6 +333,15 @@ func checkConflicts(r *report, reg *Registry) {
 		r.line("no port is used more than once")
 	}
 }
+
+// notProjectReason says why a main record is left out (check) or removed (prune) when notProjectMain holds.
+const notProjectReason = "it is not a project directory (no " + configName + ", nor " + artisanName +
+	" with a compose file)"
+
+// notProjectMain reports whether main record k is of a directory that is surely not a project: older versions recorded
+// such a counterpart, and up and check no longer do (mainPorts). It is tested after usableDir and replacedMain, by check
+// and prune alike, so that prune removes only what check warns about.
+func notProjectMain(k string) bool { return usableDir(k) && surelyNotProject(k) }
 
 // isDir reports whether p is a directory itself, not a link to one: a registry key is untrusted.
 func isDir(p string) bool {

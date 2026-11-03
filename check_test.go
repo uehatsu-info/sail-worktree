@@ -127,7 +127,7 @@ func TestCheckKeepsAMainVariableUnknownToTheBranch(t *testing.T) {
 
 func TestCheckOutsideARepositoryStillReports(t *testing.T) {
 	isolatedRegistry(t)
-	a, b := realTempDir(t), realTempDir(t)
+	a, b := projectTempDir(t), projectTempDir(t)
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{a: mainRec(80), b: mainRec(80)}})
 	out, err := runCheck(t)
 	if err == nil {
@@ -161,7 +161,7 @@ func TestCheckOutsideARepositoryStillReports(t *testing.T) {
 
 func TestCheckDoesNotUseALinkedKeyAsADirectory(t *testing.T) {
 	isolatedRegistry(t)
-	a := realTempDir(t)
+	a := projectTempDir(t)
 	real := realTempDir(t)
 	writeFile(t, filepath.Join(real, ".env"), "APP_PORT=9000\n")
 	link := filepath.Join(realTempDir(t), "link")
@@ -182,7 +182,7 @@ func TestCheckDoesNotUseALinkedKeyAsADirectory(t *testing.T) {
 
 func TestCheckSuggestionSkipsUsedPorts(t *testing.T) {
 	isolatedRegistry(t)
-	a, b, c := realTempDir(t), realTempDir(t), realTempDir(t)
+	a, b, c := projectTempDir(t), projectTempDir(t), projectTempDir(t)
 	wt := realTempDir(t)
 	saveRegistry(t, &Registry{
 		Worktrees: map[string]map[string]int{wt: {"APP_PORT": 81}},
@@ -225,10 +225,10 @@ func TestCheckTellsAWorktreeToRunUp(t *testing.T) {
 func TestCheckIgnoresMissingDirectoriesAndRemovedKeys(t *testing.T) {
 	isolatedRegistry(t)
 	gone := filepath.Join(realTempDir(t), "gone")
-	a := realTempDir(t)
+	a := projectTempDir(t)
 	// a's .env no longer sets APP_PORT (the record still says 3307): the default is used, so no conflict with b.
 	writeFile(t, filepath.Join(a, ".env"), "APP_NAME=x\n")
-	b := realTempDir(t)
+	b := projectTempDir(t)
 	writeFile(t, filepath.Join(b, ".env"), "APP_PORT=3307\n")
 	saveRegistry(t, &Registry{
 		Worktrees: map[string]map[string]int{filepath.Join(gone, "wt"): {"APP_PORT": 80}},
@@ -257,7 +257,7 @@ func TestCheckIgnoresMissingDirectoriesAndRemovedKeys(t *testing.T) {
 
 func TestCheckDoesNotReadASymlinkedMainEnv(t *testing.T) {
 	isolatedRegistry(t)
-	a, b := realTempDir(t), realTempDir(t)
+	a, b := projectTempDir(t), projectTempDir(t)
 	target := filepath.Join(t.TempDir(), "env")
 	writeFile(t, target, "APP_PORT=9000\n")
 	symlinkOrSkip(t, target, filepath.Join(b, ".env"))
@@ -271,7 +271,7 @@ func TestCheckDoesNotReadASymlinkedMainEnv(t *testing.T) {
 
 func TestCheckEscapesUntrustedNames(t *testing.T) {
 	isolatedRegistry(t)
-	a, b := realTempDir(t), realTempDir(t)
+	a, b := projectTempDir(t), projectTempDir(t)
 	evil := "X\x1b[2J;rm -rf ~\nY"
 	rec := MainRecord{Ports: map[string]int{evil: 80}, Defaults: map[string]int{evil: 80}}
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{a: rec, b: rec, "/gone\x1b[31m": rec}})
@@ -296,7 +296,7 @@ func TestCheckRejectsArguments(t *testing.T) {
 func TestCheckRefreshesOtherMainsSoUpAvoidsTheirNewPorts(t *testing.T) {
 	_, wt := setupWorktreeRepo(t)
 	// Another repository's main changed its .env to 8081 after it was recorded (as 80); this worktree holds 8081.
-	other := realTempDir(t)
+	other := projectTempDir(t)
 	writeFile(t, filepath.Join(other, ".env"), "APP_PORT=8081\n")
 	saveRegistry(t, &Registry{
 		Worktrees: map[string]map[string]int{wt: {"APP_PORT": 8081}},
@@ -315,7 +315,7 @@ func TestCheckRefreshesOtherMainsSoUpAvoidsTheirNewPorts(t *testing.T) {
 
 func TestCheckReportsTwoVariablesOfOneMain(t *testing.T) {
 	isolatedRegistry(t)
-	a := realTempDir(t)
+	a := projectTempDir(t)
 	// No .env: both variables fall back to the same default.
 	both := map[string]int{"APP_PORT": 8080, "VITE_PORT": 8080}
 	rec := MainRecord{Ports: both, Defaults: both}
@@ -336,7 +336,7 @@ func TestCheckReportsTwoVariablesOfOneMain(t *testing.T) {
 
 func TestCheckDropsInvalidRecordedDefaults(t *testing.T) {
 	isolatedRegistry(t)
-	m := realTempDir(t) // no .env: the defaults decide
+	m := projectTempDir(t) // no .env: the defaults decide
 	both := func() map[string]int { return map[string]int{"FORWARD_DB_PORT": 3306, "X_PORT": 70000} }
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: {Ports: both(), Defaults: both()}}})
 	if out, err := runCheck(t); err != nil {
@@ -360,7 +360,7 @@ func TestCheckReportsWithoutTheLock(t *testing.T) {
 	isolatedRegistry(t)
 	fastLock(t, 50*time.Millisecond, time.Hour)
 	captureStderr(t)
-	a, b := realTempDir(t), realTempDir(t)
+	a, b := projectTempDir(t), projectTempDir(t)
 	// Refreshing would move b to 8090; without the lock the record (80) is reported as it is.
 	writeFile(t, filepath.Join(b, ".env"), "APP_PORT=8090\n")
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{a: mainRec(80), b: mainRec(80)}})
@@ -412,7 +412,7 @@ func TestReportPrintWarningsWithoutWarnings(t *testing.T) {
 func TestCheckFailsWhenTheLockCannotBeCreated(t *testing.T) {
 	isolatedRegistry(t)
 	captureStderr(t)
-	a := realTempDir(t)
+	a := projectTempDir(t)
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{a: mainRec(80)}})
 	p := mustRegistryPath(t)
 	before, err := os.ReadFile(p)
@@ -465,7 +465,7 @@ func betweenUpReadAndLock(t *testing.T, fn func()) {
 
 func TestCheckReadsMainEnvBeforeTheLock(t *testing.T) {
 	isolatedRegistry(t)
-	m := realTempDir(t)
+	m := projectTempDir(t)
 	writeFile(t, filepath.Join(m, ".env"), "APP_PORT=8090\n")
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(80)}})
 	// A change after the read is not seen by this run: the .env is not read again under the lock.
@@ -481,7 +481,7 @@ func TestCheckReadsMainEnvBeforeTheLock(t *testing.T) {
 
 func TestCheckDoesNotRefreshARecordChangedBeforeTheLock(t *testing.T) {
 	isolatedRegistry(t)
-	m := realTempDir(t)
+	m := projectTempDir(t)
 	writeFile(t, filepath.Join(m, ".env"), "APP_PORT=8090\n")
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(80)}})
 	// Another run records 9000 after check read the .env (8090): that record is newer and must stay.
@@ -560,7 +560,7 @@ func TestCheckRecordsTheCurrentMainUnlessARecordAppeared(t *testing.T) {
 
 func TestCheckFindsTheMainOfAWorktreeListedUnderAnAlias(t *testing.T) {
 	real, links := newLinkedDir(t, "alias")
-	main, wt2 := realTempDir(t), realTempDir(t)
+	main, wt2 := projectTempDir(t), realTempDir(t)
 	unclean := wt2 + string(filepath.Separator) + "." // fails validKey: must not be resolved to wt2
 	reg := &Registry{
 		Worktrees: map[string]map[string]int{real: {"APP_PORT": 8123}, wt2: {"APP_PORT": 8123}},
@@ -616,7 +616,7 @@ func TestCheckNamesTheLiveMainOfAWorktree(t *testing.T) {
 func TestCheckSuggestionSkipsPortsOfAliasKeys(t *testing.T) {
 	isolatedRegistry(t)
 	real, links := newLinkedDir(t, "alias")
-	a, b := realTempDir(t), realTempDir(t)
+	a, b := projectTempDir(t), projectTempDir(t)
 	// The folded view keeps only the real key's 81, but up still treats the alias key's 82 as taken.
 	saveRegistry(t, &Registry{
 		Worktrees: map[string]map[string]int{real: {"APP_PORT": 81}, links[0]: {"APP_PORT": 82}},
@@ -639,7 +639,7 @@ func dupWarning(dir, name string) string {
 
 func TestCheckWarnsAboutADuplicatedPortKey(t *testing.T) {
 	isolatedRegistry(t)
-	m := realTempDir(t)
+	m := projectTempDir(t)
 	writeFile(t, filepath.Join(m, ".env"), "APP_PORT=8091\nAPP_NAME=x\nexport APP_PORT=8092\n")
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(80)}})
 	out, err := runCheck(t)
@@ -657,7 +657,7 @@ func TestCheckWarnsAboutADuplicatedPortKey(t *testing.T) {
 
 func TestCheckDoesNotWarnAboutOtherKeysOrOneLine(t *testing.T) {
 	isolatedRegistry(t)
-	m := realTempDir(t)
+	m := projectTempDir(t)
 	writeFile(t, filepath.Join(m, ".env"), "APP_NAME=a\nAPP_PORT=8090\n# APP_PORT=8091\nAPP_NAME=b\n")
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(80)}})
 	out, err := runCheck(t)
@@ -668,7 +668,7 @@ func TestCheckDoesNotWarnAboutOtherKeysOrOneLine(t *testing.T) {
 
 func TestCheckDoesNotReadASymlinkedMainEnvForDuplicates(t *testing.T) {
 	isolatedRegistry(t)
-	a, b := realTempDir(t), realTempDir(t)
+	a, b := projectTempDir(t), projectTempDir(t)
 	writeFile(t, filepath.Join(a, ".env"), "APP_PORT=8090\nAPP_PORT=8091\n")
 	target := filepath.Join(t.TempDir(), "env")
 	writeFile(t, target, "APP_PORT=8092\nAPP_PORT=8093\n")
@@ -691,7 +691,7 @@ func TestCheckWarnsAboutDuplicatesWithoutTheLock(t *testing.T) {
 	isolatedRegistry(t)
 	fastLock(t, 50*time.Millisecond, time.Hour)
 	captureStderr(t) // the lock wait message
-	m := realTempDir(t)
+	m := projectTempDir(t)
 	writeFile(t, filepath.Join(m, ".env"), "APP_PORT=8090\nAPP_PORT=8091\n")
 	saveRegistry(t, &Registry{Mains: map[string]MainRecord{m: mainRec(80)}})
 	plantLock(t, 0)
@@ -703,7 +703,7 @@ func TestCheckWarnsAboutDuplicatesWithoutTheLock(t *testing.T) {
 
 func TestCheckEscapesADuplicatedPortName(t *testing.T) {
 	isolatedRegistry(t)
-	m := realTempDir(t)
+	m := projectTempDir(t)
 	evil := "X\x1b[2J"
 	writeFile(t, filepath.Join(m, ".env"), evil+"=1\n"+evil+"=2\n")
 	rec := MainRecord{Ports: map[string]int{evil: 80}, Defaults: map[string]int{evil: 80}}
