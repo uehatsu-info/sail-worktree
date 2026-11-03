@@ -304,7 +304,7 @@ func TestUpDoesNotBlockOnAFIFOAsTheCopySource(t *testing.T) {
 				}
 				t.Fatal("blocked on a FIFO")
 			}
-			if err == nil || !strings.Contains(err.Error(), "cannot read the source .env") || !strings.Contains(err.Error(), "is not a regular file") {
+			if err == nil || !strings.Contains(err.Error(), "cannot copy .env from the main worktree's project directory") || !strings.Contains(err.Error(), "is not a regular file") {
 				t.Errorf("err = %v", err)
 			}
 			if locked {
