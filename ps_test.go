@@ -1184,6 +1184,7 @@ func TestPsMarksInvalidRecordedPorts(t *testing.T) {
 func TestFoldMains(t *testing.T) {
 	alias, real := aliasMain(t)
 	root, sub := movedRoot(t)
+	movedAlias, movedSub := aliasOfMovedRoot(t)
 	base := filepath.Dir(filepath.Dir(real)) // real is base/data/app, alias base/work/app
 	// "zwork" sorts after "work" whatever the separator ("work2" would not on Windows: '\' > '2' > '/').
 	symlinkOrSkip(t, filepath.Join(base, "data"), filepath.Join(base, "zwork"))
@@ -1205,6 +1206,9 @@ func TestFoldMains(t *testing.T) {
 			map[string]string{alias: real, real: ""}, map[string]int{alias: 81, real: 80}},
 		{"moved root is replaced", map[string]MainRecord{root: mainRec(81), sub: mainRec(80)},
 			map[string]string{root: sub, sub: ""}, map[string]int{root: 81, sub: 80}},
+		{"alias of a moved root is replaced, not folded",
+			map[string]MainRecord{movedAlias: mainRec(81), movedSub: mainRec(80)},
+			map[string]string{movedAlias: movedSub, movedSub: ""}, map[string]int{movedAlias: 81, movedSub: 80}},
 		{"invalid key is kept", map[string]MainRecord{"relative/key": mainRec(81), otherAlias: mainRec(83)},
 			map[string]string{"relative/key": "", other: ""}, map[string]int{"relative/key": 81, other: 83}},
 	} {

@@ -719,8 +719,9 @@ func (r *Registry) used(except string) map[int]bool {
 // replacedMain returns the record that replaces the record of main worktree k, and why, or "" when none does. Main
 // keys are never folded in the registry (only in memory by the read-only views, foldMains), so a record that a move
 // left behind would otherwise conflict with the new one for ever. Only a live record replaces one (an alias whose real
-// path has its own record, or a directory that is no longer a project with a project's record below it), so a main
-// without a second record keeps its ports. usableDir comes first, so validKey does too.
+// path has its own record, or a directory that is no longer a project with a project's record below it; that directory
+// is k itself, or the real path of an alias that has no record of its own), so a main without a second record keeps
+// its ports. usableDir comes first, for k and for its real path, so validKey does too.
 func (r *Registry) replacedMain(k string) (by, why string) {
 	if !usableDir(k) {
 		return "", ""
@@ -731,29 +732,50 @@ func (r *Registry) replacedMain(k string) (by, why string) {
 		return "", ""
 	}
 	if rp != k {
-		if _, ok := r.Mains[rp]; ok && usableDir(rp) {
-			return rp, fmt.Sprintf("its real path %q has its own record", rp)
+		if _, ok := r.Mains[rp]; ok {
+			// A record there that is not usable is prune's to remove first; until then the alias keeps its ports.
+			if usableDir(rp) {
+				return rp, fmt.Sprintf("its real path %q has its own record", rp)
+			}
+			return "", ""
+		}
+		// Both moves at once: ~/work became a link to ~/data and the project moved into laravel/ (#105).
+		if !usableDir(rp) || projectMarkers(rp) {
+			return "", ""
+		}
+		if m := r.markedBelow(rp); m != "" {
+			return m, fmt.Sprintf("its real path %q is no longer a project directory and main worktree %q below it is "+
+				"recorded", rp, m)
 		}
 		return "", ""
 	}
 	if projectMarkers(k) {
 		return "", ""
 	}
-	for _, m := range slices.Sorted(maps.Keys(r.Mains)) {
-		if m == k || !within(k, m) || !usableDir(m) {
-			continue
-		}
-		if mp, err := realPath(m); err == nil && mp == m && projectMarkers(m) {
-			return m, fmt.Sprintf("it is no longer a project directory and main worktree %q below it is recorded", m)
-		}
+	if m := r.markedBelow(k); m != "" {
+		return m, fmt.Sprintf("it is no longer a project directory and main worktree %q below it is recorded", m)
 	}
 	return "", ""
 }
 
+// markedBelow returns the first recorded main strictly below dir that is usable, its own real path and a project
+// (projectMarkers), or "". An alias key is never one, as its real path differs.
+func (r *Registry) markedBelow(dir string) string {
+	for _, m := range slices.Sorted(maps.Keys(r.Mains)) {
+		if m == dir || !within(dir, m) || !usableDir(m) {
+			continue
+		}
+		if mp, err := realPath(m); err == nil && mp == m && projectMarkers(m) {
+			return m
+		}
+	}
+	return ""
+}
+
 // projectMarkers reports whether dir holds .sail-worktree.json, or artisan and a compose file, the files that make a
 // project directory (hasConfig, isLaravelProject). Unlike those it uses Lstat: a marker that is a link counts and is
-// not followed, because validKey walks only the key and on Windows a link here could lead to a network path. An error
-// other than not-exist counts as present, so a record is kept when in doubt.
+// not followed, because validKey walks only the directory (a key, or the real path of one) and on Windows a link here
+// could lead to a network path. An error other than not-exist counts as present, so a record is kept when in doubt.
 func projectMarkers(dir string) bool {
 	present := func(name string) bool {
 		_, err := os.Lstat(filepath.Join(dir, name))
