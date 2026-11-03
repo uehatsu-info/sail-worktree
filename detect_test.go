@@ -671,11 +671,11 @@ func TestDetectedReservedNameRefusedOnlyByUpAndInit(t *testing.T) {
 	if err := cmdRm([]string{"-y"}); err != nil {
 		t.Fatalf("rm: %v", err)
 	}
-	// rm keeps the shell value (cleanEnv(nil)); down -v removes by the pinned project name.
+	// rm drops the shell value too, as stop does; down -v removes by the pinned project name.
 	rm := (*calls)[len(*calls)-1]
-	if len(*calls) != 2 || rm.name != "docker" || !slices.Contains(rm.env, "SAIL_SHARE_SERVER_PORT=1") ||
+	if len(*calls) != 2 || rm.name != "docker" || slices.Contains(rm.env, "SAIL_SHARE_SERVER_PORT=1") ||
 		!slices.Contains(rm.args, projectName(main, wt, wt)) {
-		t.Errorf("rm: %s %v", rm.name, rm.args)
+		t.Errorf("rm: %s %v (env %v)", rm.name, rm.args, rm.env)
 	}
 	if b, _ := os.ReadFile(filepath.Join(wt, ".env")); string(b) != env {
 		t.Errorf("stop or rm wrote .env: %q", b)

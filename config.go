@@ -266,10 +266,9 @@ func detectConfig(root, compose string) (*Config, error) {
 // reservedPortVarError is detectConfig's refusal of a reserved name. It carries the detected configuration for stop
 // and rm (ctx.teardownConfig), which do not write port variables. Only SAIL_SHARE_SERVER_PORT ends in PORT (see
 // reservedNames). Letting stop and rm through is safe only because detection yields names ending in PORT, never one
-// such as DOCKER_HOST or PATH, and because neither writes .env, so the name never reaches what Sail sources. stop also
-// drops it from sail's environment; rm keeps a shell value (cleanEnv(nil)), with which compose expands the compose
-// file without reading it as a setting of its own, and down -v picks what it removes by the project name pinned with
-// --project-name, so the port value does not change what is removed.
+// such as DOCKER_HOST or PATH, and because neither writes .env, so the name never reaches what Sail sources. Both drop
+// it from the environment of sail and docker (cleanEnv), and down -v picks what it removes by the project name pinned
+// with --project-name.
 type reservedPortVarError struct {
 	msg      string
 	detected *Config
