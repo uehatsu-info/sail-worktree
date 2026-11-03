@@ -212,10 +212,13 @@ These come from deliberate decisions; change them only on purpose and update the
   `staleWorktreeKey` (the rule of `worktrees` keys: an older version recorded aliases there too, and one of a live
   worktree is kept). Main keys are never folded, so without `replacedMain` a record that a move left behind would
   conflict with the new one for ever. `replacedMain` is tested only for a key that passes `usableDir`, and finds a
-  record replaced in two cases. One is an alias whose real path is a usable key of its own. The other is a directory
-  without project markers, while a usable key that is its own real path and has markers lies strictly below it
-  (`markedBelow`). That directory is the key when it is its own real path, or the real path of an alias that has no
-  record of its own, which must pass `usableDir` before its markers are looked at (#105). The markers (`projectMarkers`)
+  record replaced in two cases. One is an alias whose real path is a usable key of its own whose directory is not surely
+  a non-project (`surelyNotProject`, below). The other is a directory without project markers, while a usable key that
+  is its own real path, has markers and is not surely a non-project lies strictly below it (`markedBelow`). That
+  directory is the key when it is its own real path, or the real path of an alias that has no record of its own (or
+  only one that is surely not a project), which must pass `usableDir` before its markers are looked at (#105). A
+  replacing record in doubt counts, as `notProjectMain` keeps it, so no record is replaced by one that `check` warns
+  about and `prune` removes as not a project (#126). The markers (`projectMarkers`)
   are `.sail-worktree.json`, or `artisan` and a compose file, looked at with `Lstat` only, so a link counts and an error
   other than not-exist counts as present. A `realPath` failure keeps the record, a main without such a second record is
   not replaced (it keeps its ports unless `notProjectMain` below removes it), and git is not asked. `notProjectMain` is
@@ -255,9 +258,10 @@ These come from deliberate decisions; change them only on purpose and update the
   already refuses one in the configuration; the check stays for the registry). A main directory that does not exist is
   never recorded (`counterpart` may return a lexical path), nor one that is not a project directory by `lookupProject`'s
   rule (`isProjectDir`, `configOrLaravel`; `check` and `prune` apply it to recorded keys without following links,
-  `surelyNotProject`, and `replacedMain` uses the looser `projectMarkers`), as such a main never runs; `check`'s "has no
-  project directory" warning covers both, and a record an older version made of such a directory is warned about by
-  `check` and removed by `prune` (`notProjectMain`). A `.env` that is a link, not a regular file or larger than 1 MiB
+  `surelyNotProject`, and `replacedMain` uses the looser `projectMarkers` for the record it replaces), as such a main
+  never runs; `check`'s "has no project directory" warning covers both, and a record an older version made of such a
+  directory is warned about by `check` and removed by `prune` (`notProjectMain`). A `.env` that is a link, not a
+  regular file or larger than 1 MiB
   (`readEnvIfRegular` refuses it rather than cut it; `mainEnvUnreadable` names the cause from an `Lstat`) is not read
   for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record reserves
   nothing. The variables are those of the run's configuration (`cfg.PortVars`), which may be a branch's, so `recordMain`

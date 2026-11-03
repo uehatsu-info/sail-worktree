@@ -760,9 +760,12 @@ func (r *Registry) used(except string) map[int]bool {
 // replacedMain returns the record that replaces the record of main worktree k, and why, or "" when none does. Main
 // keys are never folded in the registry (only in memory by the read-only views, foldMains), so a record that a move
 // left behind would otherwise conflict with the new one for ever. Only a live record replaces one (an alias whose real
-// path has its own record, or a directory that is no longer a project with a project's record below it; that directory
-// is k itself, or the real path of an alias that has no record of its own), so a main without a second record keeps
-// its ports. usableDir comes first, for k and for its real path, so validKey does too.
+// path has its own record of a project, or a directory that is no longer a project with a project's record below it;
+// that directory is k itself, or the real path of an alias that has no record of its own), so a main without a second
+// record keeps its ports. A replacing record must not be surely a non-project (surelyNotProject, #126): check warns
+// about such a record and prune removes it, so it cannot take another's place; an alias whose real path has only such a
+// record is treated as one without a record there. usableDir comes first, for k and for its real path, so validKey
+// does too.
 func (r *Registry) replacedMain(k string) (by, why string) {
 	if !usableDir(k) {
 		return "", ""
@@ -773,15 +776,20 @@ func (r *Registry) replacedMain(k string) (by, why string) {
 		return "", ""
 	}
 	if rp != k {
+		rpUsable := usableDir(rp)
 		if _, ok := r.Mains[rp]; ok {
-			// A record there that is not usable is prune's to remove first; until then the alias keeps its ports.
-			if usableDir(rp) {
+			// A record there that is not usable is prune's to remove first; until then the alias keeps its ports. The
+			// record replaces the alias unless prune removes it as not a project (in doubt it counts, as notProjectMain
+			// keeps it); markedBelow also asks for projectMarkers, as there the record must be a project below dir.
+			if !rpUsable {
+				return "", ""
+			}
+			if !surelyNotProject(rp) {
 				return rp, fmt.Sprintf("its real path %q has its own record", rp)
 			}
-			return "", ""
 		}
 		// Both moves at once: ~/work became a link to ~/data and the project moved into laravel/ (#105).
-		if !usableDir(rp) || projectMarkers(rp) {
+		if !rpUsable || projectMarkers(rp) {
 			return "", ""
 		}
 		if m := r.markedBelow(rp); m != "" {
@@ -800,13 +808,14 @@ func (r *Registry) replacedMain(k string) (by, why string) {
 }
 
 // markedBelow returns the first recorded main strictly below dir that is usable, its own real path and a project
-// (projectMarkers), or "". An alias key is never one, as its real path differs.
+// (projectMarkers, and not surelyNotProject: a marker in doubt counts, as notProjectMain keeps such a record), or "".
+// An alias key is never one, as its real path differs.
 func (r *Registry) markedBelow(dir string) string {
 	for _, m := range slices.Sorted(maps.Keys(r.Mains)) {
 		if m == dir || !within(dir, m) || !usableDir(m) {
 			continue
 		}
-		if mp, err := realPath(m); err == nil && mp == m && projectMarkers(m) {
+		if mp, err := realPath(m); err == nil && mp == m && projectMarkers(m) && !surelyNotProject(m) {
 			return m
 		}
 	}

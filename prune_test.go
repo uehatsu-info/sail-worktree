@@ -393,6 +393,28 @@ func aliasOfMovedRoot(t *testing.T) (alias, sub string) {
 	return filepath.Join(base, "work", "app"), sub
 }
 
+// markerIsDir replaces the .sail-worktree.json of project directory dir with a directory: a marker for projectMarkers,
+// but surely not a project (#102, #126).
+func markerIsDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(dir, configName)); err != nil {
+		t.Fatal(err)
+	}
+	mustMkdir(t, filepath.Join(dir, configName))
+}
+
+// markerIsLink replaces the .sail-worktree.json of project directory dir with a symbolic link to a regular file: a
+// marker in doubt, as surelyNotProject does not follow it.
+func markerIsLink(t *testing.T, dir string) {
+	t.Helper()
+	target := filepath.Join(realTempDir(t), configName)
+	writeFile(t, target, "{}\n")
+	if err := os.Remove(filepath.Join(dir, configName)); err != nil {
+		t.Fatal(err)
+	}
+	symlinkOrSkip(t, target, filepath.Join(dir, configName))
+}
+
 func TestReplacedMainRecordsAreWarnedAndPruned(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -406,6 +428,19 @@ func TestReplacedMainRecordsAreWarnedAndPruned(t *testing.T) {
 		{"alias of a moved root", aliasOfMovedRoot, func(_, live string) string {
 			return fmt.Sprintf("its real path %q is no longer a project directory and main worktree %q below it is "+
 				"recorded", filepath.Dir(live), live)
+		}},
+		// A replacing record whose marker is in doubt still counts as a project, as notProjectMain keeps it (#126).
+		{"alias whose real path has a linked marker", func(t *testing.T) (string, string) {
+			alias, real := aliasMain(t)
+			markerIsLink(t, real)
+			return alias, real
+		}, func(_, live string) string { return fmt.Sprintf("its real path %q has its own record", live) }},
+		{"moved root whose record below has a linked marker", func(t *testing.T) (string, string) {
+			root, sub := movedRoot(t)
+			markerIsLink(t, sub)
+			return root, sub
+		}, func(_, live string) string {
+			return fmt.Sprintf("it is no longer a project directory and main worktree %q below it is recorded", live)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -447,20 +482,22 @@ func TestMainRecordsThatAreNotReplaced(t *testing.T) {
 		keys       func(t *testing.T) (string, string)
 		mains      func(stale, live string) map[string]MainRecord
 		notProject bool // stale is surely not a project (#102)
+		// live is surely not a project and pruned for that reason: a record that cannot replace another (#126)
+		liveNotProject bool
 	}{
-		{"alias whose real path has no record", aliasMain, alone, false},
+		{"alias whose real path has no record", aliasMain, alone, false, false},
 		{"alias whose real path is refused by validKey", func(t *testing.T) (string, string) {
 			alias, real := aliasMain(t)
 			refuseKeyLinks(t, real)
 			return alias, real
-		}, both, false},
-		{"old root with no record below it", movedRoot, alone, true},
-		{"alias of a moved root with no record below it", aliasOfMovedRoot, alone, true},
+		}, both, false, false},
+		{"old root with no record below it", movedRoot, alone, true, false},
+		{"alias of a moved root with no record below it", aliasOfMovedRoot, alone, true, false},
 		{"alias whose real path is still a project", func(t *testing.T) (string, string) {
 			alias, sub := aliasOfMovedRoot(t)
 			projectDir(t, filepath.Dir(sub))
 			return alias, sub
-		}, both, false},
+		}, both, false, false},
 		{"alias whose real path is refused by validKey, with a record below it", func(t *testing.T) (string, string) {
 			alias, sub := aliasOfMovedRoot(t)
 			rp := filepath.Dir(sub)
@@ -472,41 +509,56 @@ func TestMainRecordsThatAreNotReplaced(t *testing.T) {
 			// splits.
 			keyLinksOK = func(k string) bool { return k != rp && orig(k) }
 			return alias, sub
-		}, both, true},
+		}, both, true, false},
 		{"old root that is still a project", func(t *testing.T) (string, string) {
 			root, sub := movedRoot(t)
 			return projectDir(t, root), sub
-		}, both, false},
+		}, both, false, false},
 		{"old root whose marker is a dangling link", func(t *testing.T) (string, string) {
 			root, sub := movedRoot(t)
 			symlinkOrSkip(t, filepath.Join(root, "missing"), filepath.Join(root, configName))
 			return root, sub
-		}, both, false},
+		}, both, false, false},
 		{"old root with artisan and a compose file", func(t *testing.T) (string, string) {
 			root, sub := movedRoot(t)
 			writeFile(t, filepath.Join(root, artisanName), "")
 			writeFile(t, filepath.Join(root, "docker-compose.yml"), "")
 			return root, sub
-		}, both, false},
+		}, both, false, false},
 		{"record below has no markers", func(t *testing.T) (string, string) {
 			root, sub := movedRoot(t)
 			if err := os.Remove(filepath.Join(sub, configName)); err != nil {
 				t.Fatal(err)
 			}
 			return root, sub
-		}, both, true},
+		}, both, true, true},
 		{"record below is not replaced by one above it", func(t *testing.T) (string, string) {
 			root, sub := movedRoot(t)
 			if err := os.Remove(filepath.Join(sub, configName)); err != nil {
 				t.Fatal(err)
 			}
 			return sub, projectDir(t, root) // a main on a branch without the project in laravel/ for now
-		}, both, true},
+		}, both, true, false},
 		{"record below is refused by validKey", func(t *testing.T) (string, string) {
 			root, sub := movedRoot(t)
 			refuseKeyLinks(t, sub)
 			return root, sub
-		}, both, true},
+		}, both, true, false},
+		{"record below has a directory as its marker", func(t *testing.T) (string, string) {
+			root, sub := movedRoot(t)
+			markerIsDir(t, sub)
+			return root, sub
+		}, both, true, true},
+		{"alias whose real path's record has a directory as its marker", func(t *testing.T) (string, string) {
+			alias, real := aliasMain(t)
+			markerIsDir(t, real)
+			return alias, real
+		}, both, true, true},
+		{"alias of a moved root whose record below has a directory as its marker", func(t *testing.T) (string, string) {
+			alias, sub := aliasOfMovedRoot(t)
+			markerIsDir(t, sub)
+			return alias, sub
+		}, both, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			isolatedRegistry(t)
@@ -527,7 +579,46 @@ func TestMainRecordsThatAreNotReplaced(t *testing.T) {
 			if listed := strings.Contains(out, fmt.Sprintf("main worktree %q (", stale)); listed != tc.notProject {
 				t.Errorf("listed = %v, notProject = %v:\n%s", listed, tc.notProject, out)
 			}
+			liveWant := fmt.Sprintf("main worktree %q (ports: APP_PORT=80): %s", live, notProjectReason)
+			if liveListed := strings.Contains(out, liveWant); liveListed != tc.liveNotProject {
+				t.Errorf("live listed as not a project = %v, want %v:\n%s", liveListed, tc.liveNotProject, out)
+			}
 		})
+	}
+}
+
+// An alias whose real path has a record that is surely not a project is treated as having no record there: when a
+// project's record lies below that path, it replaces both, so one prune removes the chain (#126, part of #116).
+func TestPruneRemovesAnAliasWhoseRealPathRecordIsNotAProject(t *testing.T) {
+	isolatedRegistry(t)
+	alias, sub := aliasOfMovedRoot(t)
+	rp := filepath.Dir(sub)
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{alias: mainRec(80), rp: mainRec(80), sub: mainRec(80)}})
+	aliasReason := fmt.Sprintf("its real path %q is no longer a project directory and main worktree %q below it is "+
+		"recorded", rp, sub)
+	out, err := runCheck(t)
+	if err != nil || strings.Contains(out, "conflicts:") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("the record of main worktree %q keeps ports free, but %s: APP_PORT=80", alias, aliasReason),
+		fmt.Sprintf("the record of main worktree %q keeps ports free, but it is no longer a project directory and "+
+			"main worktree %q below it is recorded: APP_PORT=80", rp, sub),
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	out, err = runPrune(t, strings.NewReader(""), "-y")
+	if err != nil || strings.Contains(out, "kept (changed since the list)") ||
+		!strings.Contains(out, "removed 0 worktree record(s), 2 main worktree record(s)") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	if want := fmt.Sprintf("main worktree %q (ports: APP_PORT=80): %s", alias, aliasReason); !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
+	}
+	if reg, _ := loadRegistry(); len(reg.Mains) != 1 || reg.Mains[sub].Ports == nil {
+		t.Errorf("mains = %+v", reg.Mains)
 	}
 }
 
