@@ -528,6 +528,20 @@ func TestStatusLabelsReplacedMainHolders(t *testing.T) {
 	}
 }
 
+// status still counts a main record of a directory that is not a project as another holder (up avoids its ports), and
+// says that it is not a project (#125).
+func TestStatusLabelsNotProjectMainHolders(t *testing.T) {
+	_, wt := statusSetup(t, "")
+	plain := realTempDir(t)
+	writeRegistryWithMains(t, map[string]map[string]int{wt: {"APP_PORT": 81}},
+		map[string]MainRecord{plain: viewMain(map[string]int{"APP_PORT": 81})})
+	out, _, err := runStatus(t)
+	want := fmt.Sprintf("port 81 (APP_PORT) is also recorded for main worktree %q APP_PORT (not a project)", plain)
+	if err == nil || !strings.Contains(out, want) {
+		t.Errorf("err = %v; missing %q in:\n%s", err, want, out)
+	}
+}
+
 func TestStatusReportsAnEnvLargerThan1MiB(t *testing.T) {
 	_, wt := statusSetup(t, "")
 	envPath := filepath.Join(wt, ".env")

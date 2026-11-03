@@ -456,6 +456,7 @@ func TestPortsMixedStatesOnOnePort(t *testing.T) {
 func TestPortsListsMainWorktreeRecords(t *testing.T) {
 	main, wt, other := portsSetup(t)
 	otherMain, _ := newRepoWithWorktree(t, realTempDir(t), "foreign2", "y")
+	projectDir(t, otherMain) // a project, so that check counts it too (#125)
 	writeRegistryWithMains(t, map[string]map[string]int{wt: {"APP_PORT": 81}, other: {"APP_PORT": 82}},
 		map[string]MainRecord{
 			main:      viewMain(map[string]int{"APP_PORT": 81, "FORWARD_DB_PORT": 3306}),
@@ -571,5 +572,36 @@ func TestPortsDoesNotCountReplacedMainsInConflict(t *testing.T) {
 	}
 	if replaced != 2 {
 		t.Errorf("replaced rows = %d: %+v", replaced, rows)
+	}
+}
+
+// ports --all agrees with check on main records of directories that are not projects: their rows are marked and never
+// a conflict, while the same port recorded twice elsewhere still is, and a replaced record stays replaced (#125).
+func TestPortsDoesNotCountNotProjectMainsInConflict(t *testing.T) {
+	isolatedRegistry(t)
+	withGitInRegistryDirs(t, false)
+	portsFakes(t, nil, nil)
+	plain := realTempDir(t)
+	stale, live := aliasMain(t)
+	other := projectTempDir(t)
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{plain: mainRec(80), live: mainRec(80), stale: mainRec(90),
+		other: mainRec(90)}, Worktrees: map[string]map[string]int{filepath.Join(realTempDir(t), "wt"): {"APP_PORT": 90}}})
+	rows := portsJSON(t, "--all")
+	if len(rows) != 5 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	states := map[string]int{}
+	for _, r := range rows {
+		states[r.State]++
+		want := r.Port == 90 && r.State != stateReplaced // other and the worktree share 90; live is alone on 80
+		if r.Conflict != want {
+			t.Errorf("row %+v: conflict = %v, want %v", r, r.Conflict, want)
+		}
+	}
+	if states[stateNotProject] != 1 || states[stateReplaced] != 1 {
+		t.Errorf("states = %v: %+v", states, rows)
+	}
+	if out, _, _ := runPorts(t, "--all"); !strings.Contains(out, "not-project") {
+		t.Errorf("table:\n%s", out)
 	}
 }

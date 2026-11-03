@@ -91,21 +91,21 @@ func parseLsof(out string) (name string, pid int, ok bool) {
 
 // portsOf lists the rows of the entries, sorted by port. A port recorded more than once (by two entries, a main
 // worktree's included, or by two variables of one) marks all its rows as a conflict. A value that is not a port number
-// is never a conflict, as in check: no two projects can collide on it. Neither is a replaced main record, which check
-// only warns about.
+// is never a conflict, as in check: no two projects can collide on it. Neither is a main record that check only warns
+// about: one that another record replaced or one that is not a project (warnedMain).
 func portsOf(entries []entry) []portRow {
 	var rows []portRow
 	count := map[int]int{}
 	for _, e := range entries {
 		for name, p := range e.Ports {
 			rows = append(rows, portRow{Kind: e.Kind, Port: p, Variable: name, Worktree: e.Worktree, Subdir: e.Subdir, State: e.State})
-			if validPort(p) && e.State != stateReplaced {
+			if validPort(p) && !warnedMain(e.State) {
 				count[p]++
 			}
 		}
 	}
 	for i := range rows {
-		rows[i].Conflict = rows[i].State != stateReplaced && count[rows[i].Port] > 1
+		rows[i].Conflict = !warnedMain(rows[i].State) && count[rows[i].Port] > 1
 	}
 	sort.SliceStable(rows, func(i, j int) bool { // equal rows (two mains named alike) keep the entries' order
 		a, b := rows[i], rows[j]
@@ -119,6 +119,9 @@ func portsOf(entries []entry) []portRow {
 	})
 	return rows
 }
+
+// warnedMain reports whether state marks a main record that check leaves out of conflicts with a warning.
+func warnedMain(state string) bool { return state == stateReplaced || state == stateNotProject }
 
 // fillHost probes each distinct port once. A port of a running project is that project's own and is not probed.
 // The owner is looked up only for a port that cannot be bound. A value that is not a port number is neither probed
