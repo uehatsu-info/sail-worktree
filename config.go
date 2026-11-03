@@ -238,10 +238,14 @@ var reservedNames = map[string]string{
 }
 
 // maxSmallFile bounds what readSmallFile reads from a compose file or .sail-worktree.json, and what every .env read
-// takes from a .env; a larger .env is refused with errEnvTooLarge rather than cut.
+// takes from a .env; a larger .env is refused with errEnvTooLarge rather than cut. The registry has its own bound.
 const maxSmallFile = 1 << 20
 
-// openRegular opens path for reading through links, for readSmallFile and readEnv, only if it leads to a regular file.
+// maxRegistryFile bounds what loadRegistry reads. A record takes a few hundred bytes, so this leaves room for tens of
+// thousands; a cut registry would be saved with records dropped, so a larger file is an error.
+const maxRegistryFile = 16 << 20
+
+// openRegular opens path for reading through links, for readBounded and readEnv, only if it leads to a regular file.
 // The Stat before the open keeps a device from being opened at all, since some act on open (a tape rewinds); the Stat
 // after it catches a path swapped in between: the open reaches such a path, but with O_NONBLOCK (a FIFO does not
 // block) and O_NOCTTY (#131). A missing file returns the Stat error unwrapped, for os.IsNotExist.
@@ -268,18 +272,21 @@ func openRegular(path string) (*os.File, error) {
 // readSmallFile reads a regular file of at most maxSmallFile bytes. Links are followed (a linked compose file works for
 // up and stop as before; rm checks where it leads), but nothing else is opened (openRegular), and a larger file is an
 // error rather than being cut, which could drop port variables silently.
-func readSmallFile(path string) ([]byte, error) {
+func readSmallFile(path string) ([]byte, error) { return readBounded(path, maxSmallFile) }
+
+// readBounded reads the regular file at path (openRegular) and refuses one larger than limit bytes.
+func readBounded(path string, limit int64) ([]byte, error) {
 	f, err := openRegular(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxSmallFile+1))
+	b, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(b) > maxSmallFile {
-		return nil, fmt.Errorf("%q is larger than %d bytes", path, maxSmallFile)
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("%q is larger than %d bytes", path, limit)
 	}
 	return b, nil
 }
@@ -385,7 +392,9 @@ func loadRegistry() (*Registry, error) {
 		return nil, err
 	}
 	r := &Registry{Worktrees: map[string]map[string]int{}, Mains: map[string]MainRecord{}}
-	b, err := os.ReadFile(p)
+	// Links are followed, as writeFileAtomic keeps one at the path, but only a regular file is opened (#134): a FIFO
+	// would block every command and a device could act on open.
+	b, err := readBounded(p, maxRegistryFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return r, nil

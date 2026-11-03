@@ -752,3 +752,65 @@ func TestRecordMainReadRefreshesKeptVariables(t *testing.T) {
 		})
 	}
 }
+
+// emptyRegistryPath points the config directory at a temporary one and returns the registry path. Only the directory
+// is created, not the file.
+func emptyRegistryPath(t *testing.T) string {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AppData", t.TempDir())
+	p, err := registryPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A registry larger than maxRegistryFile is refused rather than cut, which would let a save drop records (#134).
+func TestLoadRegistryRefusesALargeFile(t *testing.T) {
+	p := emptyRegistryPath(t)
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = f.Truncate(maxRegistryFile + 1)
+	f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadRegistry(); err == nil || !strings.Contains(err.Error(), strconv.Quote(p)+" is larger than") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// A directory at the registry path is refused on every system, like a FIFO or a device on Unix (links_unix_test.go).
+func TestLoadRegistryRefusesADirectory(t *testing.T) {
+	p := emptyRegistryPath(t)
+	if err := os.Mkdir(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadRegistry(); err == nil || !strings.Contains(err.Error(), strconv.Quote(p)+" is not a regular file") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// Links at the registry path are followed (writeFileAtomic keeps them); a missing file or a dangling link is empty.
+func TestLoadRegistryFollowsLinks(t *testing.T) {
+	p := emptyRegistryPath(t)
+	if reg, err := loadRegistry(); err != nil || len(reg.Worktrees) != 0 {
+		t.Fatalf("missing registry: %v, %v", reg, err)
+	}
+	dest := filepath.Join(t.TempDir(), "dotfiles", "registry.json")
+	symlinkOrSkip(t, dest, p)
+	if reg, err := loadRegistry(); err != nil || len(reg.Worktrees) != 0 {
+		t.Fatalf("dangling link: %v, %v", reg, err)
+	}
+	writeFile(t, dest, `{"worktrees":{"/w":{"APP_PORT":81}}}`)
+	if reg, err := loadRegistry(); err != nil || reg.Worktrees["/w"]["APP_PORT"] != 81 {
+		t.Errorf("linked registry: %v, %v", reg, err)
+	}
+}
