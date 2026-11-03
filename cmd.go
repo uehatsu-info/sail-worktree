@@ -540,7 +540,8 @@ const (
 )
 
 // readCopySource reads the file a new .env is copied from: in a bare layout the worktree's own .env.example, otherwise
-// the main worktree's .env, or its .env.example when that is missing, and only when its directory is a project.
+// the main worktree's .env, or its .env.example when there is no .env at all (a dangling link is refused), and only
+// when its directory is a project.
 func readCopySource(c *ctx) (*envFile, envSource, error) {
 	if c.bare { // first: the branches below read c.main, which is empty here
 		env, err := readOwnEnvExample(c.root)
@@ -561,8 +562,24 @@ func readCopySource(c *ctx) (*envFile, envSource, error) {
 			where, c.main, configName, artisanName)
 	}
 	src := envFromMain
-	env, err := readEnv(filepath.Join(c.main, ".env"))
+	envPath := filepath.Join(c.main, ".env")
+	env, err := readEnv(envPath)
 	if os.IsNotExist(err) {
+		// readEnv's Stat also says not-exist for a link whose target is missing (a disk not mounted, say); the user
+		// meant that target, so .env.example, with its example values, must not silently take its place (#138).
+		fi, lerr := os.Lstat(envPath)
+		switch {
+		case lerr == nil && fi.Mode()&os.ModeSymlink != 0:
+			return nil, 0, fmt.Errorf("cannot copy .env: the main worktree's .env, %q, is a symbolic link whose "+
+				"target does not exist; fix the link, or create .env in this worktree first", envPath)
+		case lerr == nil: // a file put there meanwhile, or (Windows) a junction whose target is missing
+			return nil, 0, fmt.Errorf("cannot copy .env: the main worktree's .env, %q, exists but could not be "+
+				"opened (it changed meanwhile, or it is a link whose target is missing); create .env in this worktree "+
+				"first", envPath)
+		case !os.IsNotExist(lerr):
+			return nil, 0, fmt.Errorf("cannot copy .env from the main worktree's project directory %q: reading .env "+
+				"failed: %w; create .env in this worktree first", c.main, lerr)
+		}
 		src = envFromMainExample
 		env, err = readEnv(filepath.Join(c.main, ".env.example"))
 	}

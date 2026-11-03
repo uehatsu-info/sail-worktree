@@ -776,6 +776,55 @@ func TestUpCannotReadTheMainsEnvFiles(t *testing.T) {
 	}
 }
 
+// A main .env that is a link to a missing file is refused, not replaced by .env.example: the user meant the link's
+// target (#138). The refusal comes before the lock and any write; without the link, .env.example is still copied.
+func TestUpRefusesADanglingMainEnvLink(t *testing.T) {
+	for _, sub := range []bool{true, false} {
+		t.Run(fmt.Sprintf("subdir=%v", sub), func(t *testing.T) {
+			var main, root string
+			if sub {
+				m, wt := setupSubdirWorktreeRepo(t, false)
+				main, root = filepath.Join(m, "laravel"), filepath.Join(wt, "laravel")
+			} else {
+				main, root = setupWorktreeRepo(t)
+			}
+			link := filepath.Join(main, ".env")
+			symlinkOrSkip(t, filepath.Join(realTempDir(t), "missing"), link)
+			writeFile(t, filepath.Join(main, ".env.example"), "FROM=example\n")
+			writeFakeSail(t, root)
+			calls := captureRunner(t)
+			captureStdout(t)
+			captureStderr(t)
+			locked := false
+			orig := upLock
+			t.Cleanup(func() { upLock = orig })
+			upLock = func() (func(), error) { locked = true; return orig() }
+			err := cmdUp(nil)
+			want := fmt.Sprintf("cannot copy .env: the main worktree's .env, %q, is a symbolic link whose target does not exist; fix the link, or create .env in this worktree first", link)
+			if err == nil || err.Error() != want {
+				t.Fatalf("error = %v, want %s", err, want)
+			}
+			if _, err := os.Lstat(filepath.Join(root, ".env")); !os.IsNotExist(err) || len(*calls) != 0 || locked {
+				t.Errorf(".env written, sail ran or the lock was taken: %v, %v, %v", err, *calls, locked)
+			}
+
+			if err := os.Remove(link); err != nil {
+				t.Fatal(err)
+			}
+			if err := cmdUp(nil); err != nil {
+				t.Fatal(err)
+			}
+			env, err := readEnv(filepath.Join(root, ".env"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if v, _ := env.Get("FROM"); v != "example" {
+				t.Errorf("FROM = %q, want .env.example's value", v)
+			}
+		})
+	}
+}
+
 func TestInitWithoutAnyComposeFile(t *testing.T) {
 	initRepo(t, map[string]string{"README.md": "x\n"}, ".")
 	err := cmdInit(nil)
