@@ -102,10 +102,13 @@ const (
 //     in Compose V2, which an older docker-compose still reads)
 //   - https://docs.docker.com/reference/cli/docker/#environment-variables (plus DOCKER_CONTENT_TRUST*, which older
 //     CLIs read)
-//   - https://docs.docker.com/build/building/variables/ (the build tool configuration variables)
+//   - https://docs.docker.com/build/building/variables/ (the build tool configuration variables; its list names
+//     BUILDX_BAKE_FILE_SEPARATOR, but buildx reads BUILDX_BAKE_PATH_SEPARATOR, commands/bake.go in
+//     https://github.com/docker/buildx; both are reserved)
 //   - https://docs.docker.com/engine/cli/proxy/ (the proxy names)
 //   - https://docs.docker.com/reference/cli/docker/buildx/build/#ssh (SSH_AUTH_SOCK)
-//   - the SAIL_* names in laravel/sail 1.x bin/sail
+//   - the SAIL_* names in laravel/sail 1.x bin/sail (the names it only forwards into the container, COLORTERM and
+//     its AGENT_ENV_VARS, are not settings and are left out, #111)
 //
 // Other COMPOSE_* and DOCKER_* names, such as DOCKER_WEB_PORT, are allowed: v0.8.1 handled them (#74). Only
 // SAIL_SHARE_SERVER_PORT ends in PORT, so it is the only one detection can yield; detectConfig refuses it for up and
@@ -197,6 +200,7 @@ var reservedNames = map[string]string{
 	"BUILDX_BAKE_GIT_AUTH_HEADER":         buildSetting,
 	"BUILDX_BAKE_GIT_AUTH_TOKEN":          buildSetting,
 	"BUILDX_BAKE_GIT_SSH":                 buildSetting,
+	"BUILDX_BAKE_PATH_SEPARATOR":          buildSetting,
 	"BUILDX_BUILDER":                      buildSetting,
 	"BUILDX_CONFIG":                       buildSetting,
 	"BUILDX_CPU_PROFILE":                  buildSetting,
