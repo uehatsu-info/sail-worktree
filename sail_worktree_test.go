@@ -340,22 +340,40 @@ func TestNameMismatchErrorGuidance(t *testing.T) {
 }
 
 // A long worktree name makes a long project name; it is still a name projectName made, so the recovery command is
-// shown for it, up to the longest name projectName can make (#63). Only strings are used: such directories would not
-// fit in a Windows path.
+// shown for it, up to the longest name projectName can make (#63); on native Windows it is never shown (#140). Only
+// strings are used: such directories would not fit in a Windows path.
 func TestNameMismatchErrorGuidesLongNames(t *testing.T) {
+	for _, windows := range []bool{false, true} {
+		nativeWindows = windows
+		t.Cleanup(func() { nativeWindows = false })
+		nameMismatchGuidesLongNames(t, windows)
+	}
+}
+
+func nameMismatchGuidesLongNames(t *testing.T, windows bool) {
 	got := projectName(filepath.Join("base", strings.Repeat("m", 255)), filepath.Join("base", strings.Repeat("w", 255)), "/p")
 	if len(got) != 518 || !safeProjectName.MatchString(got) {
 		t.Fatalf("projectName = %q (%d bytes), want a long name the hint accepts", got, len(got))
 	}
 	short := projectName(filepath.Join("base", "app"), filepath.Join("base", "app-"+strings.Repeat("feature-", 10)), "/p")
 	for _, name := range []string{got, short, strings.Repeat("a", 600)} {
-		if msg := nameMismatchError(name, "app-feat-abc123").Error(); !strings.Contains(msg, "docker compose -p "+name+" down") {
-			t.Errorf("no recovery command for %q (%d bytes): %s", name, len(name), msg)
+		msg := nameMismatchError(name, "app-feat-abc123").Error()
+		// On native Windows the command is never shown: the name is most likely the one up wrote inside WSL2 (#140).
+		if has := strings.Contains(msg, "docker compose -p "+name+" down"); has == windows {
+			t.Errorf("windows=%v: recovery command shown=%v for %q (%d bytes): %s", windows, has, name, len(name), msg)
 		}
 	}
 }
 
 func TestNameMismatchErrorEscapesUntrustedNames(t *testing.T) {
+	for _, windows := range []bool{false, true} {
+		nativeWindows = windows
+		t.Cleanup(func() { nativeWindows = false })
+		nameMismatchEscapesUntrustedNames(t)
+	}
+}
+
+func nameMismatchEscapesUntrustedNames(t *testing.T) {
 	for _, bad := range []string{"x; rm -rf ~", "$(id)", "a`id`", "line1\nline2", "esc\x1b[31m", "-rf", "UPPER", "\u540d\u524d", "", strings.Repeat("a", 601)} {
 		msg := nameMismatchError(bad, "app-feat-abc123").Error()
 		if strings.Contains(msg, "docker compose -p") {
@@ -377,6 +395,92 @@ func TestNameMismatchErrorEscapesUntrustedNames(t *testing.T) {
 	}
 	if strings.Contains(msg, "-p bad") || strings.Contains(msg, "-p \"bad") {
 		t.Errorf("want is mixed into the command: %q", msg)
+	}
+}
+
+// On native Windows up is refused, so rm's refusals do not point to it, and the mismatch error offers neither "set the
+// name and run rm again" nor the manual down -v command: the name is most likely the one up wrote inside WSL2, whose
+// project runs on the same Docker daemon (#140). Elsewhere the message stays as the tests above pin it.
+func TestNameMismatchErrorOnNativeWindows(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("AppData", t.TempDir())
+	reg, err := registryPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowsOnly := []string{"inside WSL2", fmt.Sprintf("%q", reg), "by hand", "README Notes", "`docker compose down -v`"}
+	for _, windows := range []bool{false, true} {
+		nativeWindows = windows
+		t.Cleanup(func() { nativeWindows = false })
+		msg := nameMismatchError("app-feat-wsl123", "app-feat-abc123").Error()
+		for _, s := range windowsOnly {
+			if strings.Contains(msg, s) != windows {
+				t.Errorf("windows=%v: contains(%q) = %v: %s", windows, s, !windows, msg)
+			}
+		}
+		for _, s := range []string{"set COMPOSE_PROJECT_NAME in .env to", "docker compose -p"} {
+			if strings.Contains(msg, s) == windows {
+				t.Errorf("windows=%v: contains(%q) = %v: %s", windows, s, windows, msg)
+			}
+		}
+		if windows {
+			if !strings.Contains(msg, "cannot be undone") {
+				t.Errorf("the Windows message does not say that down -v cannot be undone: %s", msg)
+			}
+			for _, s := range []string{"run up", "where up has been run", "run `sail-worktree up`"} {
+				if strings.Contains(msg, s) {
+					t.Errorf("the Windows message points to up (%q): %s", s, msg)
+				}
+			}
+			if first, _, _ := strings.Cut(msg, "\n"); !strings.Contains(first, `"app-feat-wsl123"`) || !strings.Contains(first, "app-feat-abc123") {
+				t.Errorf("the first line does not name both names: %s", msg)
+			}
+		}
+	}
+}
+
+// Through cmdRm on both systems: the mismatch and a missing .env are refused before the prompt, and on native Windows
+// neither message points to up.
+func TestRmRefusalsOnNativeWindows(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	reg, err := registryPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, windows := range []bool{false, true} {
+		nativeWindows = windows
+		t.Cleanup(func() { nativeWindows = false })
+		for _, env := range []string{"COMPOSE_PROJECT_NAME=app-feat-wsl123\n", ""} {
+			envPath := filepath.Join(wt, ".env")
+			if env == "" {
+				if err := os.Remove(envPath); err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(envPath, []byte(env), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			in := strings.NewReader("y\n")
+			old := stdin
+			stdin = in
+			calls := captureRunner(t)
+			err := cmdRm(nil)
+			stdin = old
+			if err == nil {
+				t.Fatalf("windows=%v env=%q: not refused", windows, env)
+			}
+			if in.Len() != 2 || len(*calls) != 0 {
+				t.Errorf("windows=%v env=%q: should refuse before the prompt but read stdin or ran a command", windows, env)
+			}
+			msg := err.Error()
+			if points := strings.Contains(msg, "where up has been run") || strings.Contains(msg, "set COMPOSE_PROJECT_NAME in .env to"); points == windows {
+				t.Errorf("windows=%v env=%q: old remedy shown=%v: %s", windows, env, points, msg)
+			}
+			for _, want := range []string{"inside WSL2", fmt.Sprintf("%q", reg), "README Notes"} {
+				if strings.Contains(msg, want) != windows {
+					t.Errorf("windows=%v env=%q: contains(%q) = %v: %s", windows, env, want, !windows, msg)
+				}
+			}
+		}
 	}
 }
 

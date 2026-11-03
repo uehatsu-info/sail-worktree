@@ -644,11 +644,15 @@ var safeProjectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,599}$`)
 // nameMismatchError is the error when rm refuses. The first line gives the main remedy (set .env back to the
 // worktree's own name). The name in .env (got) is untrusted, so it is shown with %+q and only a got made of safe
 // characters is embedded in the recovery command. The worktree's name (want) is built from safe characters by
-// projectName, but it is displayed through the same check just in case.
+// projectName, but it is displayed through the same check just in case. On native Windows the message is
+// windowsMismatchMessage instead.
 func nameMismatchError(got, want string) error {
 	shown := fmt.Sprintf("%+q", want)
 	if safeProjectName.MatchString(want) {
 		shown = want // without quotes (can be written to .env as is)
+	}
+	if nativeWindows {
+		return fmt.Errorf("%s", windowsMismatchMessage(got, shown))
 	}
 	msg := fmt.Sprintf("set COMPOSE_PROJECT_NAME in .env to %s and run rm again (the current %+q does not match this worktree's name, so rm refuses).", shown, got)
 	if safeProjectName.MatchString(got) {
@@ -661,6 +665,29 @@ func nameMismatchError(got, want string) error {
 		msg += "\nThe name in .env is not made only of lowercase letters, digits, _ and - (capitals etc. may differ from the name compose uses), so no manual removal command is shown. Check the target with `docker compose ls -a`."
 	}
 	return fmt.Errorf("%s", msg)
+}
+
+// windowsMismatchMessage is nameMismatchError on native Windows (#140). There up is refused, and a name in .env that
+// does not match is most likely the one up wrote inside WSL2, which sees the worktree under another path: its project
+// runs on the same Docker daemon, so neither "set the name and run rm again" nor the manual down -v command of older
+// versions is offered, as either would remove the volumes WSL2 uses.
+func windowsMismatchMessage(got, shown string) string {
+	return fmt.Sprintf("the current COMPOSE_PROJECT_NAME %+q in .env does not match this worktree's name on Windows, %s, "+
+		"so rm refuses.", got, shown) +
+		"\nIf up ran inside WSL2, .env has the name WSL2 uses (it sees this worktree under another path): run rm " +
+		"inside WSL2, which also releases the ports in its own registry." +
+		fmt.Sprintf("\nA port record that an older version wrote here on Windows (before up stopped running on native "+
+			"Windows) is released by editing %s by hand (see the README Notes).", registryPathShown()) +
+		"\nDo not change COMPOSE_PROJECT_NAME to make rm run here: rm also runs `docker compose down -v` for the " +
+		"name in .env, which removes that project's volumes (database data) and cannot be undone."
+}
+
+// registryPathShown names the registry file for the hand edit that rm's Windows messages point to.
+func registryPathShown() string {
+	if p, err := registryPath(); err == nil {
+		return fmt.Sprintf("%q", p)
+	}
+	return `%APPDATA%\sail-worktree\registry.json`
 }
 
 // warnStopTarget warns before stop when .env seems to point at another compose file or project.
@@ -730,6 +757,11 @@ func cmdRm(args []string) error {
 	}
 	env, err := readOwnEnv(envPath)
 	if os.IsNotExist(err) {
+		if nativeWindows { // up is refused here, so do not point to it (#140)
+			return fmt.Errorf("cannot read .env (up does not run on native Windows, and up inside WSL2 writes this "+
+				"same .env, so most likely there is no project here for rm to remove; a port record that an older version wrote "+
+				"here is released by editing %s by hand, see the README Notes): %w", registryPathShown(), err)
+		}
 		return fmt.Errorf("cannot read .env (run this in a worktree where up has been run): %w", err)
 	} else if err != nil {
 		return fmt.Errorf("cannot read .env: %w", err)
