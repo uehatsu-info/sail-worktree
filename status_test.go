@@ -456,7 +456,7 @@ func TestStatusWarnsAboutAPortKeySetTwice(t *testing.T) {
 	if !strings.Contains(out, "  - APP_PORT is set on more than one line in .env; status shows the first line") {
 		t.Errorf("no warning about APP_PORT:\n%s", out)
 	}
-	if strings.Contains(out, "8123") || strings.Contains(out, "APP_NAME") {
+	if containsNumber(out, "8123") || strings.Contains(out, "APP_NAME") {
 		t.Errorf("a value or another key is shown:\n%s", out)
 	}
 }

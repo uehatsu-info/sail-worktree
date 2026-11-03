@@ -168,7 +168,7 @@ func TestPortsListsTheCurrentRepository(t *testing.T) {
 			t.Errorf("table lacks %q:\n%s", s, out)
 		}
 	}
-	if strings.Contains(out, "90") || strings.Contains(out, "foreign") {
+	if containsNumber(out, "90") || strings.Contains(out, "foreign") {
 		t.Errorf("another repository is listed:\n%s", out)
 	}
 	if len(portsJSON(t, "--all")) != 4 {
