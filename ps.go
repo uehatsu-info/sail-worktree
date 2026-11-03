@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -127,21 +128,26 @@ var registryPathOK = validKey
 // connection that sends the user's credentials (replaceable in tests).
 var gitInRegistryDirs = runtime.GOOS != "windows"
 
+// runGitList runs the git of listWorktrees. It is runOutput, replaceable in tests to fake an old git; it is not
+// output, so a test that fakes docker still gets real git answers.
+var runGitList = runOutput
+
 // listWorktrees lists the worktrees of the repository that contains dir (the first one is the main worktree), keeping
-// only the paths usable accepts. Only `worktree list` is used (runWorktreeList), with fsmonitor off, so that a
+// only the paths usable accepts, and tells whether git listed them with -z. Only `worktree list` is used
+// (runWorktreeList, which falls back to the line format only if allowLines is set), with fsmonitor off, so that a
 // repository's own configuration cannot start a program.
-func listWorktrees(dir string, usable func(string) bool) ([]worktreeInfo, error) {
+func listWorktrees(dir string, usable func(string) bool, allowLines bool) (list []worktreeInfo, z bool, err error) {
 	out, z, err := runWorktreeList(func(args ...string) ([]byte, error) {
-		return runOutput(dir, gitListEnv(), 10*time.Second, "git", append([]string{"-c", "core.fsmonitor=false"}, args...)...)
-	})
+		return runGitList(dir, gitListEnv(), 10*time.Second, "git", append([]string{"-c", "core.fsmonitor=false"}, args...)...)
+	}, allowLines)
 	if err != nil {
-		return nil, fmt.Errorf("git worktree list: %w", err)
+		return nil, false, fmt.Errorf("git worktree list: %w", err)
 	}
-	list := parseWorktreeList(out, z, usable)
+	list = parseWorktreeList(out, z, usable)
 	if len(list) == 0 {
-		return nil, fmt.Errorf("git worktree list: cannot read the main worktree's path")
+		return nil, false, fmt.Errorf("git worktree list: cannot read the main worktree's path")
 	}
-	return list, nil
+	return list, z, nil
 }
 
 // foldRegistry returns the registry as a map from real project directory to ports. Keys that an older version
@@ -260,11 +266,18 @@ func pathExists(p string) bool {
 type registryView struct {
 	all   bool
 	repos [][]worktreeInfo
-	tried map[string]bool // directories git has listed in (or failed in) for this view
+	tried map[string]bool // directories git has listed in, failed in, or was skipped in (noZ) for this view
+	// noZ: git refused -z (before 2.36). Another repository's listing never uses the line format, and the same git
+	// would refuse it in every directory, so git is not run there again.
+	noZ bool
 }
 
-// worktreeLister runs `git worktree list` for registryView.list (replaceable in tests, to count the runs).
-var worktreeLister = listWorktrees
+// worktreeLister runs `git worktree list` for registryView.list, without the line format, since a path with a newline
+// in another repository's metadata would be misread (replaceable in tests, to count the runs).
+var worktreeLister = func(dir string, usable func(string) bool) ([]worktreeInfo, error) {
+	l, _, err := listWorktrees(dir, usable, false)
+	return l, err
+}
 
 // list runs git in dir at most once per view, since each run can take up to its timeout, and adds the listing unless
 // the same repository (the same main worktree path) is already listed: attribute keeps the first of equal matches,
@@ -277,7 +290,13 @@ func (v *registryView) list(dir string) bool {
 		v.tried = map[string]bool{}
 	}
 	v.tried[dir] = true
+	if v.noZ {
+		return false
+	}
 	l, err := worktreeLister(dir, registryPathOK)
+	if errors.Is(err, errNoZ) {
+		v.noZ = true
+	}
 	if err != nil || len(l) == 0 {
 		return false
 	}
@@ -361,10 +380,11 @@ func collectEntries(all bool) (entries []entry, hidden int, err error) {
 		repoErr = err
 	} else if top, _, err := worktreeRootAndPrefix(dir); err != nil {
 		repoErr = err
-	} else if l, err := listWorktrees(top, anyPath); err != nil {
+	} else if l, z, err := listWorktrees(top, anyPath, true); err != nil { // the user's own repository
 		repoErr = err
 	} else {
 		v.repos = append(v.repos, l)
+		v.noZ = !z // this git has no -z: other repositories are not listed (registryView.list)
 	}
 	if len(v.repos) == 0 && !all {
 		return nil, 0, fmt.Errorf("run this inside a git repository, or use --all to list every project in the registry: %w", repoErr)

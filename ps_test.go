@@ -202,7 +202,7 @@ func TestListWorktreesIgnoresGitDirVariables(t *testing.T) {
 	otherMain, _ := newRepoWithWorktree(t, other, "other", "x")
 	t.Setenv("GIT_DIR", filepath.Join(otherMain, ".git"))
 	t.Setenv("GIT_WORK_TREE", otherMain)
-	l, err := listWorktrees(wt, anyPath)
+	l, _, err := listWorktrees(wt, anyPath, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1289,5 +1289,74 @@ func TestPsFoldsMainKeysAndMarksReplacedRecords(t *testing.T) {
 	}
 	if after, _ := os.ReadFile(mustRegistryPath(t)); string(after) != string(before) {
 		t.Errorf("the registry changed:\n%s\n---\n%s", before, after)
+	}
+}
+
+// fakeOldGit makes listWorktrees' git refuse -z with a real exit status 129, as git before 2.36 does, and runs the
+// real git otherwise. It returns the runs per directory, true for a run with -z.
+func fakeOldGit(t *testing.T) map[string][]bool {
+	t.Helper()
+	repo := realTempDir(t)
+	runGit(t, repo, "init", "-q")
+	_, refused := gitRaw(repo, "worktree", "list", "--porcelain", "--no-such-switch")
+	if !usageRefused(refused) {
+		t.Fatalf("not a usage error: %v", refused)
+	}
+	runs := map[string][]bool{}
+	old := runGitList
+	runGitList = func(dir string, env []string, timeout time.Duration, name string, args ...string) ([]byte, error) {
+		z := slices.Contains(args, "-z")
+		runs[dir] = append(runs[dir], z)
+		if z {
+			return nil, refused
+		}
+		return old(dir, env, timeout, name, args...)
+	}
+	t.Cleanup(func() { runGitList = old })
+	return runs
+}
+
+// With git before 2.36 the repository the user runs in is still listed in the line format, but other repositories
+// are not (a path with a newline in their metadata would be misread): this git has no -z, so git is not run there.
+func TestPsAllWithGitWithoutZListsOnlyTheCurrentRepository(t *testing.T) {
+	withGitInRegistryDirs(t, true)
+	_, wt := setupWorktreeRepo(t)
+	base := realTempDir(t)
+	_, a := newRepoWithWorktree(t, base, "a", "x")
+	_, b := newRepoWithWorktree(t, base, "b", "x")
+	writeRegistry(t, map[string]map[string]int{wt: {"APP_PORT": 81}, a: {"APP_PORT": 82}, b: {"APP_PORT": 83}})
+	runs := fakeOldGit(t)
+	got := map[string]entry{}
+	for _, e := range psJSON(t, "--all") {
+		got[e.Dir] = e
+	}
+	if got[wt].Worktree != filepath.Base(wt) || got[a].State != stateUnattributed || got[b].State != stateUnattributed {
+		t.Errorf("entries = %+v", got)
+	}
+	if !slices.Equal(runs[wt], []bool{true, false}) || len(runs) != 1 {
+		t.Errorf("git runs = %v", runs)
+	}
+}
+
+// Outside a repository the first other repository finds out that git has no -z: one run there, without the line
+// format, and none in the next one.
+func TestPsAllWithGitWithoutZRunsGitOnceOutsideARepository(t *testing.T) {
+	withGitInRegistryDirs(t, true)
+	setupWorktreeRepo(t)
+	t.Chdir(realTempDir(t))
+	base := realTempDir(t)
+	_, a := newRepoWithWorktree(t, base, "a", "x")
+	_, b := newRepoWithWorktree(t, base, "b", "x")
+	writeRegistry(t, map[string]map[string]int{a: {"APP_PORT": 82}, b: {"APP_PORT": 83}})
+	runs := fakeOldGit(t)
+	got := map[string]entry{}
+	for _, e := range psJSON(t, "--all") {
+		got[e.Dir] = e
+	}
+	if got[a].State != stateUnattributed || got[b].State != stateUnattributed {
+		t.Errorf("entries = %+v", got)
+	}
+	if !slices.Equal(runs[a], []bool{true}) || len(runs[b]) != 0 || len(runs) != 1 {
+		t.Errorf("git runs = %v", runs)
 	}
 }

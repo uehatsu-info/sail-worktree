@@ -1988,9 +1988,18 @@ func TestRunWorktreeListFallsBackOnlyWhenGitRefusesZ(t *testing.T) {
 			return nil, err
 		}
 		return []byte("worktree /r/app\n"), nil
-	})
+	}, true)
 	if err != nil || z || out != "worktree /r/app\n" || len(calls) != 2 || slices.Contains(calls[1], "-z") || !slices.Contains(calls[0], "-z") {
 		t.Errorf("fallback: %q %v %v, calls %q", out, z, err, calls)
+	}
+	// Without allowLines (another repository's listing) the refusal ends the listing: one run, errNoZ.
+	calls = nil
+	if out, _, err := runWorktreeList(func(args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		_, err := gitRaw(repo, "worktree", "list", "--porcelain", "--no-such-switch")
+		return []byte("worktree /r/app\n"), err
+	}, false); !errors.Is(err, errNoZ) || out != "" || len(calls) != 1 {
+		t.Errorf("no fallback: %q %v, calls %q", out, err, calls)
 	}
 	// Any other failure is not retried: a timeout or a broken repository could cost a second run.
 	_, notRepo := gitRaw(repo, "-C", filepath.Join(repo, "missing"), "worktree", "list") // exit status 128
@@ -1999,7 +2008,7 @@ func TestRunWorktreeListFallsBackOnlyWhenGitRefusesZ(t *testing.T) {
 		if _, _, err := runWorktreeList(func(args ...string) ([]byte, error) {
 			calls = append(calls, args)
 			return nil, fail
-		}); err == nil || len(calls) != 1 {
+		}, true); err == nil || len(calls) != 1 {
 			t.Errorf("%v: err %v, calls %q", fail, err, calls)
 		}
 	}
@@ -2007,7 +2016,7 @@ func TestRunWorktreeListFallsBackOnlyWhenGitRefusesZ(t *testing.T) {
 	if out, z, err := runWorktreeList(func(args ...string) ([]byte, error) {
 		calls = append(calls, args)
 		return []byte("worktree /r/app\x00\x00"), nil
-	}); err != nil || !z || out != "worktree /r/app\x00\x00" || len(calls) != 1 {
+	}, false); err != nil || !z || out != "worktree /r/app\x00\x00" || len(calls) != 1 {
 		t.Errorf("-z: %q %v %v, calls %q", out, z, err, calls)
 	}
 }
@@ -2031,7 +2040,7 @@ func TestWorktreeListReadsNewlineAndQuoteNames(t *testing.T) {
 	if p, _, err := mainWorktree(quote); err != nil || p != main {
 		t.Errorf("mainWorktree = %q %v", p, err)
 	}
-	l, err := listWorktrees(nl, anyPath)
+	l, _, err := listWorktrees(nl, anyPath, false)
 	if err != nil {
 		t.Fatal(err)
 	}
