@@ -567,10 +567,8 @@ func readCopySource(c *ctx) (*envFile, envSource, error) {
 		env, err = readEnv(filepath.Join(c.main, ".env.example"))
 	}
 	if err != nil {
-		if c.main != c.mainTop {
-			return nil, 0, fmt.Errorf("cannot read the source .env from the main worktree's project directory %q (the main worktree needs the project at the same relative path): %w", c.main, err)
-		}
-		return nil, 0, fmt.Errorf("cannot read the source .env from the main worktree: %w", err)
+		return nil, 0, fmt.Errorf("cannot copy .env from the main worktree's project directory %q: reading .env (or "+
+			".env.example when there is no .env) failed: %w; create .env in this worktree first", c.main, err)
 	}
 	return env, src, nil
 }
