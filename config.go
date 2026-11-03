@@ -241,20 +241,39 @@ var reservedNames = map[string]string{
 // takes from a .env; a larger .env is refused with errEnvTooLarge rather than cut.
 const maxSmallFile = 1 << 20
 
-// readSmallFile reads a regular file of at most maxSmallFile bytes. Links are followed (a linked compose file works for
-// up and stop as before; rm checks where it leads), but the open does not block on a FIFO swapped in after the lookup,
-// and a larger file is an error rather than being cut, which could drop port variables silently.
-func readSmallFile(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|openNonBlock, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	if fi, err := f.Stat(); err != nil {
+// openRegular opens path for reading through links, for readSmallFile and readEnv, only if it leads to a regular file.
+// The Stat before the open keeps a device from being opened at all, since some act on open (a tape rewinds); the Stat
+// after it catches a path swapped in between: the open reaches such a path, but with O_NONBLOCK (a FIFO does not
+// block) and O_NOCTTY (#131). A missing file returns the Stat error unwrapped, for os.IsNotExist.
+func openRegular(path string) (*os.File, error) {
+	if fi, err := os.Stat(path); err != nil {
 		return nil, err
 	} else if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("%q is not a regular file", path)
 	}
+	f, err := os.OpenFile(path, os.O_RDONLY|openNonBlock|openNoCTTY, 0)
+	if err != nil {
+		return nil, err
+	}
+	if fi, err := f.Stat(); err != nil {
+		f.Close()
+		return nil, err
+	} else if !fi.Mode().IsRegular() {
+		f.Close()
+		return nil, fmt.Errorf("%q is not a regular file", path)
+	}
+	return f, nil
+}
+
+// readSmallFile reads a regular file of at most maxSmallFile bytes. Links are followed (a linked compose file works for
+// up and stop as before; rm checks where it leads), but nothing else is opened (openRegular), and a larger file is an
+// error rather than being cut, which could drop port variables silently.
+func readSmallFile(path string) ([]byte, error) {
+	f, err := openRegular(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
 	b, err := io.ReadAll(io.LimitReader(f, maxSmallFile+1))
 	if err != nil {
 		return nil, err

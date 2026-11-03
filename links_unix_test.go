@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -129,6 +131,9 @@ func TestWriteFileNoFollowRefusesFIFO(t *testing.T) {
 	}
 }
 
+// Like the readEnvIfRegular test above, this checks only the Stat before the open (openRegular, #131): a swap for a
+// FIFO between that Stat and the open cannot be produced deterministically, so O_NONBLOCK and the Stat of the opened
+// file are not verified.
 func TestReadSmallFileDoesNotBlockOnFIFO(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "compose.yaml")
 	if err := syscall.Mkfifo(p, 0o600); err != nil {
@@ -218,8 +223,8 @@ func TestUpDoesNotReadAHardLinkSwappedInAfterTheCheck(t *testing.T) {
 	}
 }
 
-// readEnv follows links, so unlike the readEnvIfRegular test above there is no Lstat stage: this checks O_NONBLOCK and
-// the Stat of the opened file themselves (#123).
+// readEnv follows links (#123). Since #131 it Stats the path before opening it, so like the readSmallFile test above
+// this checks only that Stat: O_NONBLOCK and the Stat of the opened file need a swap between the two.
 func TestReadEnvDoesNotBlockOnFIFO(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "fifo")
@@ -312,5 +317,53 @@ func TestUpDoesNotBlockOnAFIFOAsTheCopySource(t *testing.T) {
 				t.Error(".env was written")
 			}
 		})
+	}
+}
+
+// readEnv and readSmallFile follow links but open only a regular file: a character device, directly or through a link,
+// is refused before the open, so an open with side effects (a tape rewinds, a terminal) never happens (#131).
+func TestReadsRefuseADeviceBeforeOpeningIt(t *testing.T) {
+	dir := t.TempDir()
+	devLink := filepath.Join(dir, "dev")
+	symlinkOrSkip(t, os.DevNull, devLink)
+	// The Stat after the open would refuse /dev/null as well; only this FIFO shows that the refusal comes before the
+	// open: without permissions, an open fails with EACCES for anyone but root.
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("cannot create a FIFO (set TMPDIR to a filesystem that supports them): %v", err)
+	}
+	if err := os.Chmod(fifo, 0); err != nil {
+		t.Fatal(err)
+	}
+	fifoLink := filepath.Join(dir, "fifo-link")
+	symlinkOrSkip(t, fifo, fifoLink)
+	paths := []string{os.DevNull, devLink}
+	if os.Geteuid() != 0 { // root opens the FIFO despite its mode
+		paths = append(paths, fifo, fifoLink)
+	}
+	reads := map[string]func(string) error{
+		"readEnv":       func(p string) error { _, err := readEnv(p); return err },
+		"readSmallFile": func(p string) error { _, err := readSmallFile(p); return err },
+	}
+	for name, read := range reads {
+		for _, p := range paths {
+			if err := read(p); err == nil || !strings.Contains(err.Error(), strconv.Quote(p)+" is not a regular file") {
+				t.Errorf("%s(%s): err = %v", name, p, err)
+			}
+		}
+	}
+
+	// A regular file and a link to it are still read.
+	regular := filepath.Join(dir, "regular")
+	writeFile(t, regular, "A=1\n")
+	regularLink := filepath.Join(dir, "regular-link")
+	symlinkOrSkip(t, regular, regularLink)
+	for _, p := range []string{regular, regularLink} {
+		if e, err := readEnv(p); err != nil || !slices.Equal(e.lines, []string{"A=1"}) {
+			t.Errorf("readEnv(%s): %v", p, err)
+		}
+		if b, err := readSmallFile(p); err != nil || string(b) != "A=1\n" {
+			t.Errorf("readSmallFile(%s) = %q, %v", p, b, err)
+		}
 	}
 }

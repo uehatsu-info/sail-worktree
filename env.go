@@ -63,20 +63,16 @@ var (
 )
 
 // readEnv reads path through a link: the source a new .env is copied from (up copies the main worktree's .env through a
-// link). Like every .env read it refuses a file larger than maxSmallFile rather than cut it. O_NONBLOCK keeps a FIFO
-// from blocking up; the refusal says "is not a regular file", as readSmallFile does, since errEnvNotRegular would name
-// a link, which is followed here. A missing file returns the open error unwrapped for readCopySource's os.IsNotExist.
+// link). Like every .env read it refuses a file larger than maxSmallFile rather than cut it. It opens only a regular
+// file (openRegular, so a FIFO does not block up and a device is not opened); the refusal says "is not a regular
+// file", as readSmallFile does, since errEnvNotRegular would name a link, which is followed here. A missing file
+// returns the Stat error unwrapped for readCopySource's os.IsNotExist.
 func readEnv(path string) (*envFile, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|openNonBlock, 0)
+	f, err := openRegular(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	if fi, err := f.Stat(); err != nil {
-		return nil, err
-	} else if !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%q is not a regular file", path)
-	}
 	return parseEnvFile(f, path)
 }
 
@@ -110,8 +106,9 @@ func readOwnEnv(path string) (*envFile, error) {
 
 // readRegularEnv reads path for readEnvIfRegular and readOwnEnv. So that open does not block even if the path is
 // swapped for a FIFO between Lstat and open, it opens with O_NONBLOCK (which does not affect reading a regular file)
-// and Stats the opened fd again. On Unix a link swapped in after the Lstat fails the open with ELOOP (O_NOFOLLOW), which
-// is refused like one the Lstat saw; on Windows the Lstat is the only link check, as in writeFileNoFollow.
+// and Stats the opened fd again; O_NOCTTY keeps a terminal swapped in from becoming the controlling one (#131). On Unix
+// a link swapped in after the Lstat fails the open with ELOOP (O_NOFOLLOW), which is refused like one the Lstat saw; on
+// Windows the Lstat is the only link check, as in writeFileNoFollow.
 func readRegularEnv(path string, refuseHardLink bool) (*envFile, error) {
 	fi, err := os.Lstat(path)
 	if err != nil {
@@ -120,7 +117,7 @@ func readRegularEnv(path string, refuseHardLink bool) (*envFile, error) {
 	if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("%q %w", path, errEnvNotRegular)
 	}
-	f, err := os.OpenFile(path, os.O_RDONLY|openNonBlock|openNoFollow, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|openNonBlock|openNoFollow|openNoCTTY, 0)
 	if errors.Is(err, syscall.ELOOP) {
 		return nil, fmt.Errorf("%q %w", path, errEnvNotRegular)
 	} else if err != nil {
@@ -295,9 +292,10 @@ func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	// O_TRUNC would truncate before the check, so check after opening and then Truncate.
-	// O_NOFOLLOW (unix) refuses a symlink even if the path is swapped for one after the Lstat, and O_NONBLOCK keeps a
-	// FIFO swapped in from blocking the open.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|openNoFollow|openNonBlock, perm)
+	// O_NOFOLLOW (unix) refuses a symlink even if the path is swapped for one after the Lstat, O_NONBLOCK keeps a
+	// FIFO swapped in from blocking the open, and O_NOCTTY keeps a terminal swapped in from becoming the controlling
+	// one (#131).
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|openNoFollow|openNonBlock|openNoCTTY, perm)
 	if err != nil {
 		return err
 	}
