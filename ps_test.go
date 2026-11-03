@@ -863,8 +863,10 @@ func TestParseWorktreeListSkipsRefusedPaths(t *testing.T) {
 	}
 
 	// With -z: a name with a newline and one that starts with a quote reach the filter whole, a refused or relative
-	// linked path is skipped, and a refused or relative main path still drops the listing.
-	nl, quote := filepath.Join(base, "n\nworktree "+slash(c)), filepath.Join(base, `"q`)
+	// linked path is skipped, and a refused or relative main path still drops the listing. The name holds no absolute
+	// path (TestParseWorktreeRecordsZKeepsNewlines has the forged record): on Windows its drive letter would be read as
+	// a volume in the middle of the path.
+	nl, quote := filepath.Join(base, "n\nworktree x"), filepath.Join(base, `"q`)
 	z := "worktree " + slash(a) + "\x00branch refs/heads/main\x00\x00worktree " + slash(nl) + "\x00\x00worktree " +
 		slash(quote) + "\x00\x00worktree rel\x00\x00worktree " + slash(b) + "\x00\x00"
 	seen = nil
