@@ -603,6 +603,13 @@ func TestStatusHintsOnNativeWindows(t *testing.T) {
 			`SANCTUM_STATEFUL_DOMAINS lacks "localhost:81" for APP_URL; `},
 	}
 	const note = "on native Windows this report uses this worktree's Windows path and the Windows registry"
+	// The hand edit names the registry of the test's config directory, set by statusSetup.
+	release := func() string {
+		return "  - a worktree record that an older version's up wrote into the Windows registry is not released " +
+			"by up inside WSL2: first run rm here while .env still has the name that version wrote (rm runs `docker " +
+			"compose down -v` for that name, removing its volumes; do not change the name to make it run), or edit " +
+			registryPathShown() + " by hand (see the README Notes)\n"
+	}
 	for _, windows := range []bool{false, true} {
 		hint := "run up\n"
 		if windows {
@@ -624,6 +631,9 @@ func TestStatusHintsOnNativeWindows(t *testing.T) {
 				if strings.Contains(out, note) != windows || strings.Contains(out, "WSL2") != windows {
 					t.Errorf("note shown = %v, WSL2 mentioned = %v, want %v:\n%s", strings.Contains(out, note),
 						strings.Contains(out, "WSL2"), windows, out)
+				}
+				if strings.Contains(out, release()) != windows {
+					t.Errorf("release hint shown = %v, want %v:\n%s", strings.Contains(out, release()), windows, out)
 				}
 			})
 		}

@@ -90,6 +90,13 @@ func cmdStatus(args []string) error {
 		r.warn("on native Windows this report uses this worktree's Windows path and the Windows registry; WSL2 sees " +
 			"the worktree under another path, so another compose project name, and has a registry of its own: run up " +
 			"and status there")
+		// Every worktree record in the Windows registry was written by an older version's up, as up is refused here
+		// (#148). The path is an argument, so a % in it is not read as a verb.
+		r.warn("a worktree record that an older version's up wrote into the Windows registry is not released by up "+
+			"inside WSL2: first run rm here while .env still has the name that version wrote (rm runs `docker compose "+
+			"down -v` for that name, removing its volumes; do not change the name to make it run), or edit %s by hand "+
+			"(see the README Notes)",
+			registryPathShown())
 	}
 	proj := c.projectName()
 	r.line("compose project:   %s", proj)

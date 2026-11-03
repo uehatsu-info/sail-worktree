@@ -460,13 +460,17 @@ These come from deliberate decisions; change them only on purpose and update the
   only through WSL2, where the build is linux). `up` used to write `.env` and the registry before that failure. `rm`
   runs docker directly and the other commands run no Sail, so they still run on Windows (#132). There `status` and
   `check` word their hints to run `up` for WSL2 (`upHint`, `suggestion`), and `status` warns once in a linked worktree
-  that WSL2 sees it under another path (so another project name) and has another registry, so a Windows report does
-  not show what `up` did there (#136). `rm`'s refusals there do not point to `up` (#140): a missing `.env` says that
-  there is nothing to remove (`up` inside WSL2 writes the same `.env`), and a name mismatch (`windowsMismatchMessage`)
-  offers neither setting the name back nor the manual `down -v` command, since the name is most likely the one `up`
-  wrote inside WSL2, whose project runs on the same Docker daemon; both name the registry file (`registryPath`, `%q`)
-  for releasing by hand a record that an older version's `up` wrote on Windows (README Notes). `prune` keeps such a
-  record (its directory exists), by choice.
+  that WSL2 sees it under another path (so another project name) and has another registry, so a Windows report does not
+  show what `up` did there (#136). `up` there does not release a worktree record that an older version's `up` wrote
+  into the Windows registry, so on native Windows `suggestion` (naming the worktree, as `check` runs anywhere) and a
+  second `status` warning say to release it first by `rm` on Windows while `.env` still has that version's name (with
+  the `down -v` caution of `windowsMismatchMessage`) or by editing the registry file by hand (`registryPathShown`,
+  README Notes) (#148). `rm`'s refusals there do not point to `up` (#140): a missing `.env` says that there is nothing
+  to remove (`up` inside WSL2 writes the same `.env`), and a name mismatch (`windowsMismatchMessage`) offers neither
+  setting the name back nor the manual `down -v` command, since the name is most likely the one `up` wrote inside WSL2,
+  whose project runs on the same Docker daemon; both name the registry file (`registryPath`, `%q`) for releasing by hand
+  a record that an older version's `up` wrote on Windows (README Notes). `prune` keeps such a record (its directory
+  exists), by choice.
 - **`SANCTUM_STATEFUL_DOMAINS`.** Only when `up` rewrites `APP_URL` and `.env` sets the key, `addStatefulDomain`
   appends the new `APP_URL`'s entry (lower-case host, `:port` unless it is the scheme's default; IPv6 canonical with
   brackets). It follows Sanctum's `fromFrontend`: an element equal (before trimming) to
