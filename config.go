@@ -102,10 +102,13 @@ const (
 //     in Compose V2, which an older docker-compose still reads)
 //   - https://docs.docker.com/reference/cli/docker/#environment-variables (plus DOCKER_CONTENT_TRUST*, which older
 //     CLIs read)
-//   - https://docs.docker.com/build/building/variables/ (the build tool configuration variables)
+//   - https://docs.docker.com/build/building/variables/ (the build tool configuration variables; its list names
+//     BUILDX_BAKE_FILE_SEPARATOR, but buildx reads BUILDX_BAKE_PATH_SEPARATOR, commands/bake.go in
+//     https://github.com/docker/buildx; both are reserved)
 //   - https://docs.docker.com/engine/cli/proxy/ (the proxy names)
 //   - https://docs.docker.com/reference/cli/docker/buildx/build/#ssh (SSH_AUTH_SOCK)
-//   - the SAIL_* names in laravel/sail 1.x bin/sail
+//   - the SAIL_* names in laravel/sail 1.x bin/sail (the names it only forwards into the container, COLORTERM and
+//     its AGENT_ENV_VARS, are not settings and are left out, #111)
 //
 // Other COMPOSE_* and DOCKER_* names, such as DOCKER_WEB_PORT, are allowed: v0.8.1 handled them (#74). Only
 // SAIL_SHARE_SERVER_PORT ends in PORT, so it is the only one detection can yield; detectConfig refuses it for up and
@@ -197,6 +200,7 @@ var reservedNames = map[string]string{
 	"BUILDX_BAKE_GIT_AUTH_HEADER":         buildSetting,
 	"BUILDX_BAKE_GIT_AUTH_TOKEN":          buildSetting,
 	"BUILDX_BAKE_GIT_SSH":                 buildSetting,
+	"BUILDX_BAKE_PATH_SEPARATOR":          buildSetting,
 	"BUILDX_BUILDER":                      buildSetting,
 	"BUILDX_CONFIG":                       buildSetting,
 	"BUILDX_CPU_PROFILE":                  buildSetting,
@@ -266,10 +270,9 @@ func detectConfig(root, compose string) (*Config, error) {
 // reservedPortVarError is detectConfig's refusal of a reserved name. It carries the detected configuration for stop
 // and rm (ctx.teardownConfig), which do not write port variables. Only SAIL_SHARE_SERVER_PORT ends in PORT (see
 // reservedNames). Letting stop and rm through is safe only because detection yields names ending in PORT, never one
-// such as DOCKER_HOST or PATH, and because neither writes .env, so the name never reaches what Sail sources. stop also
-// drops it from sail's environment; rm keeps a shell value (cleanEnv(nil)), with which compose expands the compose
-// file without reading it as a setting of its own, and down -v picks what it removes by the project name pinned with
-// --project-name, so the port value does not change what is removed.
+// such as DOCKER_HOST or PATH, and because neither writes .env, so the name never reaches what Sail sources. Both drop
+// it from the environment of sail and docker (cleanEnv), and down -v picks what it removes by the project name pinned
+// with --project-name.
 type reservedPortVarError struct {
 	msg      string
 	detected *Config

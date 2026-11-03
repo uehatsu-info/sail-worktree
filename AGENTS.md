@@ -93,18 +93,19 @@ These come from deliberate decisions; change them only on purpose and update the
   worktrees, regular files only).
 - **`rm` is guarded.** It recomputes the project name and requires `COMPOSE_PROJECT_NAME` in `.env` to match exactly.
   Every refusing check runs *before* the confirmation prompt. It pins `--project-name`, `--project-directory` and `-f`,
-  and runs without `COMPOSE_*` from the environment. Values from `.env` are untrusted: they are shown with `%+q`, and
-  only names matching `safeProjectName` are put into a suggested shell command. The compose file is resolved through its
-  links (`composeInsideProject`) and refused unless its real path is a regular file inside the project directory; `-f`
-  gets that real path, so do not "simplify" it back to `Join(root, compose)`. Only `rm` has this check: `up`, `stop` and
-  `init` do not run docker with `-f` (Sail finds the file itself), so their `os.Stat` and read of the compose file (to
-  find the project and detect port variables) are not a regression. Limits: Windows junctions are not followed (Go 1.23+
-  `EvalSymlinks`), a link swapped after the check is not caught, and what the compose file refers to is not checked
-  (relative `include:` and `extends:` paths of a file reached through a link are resolved from its target's directory).
-  A compose file that is a hard link to a file outside the project directory is not detected, by choice: a path check
-  cannot see one, only the link count could, and compose files are sometimes shared that way. A plain checkout cannot
-  create one because git stores no hard links, but a script or the user can. Hard-link detection exists only for the
-  files this tool writes (`.env`, `.sail-worktree.json`), and only on Unix.
+  and runs without `COMPOSE_*`, `SAIL_FILES` and the port variables from the environment (`cleanEnv`). Values from
+  `.env` are untrusted: they are shown with `%+q`, and only names matching `safeProjectName` are put into a suggested
+  shell command. The compose file is resolved through its links (`composeInsideProject`) and refused unless its real
+  path is a regular file inside the project directory; `-f` gets that real path, so do not "simplify" it back to
+  `Join(root, compose)`. Only `rm` has this check: `up`, `stop` and `init` do not run docker with `-f` (Sail finds the
+  file itself), so their `os.Stat` and read of the compose file (to find the project and detect port variables) are not
+  a regression. Limits: Windows junctions are not followed (Go 1.23+ `EvalSymlinks`), a link swapped after the check is
+  not caught, and what the compose file refers to is not checked (relative `include:` and `extends:` paths of a file
+  reached through a link are resolved from its target's directory). A compose file that is a hard link to a file outside
+  the project directory is not detected, by choice: a path check cannot see one, only the link count could, and compose
+  files are sometimes shared that way. A plain checkout cannot create one because git stores no hard links, but a script
+  or the user can. Hard-link detection exists only for the files this tool writes (`.env`, `.sail-worktree.json`), and
+  only on Unix.
 - **`ps`, `ports` and `status` only read.** They never `save` or `migrate` the registry (`foldRegistry` folds symlink
   aliases in a copy), never write `.env` or `.sail-worktree.json`, and never source `.env`. Registry keys are untrusted:
   a key that fails `validKey` (absolute and clean, and on Windows a drive-letter path, an allow-list, because a UNC or
@@ -266,10 +267,12 @@ These come from deliberate decisions; change them only on purpose and update the
   current repository's worktrees are listed (`gitInRegistryDirs`). One command runs git at most once in a directory, a
   failure included, and adds a repository's listing once (`registryView.list`), since each run may take its timeout.
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
-  case-insensitively) from the environment passed to `sail` and `docker`. It must never return `nil`: a `nil`
-  `exec.Cmd.Env` inherits the whole parent environment. A port variable named `COMPOSE_X_PORT` (allowed, as it is no
-  compose setting) is removed on both counts and reaches compose only through the `.env` that `up` writes, as every
-  port variable does; a `DOCKER_X_PORT` is removed as a port variable, while `DOCKER_HOST` and the like are kept.
+  case-insensitively) from the environment passed to `sail` (`up`, `stop`) and to `docker compose down` in `rm`, because
+  shell values take precedence over `.env`; the read-only docker queries pass no names to drop (`cleanEnv(nil)`). It
+  must never return `nil`: a `nil` `exec.Cmd.Env` inherits the whole parent environment. A port variable named
+  `COMPOSE_X_PORT` (allowed, as it is no compose setting) is removed on both counts and reaches compose only through the
+  `.env` that `up` writes, as every port variable does; a `DOCKER_X_PORT` is removed as a port variable, while
+  `DOCKER_HOST` and the like are kept.
 - **Paths are real paths.** The worktree root, the main worktree and the project directory are resolved through
   symlinks, because the project name contains a hash of the project directory. `Registry.migrate` merges keys an older
   version recorded under a symlinked path, and replaces aliases of root in the current main's `worktrees` list (the only
@@ -326,9 +329,9 @@ These come from deliberate decisions; change them only on purpose and update the
     port variable, and detection yields only `*PORT` names, so the name cannot be `DOCKER_HOST` or `PATH`. Only
     `SAIL_SHARE_SERVER_PORT` (read by Sail's `share`) ends in `PORT` (a test pins it): without `.sail-worktree.json`, a
     compose file that maps it stops `up` and `init`, `status` reports a configuration problem and `check` warns and
-    records no main, while `stop` and `rm` run (`stop` drops it from sail's environment; `rm` keeps a shell value, with
-    which compose only expands the compose file, and `down -v` picks what it removes by the pinned project name). Port
-    variables are required only for `up` and only when detected (a file with `port_vars: []` still works).
+    records no main, while `stop` and `rm` run (both drop it from the environment of sail and docker, and `down -v`
+    picks what it removes by the pinned project name). Port variables are required only for `up` and only when detected
+    (a file with `port_vars: []` still works).
   - `up`'s order: main refusal, configuration, detected port variables and `checkOwnEnv`. Then, before the lock, a
     registry read (used only for the base of the main's record and the alias keys), the main's `.env` (`mainPorts`, and
     `mainEnvPorts` for variables that only the record keeps; neither in a bare layout) and the copy source of a new

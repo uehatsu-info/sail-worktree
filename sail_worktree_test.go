@@ -658,6 +658,36 @@ func TestRmPassesPinnedArguments(t *testing.T) {
 	}
 }
 
+// A shell variable named like a port variable of .sail-worktree.json would override .env when compose expands the
+// compose file, so rm drops it as stop does; DOCKER_HOST is kept on purpose. (The detected configuration is covered by
+// TestDetectedReservedNameRefusedOnlyByUpAndInit.)
+func TestRmDropsShellPortVariables(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	if err := os.WriteFile(filepath.Join(wt, ".env"), []byte("COMPOSE_PROJECT_NAME="+projectName(main, wt, wt)+
+		"\nAPP_PORT=81\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(wt, "compose.yaml"), "services: {}\n")
+	// Windows compares names case-insensitively, so this one name stands for every case there.
+	t.Setenv("app_port", "not-a-port")
+	t.Setenv("DOCKER_HOST", "unix:///keep.sock")
+	calls := captureRunner(t)
+	if err := cmdRm([]string{"-y"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 || (*calls)[0].name != "docker" {
+		t.Fatalf("calls = %+v", *calls)
+	}
+	for _, kv := range (*calls)[0].env {
+		if k, _, _ := strings.Cut(kv, "="); strings.EqualFold(k, "APP_PORT") {
+			t.Errorf("%s reaches docker", kv)
+		}
+	}
+	if !slices.Contains((*calls)[0].env, "DOCKER_HOST=unix:///keep.sock") {
+		t.Error("DOCKER_HOST was removed")
+	}
+}
+
 func TestUpWritesEnvAndCleansSailEnvironment(t *testing.T) {
 	main, wt := setupWorktreeRepo(t)
 	writeFile(t, filepath.Join(main, ".env"), "APP_URL=http://localhost\nSESSION_COOKIE=old\nSESSION_COOKIE=older\n")
