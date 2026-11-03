@@ -90,7 +90,9 @@ These come from deliberate decisions; change them only on purpose and update the
   collapsed to the first line. Reading is asymmetric on purpose: `up`, `stop` and `rm` read a symlinked
   `.sail-worktree.json`; only writing refuses links, so do not "unify" the two. Every `.env` read (`readEnv`,
   `readEnvIfRegular`, `readOwnEnv`) refuses a file larger than 1 MiB (`maxSmallFile`) rather than cut it
-  (`errEnvTooLarge`), and a refusal names its cause.
+  (`errEnvTooLarge`), and a refusal names its cause. `readEnv` (the copy source of a new `.env`) follows links, but
+  opens with `O_NONBLOCK` and refuses the opened file unless it is regular ("is not a regular file", as
+  `readSmallFile`), so a FIFO there does not hang `up` (#123).
 - **Override keys differ per command.** `up` refuses `COMPOSE_FILE`, `COMPOSE_ENV_FILES` and `SAIL_FILES` in `.env`
   (compose would not read the ports and project name `up` writes). `COMPOSE_PROFILES` is allowed. `rm` also refuses
   `COMPOSE_PROFILES` because it cannot be undone. `stop` refuses nothing and only warns (best effort, non-main

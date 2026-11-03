@@ -217,3 +217,100 @@ func TestUpDoesNotReadAHardLinkSwappedInAfterTheCheck(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// readEnv follows links, so unlike the readEnvIfRegular test above there is no Lstat stage: this checks O_NONBLOCK and
+// the Stat of the opened file themselves (#123).
+func TestReadEnvDoesNotBlockOnFIFO(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("cannot create a FIFO (set TMPDIR to a filesystem that supports them): %v", err)
+	}
+	link := filepath.Join(dir, "link")
+	symlinkOrSkip(t, fifo, link)
+	for _, p := range []string{fifo, link} {
+		done := make(chan error, 1)
+		go func() { _, err := readEnv(p); done <- err }()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "is not a regular file") {
+				t.Errorf("%s: err = %v", p, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: blocked on a FIFO", p)
+		}
+	}
+}
+
+// up reads the copy source of a new .env before the lock, so a FIFO there must not hang it (#123).
+func TestUpDoesNotBlockOnAFIFOAsTheCopySource(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		example bool                                   // the FIFO is .env.example, so the main has no .env
+		make    func(t *testing.T, main string) string // returns the FIFO
+	}{
+		{".env", false, func(t *testing.T, main string) string { return filepath.Join(main, ".env") }},
+		{"link to a FIFO", false, func(t *testing.T, main string) string {
+			fifo := filepath.Join(t.TempDir(), "fifo")
+			symlinkOrSkip(t, fifo, filepath.Join(main, ".env"))
+			return fifo
+		}},
+		{".env.example", true, func(t *testing.T, main string) string { return filepath.Join(main, ".env.example") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			main, wt := setupWorktreeRepo(t)
+			writeFakeSail(t, wt)
+			fifo := tc.make(t, main)
+			if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+				t.Fatalf("cannot create a FIFO (set TMPDIR to a filesystem that supports them): %v", err)
+			}
+			// The test means something only if up copies: no .env here, and for .env.example none in the main.
+			if _, err := os.Lstat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
+				t.Fatalf("the worktree has a .env: %v", err)
+			}
+			if tc.example {
+				if _, err := os.Lstat(filepath.Join(main, ".env")); !os.IsNotExist(err) {
+					t.Fatalf("the main worktree has a .env: %v", err)
+				}
+			}
+			var locked bool
+			old := upLock
+			upLock = func() (func(), error) {
+				locked = true
+				return lockRegistry()
+			}
+			t.Cleanup(func() { upLock = old })
+			calls := captureRunner(t)
+			captureStdout(t)
+			captureStderr(t) // up warns that the main's .env is not a regular file
+			done := make(chan error, 1)
+			go func() { done <- cmdUp(nil) }()
+			var err error
+			select {
+			case err = <-done:
+			case <-time.After(10 * time.Second): // longer than the read tests above: up runs git first
+				// Release the blocked open and let up finish, so that it does not touch the state the cleanups restore.
+				if w, oerr := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); oerr == nil {
+					w.Close()
+					select {
+					case <-done:
+					case <-time.After(10 * time.Second):
+					}
+				}
+				t.Fatal("blocked on a FIFO")
+			}
+			if err == nil || !strings.Contains(err.Error(), "cannot read the source .env") || !strings.Contains(err.Error(), "is not a regular file") {
+				t.Errorf("err = %v", err)
+			}
+			if locked {
+				t.Error("the lock was taken")
+			}
+			if len(*calls) != 0 {
+				t.Errorf("commands ran: %v", *calls)
+			}
+			if _, err := os.Lstat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
+				t.Error(".env was written")
+			}
+		})
+	}
+}

@@ -911,6 +911,13 @@ func TestReadEnvIfRegularSkipsNonRegular(t *testing.T) {
 	}
 }
 
+// readEnv (the copy source) follows links but refuses what is not a regular file; this one also runs on Windows (#123).
+func TestReadEnvRefusesNonRegular(t *testing.T) {
+	if _, err := readEnv(t.TempDir()); err == nil || !strings.Contains(err.Error(), "is not a regular file") {
+		t.Errorf("directory: err = %v", err)
+	}
+}
+
 // envPadding is comment lines of 100 bytes each, at least n bytes in all: many lines, since parseEnv's scanner also
 // limits a single line.
 func envPadding(n int) string {

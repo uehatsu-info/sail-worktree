@@ -54,8 +54,8 @@ type envFile struct {
 	lines []string
 }
 
-// The refusals of the .env reads wrap these after the quoted path. Each text is the cause, so that a message built
-// without the read's error (mainEnvUnreadable) names it in the same words.
+// The refusals of the .env reads (except readEnv's "not a regular file") wrap these after the quoted path. Each text is
+// the cause, so that a message built without the read's error (mainEnvUnreadable) names it in the same words.
 var (
 	errEnvTooLarge   = errors.New("is larger than 1 MiB")
 	errEnvNotRegular = errors.New("is a symbolic link or not a regular file")
@@ -63,13 +63,20 @@ var (
 )
 
 // readEnv reads path through a link: the source a new .env is copied from (up copies the main worktree's .env through a
-// link). Like every .env read it refuses a file larger than maxSmallFile rather than cut it.
+// link). Like every .env read it refuses a file larger than maxSmallFile rather than cut it. O_NONBLOCK keeps a FIFO
+// from blocking up; the refusal says "is not a regular file", as readSmallFile does, since errEnvNotRegular would name
+// a link, which is followed here. A missing file returns the open error unwrapped for readCopySource's os.IsNotExist.
 func readEnv(path string) (*envFile, error) {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|openNonBlock, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	if fi, err := f.Stat(); err != nil {
+		return nil, err
+	} else if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q is not a regular file", path)
+	}
 	return parseEnvFile(f, path)
 }
 
