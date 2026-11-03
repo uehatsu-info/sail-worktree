@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 const sampleCompose = `services:
@@ -2468,4 +2470,288 @@ func TestReadOwnEnv(t *testing.T) {
 // directories that some outputs show have random letters and digits in their names.
 func containsNumber(s, n string) bool {
 	return regexp.MustCompile(`(^|[^0-9A-Za-z])` + regexp.QuoteMeta(n) + `([^0-9A-Za-z]|$)`).MatchString(s)
+}
+
+// registryOnlySetup records the worktree, an alias key of it is left out, another worktree and the main worktree's
+// record with the worktree in its list; .env holds a name that does not match and an override key that rm refuses.
+func registryOnlySetup(t *testing.T) (main, wt string, env []byte) {
+	t.Helper()
+	main, wt = setupWorktreeRepo(t)
+	env = []byte("COMPOSE_PROJECT_NAME=app-feat-wsl123\nCOMPOSE_PROFILES=x\nAPP_PORT=81\n")
+	if err := os.WriteFile(filepath.Join(wt, ".env"), env, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saveRegistry(t, &Registry{
+		Worktrees: map[string]map[string]int{wt: {"APP_PORT": 81}, "/other/wt": {"APP_PORT": 82}},
+		Mains: map[string]MainRecord{main: {Ports: map[string]int{"APP_PORT": 80}, Defaults: map[string]int{"APP_PORT": 80},
+			Worktrees: []string{"/other/wt", wt}}},
+	})
+	captureStderr(t)
+	return main, wt, env
+}
+
+// withStdin replaces stdin with s and returns the reader, to check how much of it was read.
+func withStdin(t *testing.T, s string) *strings.Reader {
+	t.Helper()
+	in := strings.NewReader(s)
+	old := stdin
+	stdin = in
+	t.Cleanup(func() { stdin = old })
+	return in
+}
+
+func TestRmRegistryOnlyReleasesOnlyTheRecord(t *testing.T) {
+	for _, windows := range []bool{false, true} {
+		t.Run(fmt.Sprintf("windows=%v", windows), func(t *testing.T) {
+			main, wt, env := registryOnlySetup(t)
+			nativeWindows = windows
+			t.Cleanup(func() { nativeWindows = false })
+			out := captureStdout(t)
+			calls := captureRunner(t)
+			in := withStdin(t, "y\n")
+			fastLock(t, time.Second, time.Hour)
+			if err := run("rm", []string{"--registry-only"}); err != nil {
+				t.Fatal(err)
+			}
+			if in.Len() != 0 {
+				t.Error("the prompt was not answered")
+			}
+			if len(*calls) != 0 {
+				t.Errorf("commands ran: %v", *calls)
+			}
+			if b, err := os.ReadFile(filepath.Join(wt, ".env")); err != nil || !bytes.Equal(b, env) {
+				t.Errorf(".env changed: %q, %v", b, err)
+			}
+			reg, err := loadRegistry()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := reg.Worktrees[wt]; ok || reg.Worktrees["/other/wt"]["APP_PORT"] != 82 {
+				t.Errorf("worktrees = %v", reg.Worktrees)
+			}
+			if rec := reg.Mains[main]; !slices.Equal(rec.Worktrees, []string{"/other/wt"}) || rec.Ports["APP_PORT"] != 80 {
+				t.Errorf("main record = %+v", rec)
+			}
+			for _, want := range []string{
+				fmt.Sprintf("This releases only the registry record of worktree %q (ports: APP_PORT=81).", wt),
+				"`docker compose ls -a` lists them",
+				"Release the record? [y/N] ",
+				fmt.Sprintf("released the registry record of %q", wt),
+			} {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output lacks %q:\n%s", want, out)
+				}
+			}
+			if _, err := os.Lstat(lockFilePath(t)); !os.IsNotExist(err) {
+				t.Errorf("the lock file is still there: %v", err)
+			}
+		})
+	}
+}
+
+// The alias key and an alias in the main worktree's list are folded into root and released with it.
+func TestRmRegistryOnlyReleasesAliases(t *testing.T) {
+	main, wt, _ := registryOnlySetup(t)
+	alias := filepath.Join(t.TempDir(), "alias")
+	symlinkOrSkip(t, wt, alias)
+	saveRegistry(t, &Registry{
+		Worktrees: map[string]map[string]int{alias: {"APP_PORT": 81}, "/other/wt": {"APP_PORT": 82}},
+		Mains:     map[string]MainRecord{main: {Ports: map[string]int{"APP_PORT": 80}, Worktrees: []string{alias, "/other/wt"}}},
+	})
+	out := captureStdout(t)
+	calls := captureRunner(t)
+	if err := cmdRm([]string{"--registry-only", "-y"}); err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := loadRegistry()
+	if len(reg.Worktrees) != 1 || !slices.Equal(reg.Mains[main].Worktrees, []string{"/other/wt"}) || len(*calls) != 0 {
+		t.Errorf("registry = %+v, calls = %v", reg, *calls)
+	}
+	if !strings.Contains(out.String(), "(ports: APP_PORT=81)") || strings.Contains(out.String(), "[y/N]") {
+		t.Errorf("-y asked, or the ports of the alias are not shown:\n%s", out)
+	}
+}
+
+// Only an entry in the main worktree's list is released too; its ports are shown as "-".
+func TestRmRegistryOnlyReleasesAListEntry(t *testing.T) {
+	main, wt, _ := registryOnlySetup(t)
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{main: {Ports: map[string]int{"APP_PORT": 80}, Worktrees: []string{wt}}}})
+	out := captureStdout(t)
+	if err := cmdRm([]string{"-y", "--registry-only"}); err != nil {
+		t.Fatal(err)
+	}
+	if reg, _ := loadRegistry(); len(reg.Mains[main].Worktrees) != 0 || reg.Mains[main].Ports["APP_PORT"] != 80 {
+		t.Errorf("registry = %+v", reg)
+	}
+	if !strings.Contains(out.String(), "(ports: -)") {
+		t.Errorf("output:\n%s", out)
+	}
+}
+
+// Without a record there is nothing to ask: it says so, exits 0, reads no stdin and does not write the registry.
+func TestRmRegistryOnlyWithoutARecord(t *testing.T) {
+	_, wt, _ := registryOnlySetup(t)
+	saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{"/other/wt": {"APP_PORT": 82}}})
+	p := mustRegistryPath(t)
+	before, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(p, old, old); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t)
+	in := withStdin(t, "y\n")
+	if err := cmdRm([]string{"--registry-only"}); err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("no registry record of %q to release\n", wt); out.String() != want {
+		t.Errorf("output = %q, want %q", out, want)
+	}
+	after, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Len() != 2 || !bytes.Equal(before, after) || fi.ModTime().After(old.Add(time.Minute)) {
+		t.Errorf("stdin read or the registry written")
+	}
+	// No lock is taken either: one that another run holds does not matter.
+	fastLock(t, 50*time.Millisecond, time.Hour)
+	plantLock(t, 0)
+	if err := cmdRm([]string{"--registry-only"}); err != nil {
+		t.Errorf("a held lock stops it: %v", err)
+	}
+}
+
+// Refusals come before the prompt: nothing is read from stdin, no command runs and the registry stays.
+func TestRmRegistryOnlyRefusesBeforeThePrompt(t *testing.T) {
+	main, wt, _ := registryOnlySetup(t)
+	calls := captureRunner(t)
+	captureStdout(t)
+	check := func(name, want string, args ...string) {
+		t.Helper()
+		in := withStdin(t, "y\n")
+		err := cmdRm(args)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v", name, err)
+		}
+		if in.Len() != 2 || len(*calls) != 0 {
+			t.Errorf("%s: stdin read or a command ran", name)
+		}
+		if reg, _ := loadRegistry(); reg == nil || reg.Worktrees[wt]["APP_PORT"] != 81 {
+			t.Errorf("%s: the registry changed", name)
+		}
+	}
+	check("unknown argument", "unknown argument: --bogus", "--registry-only", "--bogus")
+	t.Chdir(main)
+	check("main worktree", "cannot run in the main worktree", "--registry-only")
+	t.Chdir(wt)
+	p := mustRegistryPath(t)
+	good, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, p, "{broken")
+	in := withStdin(t, "y\n")
+	if err := cmdRm([]string{"--registry-only"}); err == nil || !strings.Contains(err.Error(), "failed to parse") || in.Len() != 2 {
+		t.Errorf("a broken registry: err = %v, stdin read = %v", err, in.Len() != 2)
+	}
+	writeFile(t, p, string(good))
+	// Outside a repository there is no project to look up (the README's hand edit is for such a case).
+	empty := filepath.Join(t.TempDir(), "empty")
+	if err := os.Mkdir(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(empty)
+	check("outside a repository", "inside a git repository", "--registry-only")
+	t.Chdir(wt)
+	writeFile(t, p, string(good))
+	if err := run("rm", []string{"--registry-only", "--help"}); err == nil {
+		t.Error("--help next to --registry-only is not refused")
+	}
+}
+
+// The guards of down -v do not apply: no .env, a broken configuration, the name and the override keys (set up by
+// registryOnlySetup) do not stop it.
+func TestRmRegistryOnlyNeedsNoEnvNorConfiguration(t *testing.T) {
+	_, wt, _ := registryOnlySetup(t)
+	if err := os.Remove(filepath.Join(wt, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(wt, configName), "{broken")
+	captureStdout(t)
+	if err := cmdRm([]string{"--registry-only", "-y"}); err != nil {
+		t.Fatal(err)
+	}
+	if reg, _ := loadRegistry(); len(reg.Worktrees[wt]) != 0 {
+		t.Errorf("not released: %v", reg.Worktrees)
+	}
+	if _, err := os.Lstat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
+		t.Errorf(".env was created: %v", err)
+	}
+}
+
+func TestRmRegistryOnlyAbortsOnNo(t *testing.T) {
+	_, wt, _ := registryOnlySetup(t)
+	out := captureStdout(t)
+	withStdin(t, "n\n")
+	if err := cmdRm([]string{"--registry-only"}); err != nil {
+		t.Fatal(err)
+	}
+	if reg, _ := loadRegistry(); reg.Worktrees[wt]["APP_PORT"] != 81 || !strings.Contains(out.String(), "aborted") {
+		t.Errorf("released after no: %v\n%s", reg.Worktrees, out)
+	}
+}
+
+// The registry is updated under the lock: a lock another run holds stops it with nothing released, and a record that
+// changed between the prompt and the lock is not released, as the user did not confirm it.
+func TestRmRegistryOnlyLock(t *testing.T) {
+	_, wt, _ := registryOnlySetup(t)
+	captureStdout(t)
+	fastLock(t, 50*time.Millisecond, time.Hour)
+	plantLock(t, 0)
+	withStdin(t, "")
+	err := cmdRm([]string{"--registry-only", "-y"})
+	if err == nil || !strings.Contains(err.Error(), "nothing was released") || !strings.Contains(err.Error(), "locked by another") {
+		t.Fatalf("err = %v", err)
+	}
+	if reg, _ := loadRegistry(); reg.Worktrees[wt]["APP_PORT"] != 81 {
+		t.Errorf("the registry changed: %v", reg.Worktrees)
+	}
+	if err := os.Remove(lockFilePath(t)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Another up records other ports while the prompt waits.
+	stdin = &hookReader{in: strings.NewReader("y\n"), f: func() {
+		saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 83}}})
+	}}
+	err = cmdRm([]string{"--registry-only"})
+	if err == nil || !strings.Contains(err.Error(), "changed after the prompt") {
+		t.Fatalf("err = %v", err)
+	}
+	if reg, _ := loadRegistry(); reg.Worktrees[wt]["APP_PORT"] != 83 {
+		t.Errorf("the newer record was released: %v", reg.Worktrees)
+	}
+	if _, err := os.Lstat(lockFilePath(t)); !os.IsNotExist(err) {
+		t.Errorf("the lock file is still there: %v", err)
+	}
+}
+
+func TestRmRegistryOnlyInABareLayout(t *testing.T) {
+	_, _, wt := setupBareWorktreeRepo(t)
+	saveRegistry(t, &Registry{Worktrees: map[string]map[string]int{wt: {"APP_PORT": 81}}})
+	captureStdout(t)
+	captureStderr(t)
+	if err := cmdRm([]string{"--registry-only", "-y"}); err != nil {
+		t.Fatal(err)
+	}
+	if reg, _ := loadRegistry(); len(reg.Worktrees) != 0 || len(reg.Mains) != 0 {
+		t.Errorf("registry = %+v", reg)
+	}
 }

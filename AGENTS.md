@@ -8,7 +8,7 @@ Guidance for AI coding agents (and humans) working on this repository.
 Laravel Sail project run side by side. For each worktree it creates or updates `.env` and assigns ports that do not
 collide with other worktrees or with the host.
 
-Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `check`, `prune [-y]`, `version`. See `README.md` for the user-facing behavior.
+Commands: `init`, `up [args...]`, `stop`, `rm [--registry-only] [-y]`, `ps`, `ports`, `status`, `check`, `prune [-y]`, `version`. See `README.md` for the user-facing behavior.
 
 - Module: `github.com/uehatsu-info/sail-worktree` (Go version is set by `go.mod`)
 - Install: `go install github.com/uehatsu-info/sail-worktree@latest`, or the binaries attached to each GitHub release
@@ -29,7 +29,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | File | Role |
 |---|---|
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
-| `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `upLock` (the lock `up` takes, replaced by tests), `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), `nativeWindows`/`nativeWindowsError` (`up` and `stop` refused on native Windows), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
+| `cmd.go` | `init`, `up`, `stop`, `rm`, `rmRegistryOnly` (`rm --registry-only`; `heldRecord`, `release`), `parseRmArgs`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `upLock` (the lock `up` takes, replaced by tests), `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), `nativeWindows`/`nativeWindowsError` (`up` and `stop` refused on native Windows), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnv`/`readEnvIfRegular`/`readOwnEnv` (`readRegularEnv`, `parseEnvFile`, the 1 MiB limit), `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`/`readBounded`/`openRegular`, the port registry (`loadRegistry`, `maxRegistryFile`, `writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`markedBelow`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
@@ -116,6 +116,18 @@ These come from deliberate decisions; change them only on purpose and update the
   files are sometimes shared that way. A plain checkout cannot create one because git stores no hard links, but a script
   or the user can. Hard-link detection exists only for the files this tool writes (`.env`, `.sail-worktree.json`), and
   only on Unix.
+- **`rm --registry-only` releases only the record** (#149; `rmRegistryOnly`). It exists for a record that `rm` cannot
+  release without `down -v`, such as one an older version's `up` wrote on native Windows while `.env` now holds the name
+  `up` wrote inside WSL2. It runs neither docker nor sail (git only through `loadCtx`) and neither reads nor writes
+  `.env` or `.sail-worktree.json`, so the guards of `down -v` (the name match, `rmOverrideKeys`, the compose check, the
+  configuration error, `checkOwnEnv`) do not apply, and it runs on every OS. It keeps the rest: the project directory
+  is looked up as usual, the main worktree is refused, and a broken registry fails, all before the prompt. A worktree
+  with no record (no key, no alias key, no entry in the main's list) prints so and exits 0 without a prompt or a lock.
+  The prompt names the key with `%q` and its ports through `cell`. After it, under `lockRegistry`, the registry is read
+  again, the alias keys from the read before the prompt are folded (`heldRecord`, `migrateAliases`) and the record is
+  released (`release`, shared with `rm`) only if it equals the one shown (as `prune` removes only what was confirmed;
+  unlike `prune`, which skips such a record, the one record asked for is an error that says to run it again), saving
+  only then. The main's list entry is not compared: it holds no ports.
 - **`ps`, `ports` and `status` only read.** They never `save` or `migrate` the registry (`foldRegistry` folds symlink
   aliases in a copy), never write `.env` or `.sail-worktree.json`, and never source `.env`. Registry keys are untrusted:
   a key that fails `validKey` (absolute and clean, and on Windows a drive-letter path, an allow-list, because a UNC or
@@ -409,8 +421,8 @@ These come from deliberate decisions; change them only on purpose and update the
   the alias keys to release, `aliasesOf`; this never refuses) and again after `docker` (so an update made meanwhile by
   another `up` is not lost); release the worktree only after docker succeeds. The lock is taken after docker and before
   the second read (never while docker runs); if it cannot be taken the error says that docker finished and that rm can
-  be run again (`down` is idempotent). The main worktree's record stays; only the worktree leaves its `worktrees` list
-  (`forgetWorktree`).
+  be run again (`down` is idempotent). `--registry-only` has its own rule (above). The main worktree's record stays;
+  only the worktree leaves its `worktrees` list (`forgetWorktree`).
 - **The registry lock.** `up`, `rm`, `check` and `prune` update the registry under `lockRegistry` (`registry.json.lock`
   next to it, `O_EXCL`, mode 0600, pid inside; the file is closed at once because Windows cannot remove an open file).
   `up` reads the main's `.env` (`mainPorts`) before it, after a registry read that is used only as the base of that
@@ -419,8 +431,8 @@ These come from deliberate decisions; change them only on purpose and update the
   (`aliasesOf`); it also reads the source of a new `.env` before it (`readCopySource`; the worktree's own `.env` is
   still read under it, and if that is gone by then the source is read there), and takes it after `checkOwnEnv` and
   before `loadRegistry`, so reading, `allocatePorts`, writing `.env` and `save` are one step, and releases it right
-  after `save` and before `runSail`; `rm` takes it after docker; `check` reads the mains' `.env` before it and holds it
-  to read the registry again, record, refresh and save (what it read before locking only decides which records may be
+  after `save` and before `runSail`; `rm` takes it after docker (`--registry-only`: after its prompt); `check` reads
+  the mains' `.env` before it and holds it to read the registry again, record, refresh and save (what it read before locking only decides which records may be
   refreshed; the registry it saves is the one read after locking). If `check` times out on a lock that another run holds
   (`errLockHeld`), it warns and reports on the registry read without it, writing nothing; any other lock error fails it
   (on Windows also an error other than "exists" left at the deadline). `prune` takes it only after its prompt. Never
