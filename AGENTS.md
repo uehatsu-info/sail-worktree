@@ -211,31 +211,32 @@ These come from deliberate decisions; change them only on purpose and update the
   (`markedBelow`). That directory is the key when it is its own real path, or the real path of an alias that has no
   record of its own, which must pass `usableDir` before its markers are looked at (#105). The markers (`projectMarkers`)
   are `.sail-worktree.json`, or `artisan` and a compose file, looked at with `Lstat` only, so a link counts and an error
-  other than not-exist counts as present. A `realPath` failure keeps the record, a main without such a second record
-  keeps its ports, and git is not asked. `notProjectMain` is tested after `replacedMain` (in `check` too) on a key that
-  passes `usableDir`: `surelyNotProject` applies `isProjectDir`'s rule with `Lstat` only, so it implies `!isProjectDir`,
-  and a marker that is a link or a `ModeIrregular` reparse point, or an error other than not-exist, leaves the key in
-  doubt and keeps it (#102: older versions recorded such counterparts, which `up` and `check` no longer do). `validKey`
-  always comes first, so an invalid key is never looked at (on Windows its walk reads only the elements and links on the
-  way, up to the first refused link). It lists and asks (package `stdin`/`stdout`, `-y` skips) without the lock, then
-  takes `lockRegistry`, reads the registry again and removes only listed records that are still recorded and still
-  unusable (with the same per-kind test), saving only when something was removed; records that became unusable after the
-  prompt are left for the next run, because the user did not confirm them. A replaced main is tested again after the
-  prompt and before the lock (`recheckReplaced`, so that the lock is not held while it reads the filesystem) and under
-  the lock only compared in the registry (`stillPrunable`: its record equals the listed one, and the record that
-  replaces it is still there). A main that is not a project is tested again under the lock (`stillPrunable`:
-  `notProjectMain` again, with `Lstat` only like the unusable kind's `usableDir`, and its record equal to the listed
-  one, since `up` or `check` recording it meanwhile read a project there). It never writes `.env` or
-  `.sail-worktree.json` and runs neither docker, sail nor git: the containers, networks and volumes of a removed
-  worktree are left alone and the output says so (`docker compose ls -a`). Untrusted keys are printed with `%q` and port
-  names through `cell`. A directory that is only out of reach for the moment counts as missing. So removing the record
-  of a project that is still in use (one on a disk that is out of reach for the moment, on Windows one run from a UNC
-  path or through a link to one, which is not a usable key, or a main whose checkout, reached directly or through an
-  alias key, has no project markers at the moment while a main record with markers lies below it, or one whose checkout
-  has no project at that path at the moment: a branch without the project there) frees its ports in the registry until
-  `up`, or for a main worktree also `check` in its project directory, records it again (for such a main, only once its
-  checkout has the project again); a port bound at that moment is still skipped by `up`'s `portFree`. The prompt lists
-  the records first.
+  other than not-exist counts as present. A `realPath` failure keeps the record, a main without such a second record is
+  not replaced (it keeps its ports unless `notProjectMain` below removes it), and git is not asked. `notProjectMain` is
+  tested after `replacedMain` (in `check` too) on a key that passes `usableDir` (for an alias key, the directory it
+  reaches, through links that `validKey` has walked; #105's `usableDir` test is for the real path used as a key of its
+  own): `surelyNotProject` applies `isProjectDir`'s rule with `Lstat` only, so it implies `!isProjectDir`, and a marker
+  that is a link or a `ModeIrregular` reparse point, or an error other than not-exist, leaves the key in doubt and keeps
+  it (#102: older versions recorded such counterparts, which `up` and `check` no longer do). `validKey` always comes
+  first, so an invalid key is never looked at (on Windows its walk reads only the elements and links on the way, up to
+  the first refused link). It lists and asks (package `stdin`/`stdout`, `-y` skips) without the lock, then takes
+  `lockRegistry`, reads the registry again and removes only listed records that are still recorded and still unusable
+  (with the same per-kind test), saving only when something was removed; records that became unusable after the prompt
+  are left for the next run, because the user did not confirm them. A replaced main is tested again after the prompt and
+  before the lock (`recheckReplaced`, so that the lock is not held while it reads the filesystem) and under the lock
+  only compared in the registry (`stillPrunable`: its record equals the listed one, and the record that replaces it is
+  still there). A main that is not a project is tested again under the lock (`stillPrunable`: `notProjectMain` again,
+  with `Lstat` only like the unusable kind's `usableDir`, and its record equal to the listed one, since `up` or `check`
+  recording it meanwhile read a project there). It never writes `.env` or `.sail-worktree.json` and runs neither docker,
+  sail nor git: the containers, networks and volumes of a removed worktree are left alone and the output says so
+  (`docker compose ls -a`). Untrusted keys are printed with `%q` and port names through `cell`. A directory that is only
+  out of reach for the moment counts as missing. So removing the record of a project that is still in use (one on a disk
+  that is out of reach for the moment, on Windows one run from a UNC path or through a link to one, which is not a
+  usable key, or a main whose checkout, reached directly or through an alias key, has no project markers at the moment
+  while a main record with markers lies below it, or one whose checkout has no project at that path at the moment: a
+  branch without the project there) frees its ports in the registry until `up`, or for a main worktree also `check` in
+  its project directory, records it again (for such a main, only once its checkout has the project again); a port bound
+  at that moment is still skipped by `up`'s `portFree`. The prompt lists the records first.
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and

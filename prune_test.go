@@ -467,7 +467,9 @@ func TestMainRecordsThatAreNotReplaced(t *testing.T) {
 			orig := keyLinksOK
 			t.Cleanup(func() { keyLinksOK = orig })
 			// Only rp is refused (refuseKeyLinks would refuse the record below too), so that the test sees the usableDir
-			// check on the real path alone.
+			// check on the real path alone: never replaced. The alias itself passes validKey, so it is pruned as not a
+			// project (#102); on Windows a real validKey walk of the alias would refuse it with rp, which only this stub
+			// splits.
 			keyLinksOK = func(k string) bool { return k != rp && orig(k) }
 			return alias, sub
 		}, both, true},
