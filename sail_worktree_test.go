@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -769,8 +770,26 @@ func TestStopAllowsSymlinkEnv(t *testing.T) {
 	if err := cmdStop(nil); err != nil || len(*calls) != 1 {
 		t.Fatalf("stop: err=%v calls=%v", err, *calls)
 	}
-	if warn.Len() != 0 {
-		t.Errorf("a linked .env is not read: %s", warn)
+	// The link is not read, so its project name is not compared; the warning says that .env was not checked.
+	if strings.Contains(warn.String(), "other-project") || !strings.Contains(warn.String(), ".env was not checked") ||
+		!strings.Contains(warn.String(), "symbolic link") {
+		t.Errorf("warning: %s", warn)
+	}
+}
+
+// A .env larger than 1 MiB is not read (as status and the main record do), and stop says it could not check it.
+func TestStopWarnsThatATooLargeEnvWasNotChecked(t *testing.T) {
+	_, wt := setupWorktreeRepo(t)
+	writeFakeSail(t, wt)
+	writeFile(t, filepath.Join(wt, ".env"), "COMPOSE_FILE=other.yml\n"+envPadding(maxSmallFile))
+	warn := captureStderr(t)
+	calls := captureRunner(t)
+	if err := cmdStop(nil); err != nil || len(*calls) != 1 {
+		t.Fatalf("stop: err=%v calls=%v", err, *calls)
+	}
+	if strings.Contains(warn.String(), "has COMPOSE_FILE") || !strings.Contains(warn.String(), ".env was not checked") ||
+		!strings.Contains(warn.String(), "larger than 1 MiB") {
+		t.Errorf("warning: %s", warn)
 	}
 }
 
@@ -838,26 +857,27 @@ func TestRmRefusesProfiles(t *testing.T) {
 
 func TestReadEnvIfRegularSkipsNonRegular(t *testing.T) {
 	dir := t.TempDir()
-	if _, ok := readEnvIfRegular(filepath.Join(dir, "missing")); ok {
-		t.Error("read a missing file")
+	// A missing file keeps the unwrapped error, which stop and readMainEnv tell apart from a refusal.
+	if _, err := readEnvIfRegular(filepath.Join(dir, "missing")); !os.IsNotExist(err) {
+		t.Errorf("missing file: err = %v", err)
 	}
 	real := filepath.Join(dir, "real")
 	if err := os.WriteFile(real, []byte("A=1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if e, ok := readEnvIfRegular(real); !ok {
-		t.Error("cannot read a regular file")
+	if e, err := readEnvIfRegular(real); err != nil {
+		t.Errorf("cannot read a regular file: %v", err)
 	} else if v, _ := e.Get("A"); v != "1" {
 		t.Errorf("A=%q", v)
 	}
 	// An extra check: the rest of the test needs no link, so do not skip the whole test on Windows.
 	if trySymlink(t, real, filepath.Join(dir, "link")) {
-		if _, ok := readEnvIfRegular(filepath.Join(dir, "link")); ok {
-			t.Error("read a link")
+		if _, err := readEnvIfRegular(filepath.Join(dir, "link")); !errors.Is(err, errEnvNotRegular) {
+			t.Errorf("link: err = %v", err)
 		}
 	}
-	if _, ok := readEnvIfRegular(dir); ok {
-		t.Error("read a directory")
+	if _, err := readEnvIfRegular(dir); !errors.Is(err, errEnvNotRegular) || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("directory: err = %v", err)
 	}
 }
 
@@ -878,14 +898,17 @@ func TestReadEnvIfRegularRefusesALargerFile(t *testing.T) {
 	}
 	p := filepath.Join(dir, "env")
 	writeFile(t, p, fit)
-	if e, ok := readEnvIfRegular(p); !ok {
-		t.Error("cannot read a file of exactly maxSmallFile bytes")
-	} else if v, _ := e.Get("A"); v != want {
-		t.Errorf("the last line was cut: A=%q", v)
-	}
-	writeFile(t, p, fit+"B=2\n")
-	if _, ok := readEnvIfRegular(p); ok {
-		t.Error("a file larger than maxSmallFile was read (cut)")
+	for name, read := range map[string]func(string) (*envFile, error){"readEnvIfRegular": readEnvIfRegular, "readEnv": readEnv} {
+		writeFile(t, p, fit)
+		if e, err := read(p); err != nil {
+			t.Errorf("%s cannot read a file of exactly maxSmallFile bytes: %v", name, err)
+		} else if v, _ := e.Get("A"); v != want {
+			t.Errorf("%s cut the last line: A=%q", name, v)
+		}
+		writeFile(t, p, fit+"B=2\n")
+		if _, err := read(p); !errors.Is(err, errEnvTooLarge) || !strings.Contains(err.Error(), "larger than 1 MiB") {
+			t.Errorf("%s read a file larger than maxSmallFile: err = %v", name, err)
+		}
 	}
 }
 
@@ -910,8 +933,8 @@ func TestUpKeepsTheMainRecordWhenTheMainEnvIsTooLarge(t *testing.T) {
 	if got := reg.Mains[main].Ports["APP_PORT"]; got != 8200 {
 		t.Errorf("the record was replaced from a cut .env: APP_PORT=%d", got)
 	}
-	if !strings.Contains(errOut.String(), mainEnvUnreadable(main)) {
-		t.Errorf("no warning: %q", errOut.String())
+	if !strings.Contains(errOut.String(), mainEnvUnreadable(main)) || !strings.Contains(errOut.String(), "is larger than 1 MiB") {
+		t.Errorf("no warning that names the cause: %q", errOut.String())
 	}
 }
 
@@ -1997,5 +2020,81 @@ func TestUpInABareLayoutRunsInTheMainBranchWorktree(t *testing.T) {
 		t.Fatal("no .env")
 	} else if v, _ := e.Get("APP_PORT"); v == "" || v == "80" {
 		t.Errorf("APP_PORT=%q, want a port above the default", v)
+	}
+}
+
+// Every .env read refuses a file larger than 1 MiB and says so: up's own .env, the copy source and the bare layout's
+// .env.example (#108).
+func TestUpRefusesAnEnvLargerThan1MiB(t *testing.T) {
+	large := "APP_NAME=x\n" + envPadding(maxSmallFile)
+	t.Run("own", func(t *testing.T) {
+		_, wt := setupWorktreeRepo(t)
+		writeFakeSail(t, wt)
+		writeFile(t, filepath.Join(wt, ".env"), large)
+		calls := captureRunner(t)
+		captureStdout(t)
+		err := cmdUp(nil)
+		if err == nil || !strings.Contains(err.Error(), "larger than 1 MiB") {
+			t.Fatalf("err = %v", err)
+		}
+		if b, _ := os.ReadFile(filepath.Join(wt, ".env")); string(b) != large {
+			t.Error(".env was rewritten")
+		}
+		if len(*calls) != 0 {
+			t.Errorf("sail ran: %v", *calls)
+		}
+	})
+	t.Run("copy source", func(t *testing.T) {
+		main, wt := setupWorktreeRepo(t)
+		writeFakeSail(t, wt)
+		writeFile(t, filepath.Join(main, ".env"), large)
+		captureRunner(t)
+		captureStdout(t)
+		captureStderr(t)
+		err := cmdUp(nil)
+		if err == nil || !strings.Contains(err.Error(), "cannot read the source .env") || !strings.Contains(err.Error(), "larger than 1 MiB") {
+			t.Fatalf("err = %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
+			t.Error(".env was written")
+		}
+	})
+	t.Run("bare env.example", func(t *testing.T) {
+		_, _, wt := setupBareWorktreeRepo(t)
+		writeFakeSail(t, wt)
+		writeFile(t, filepath.Join(wt, ".env.example"), large)
+		captureRunner(t)
+		captureStdout(t)
+		err := cmdUp(nil)
+		if err == nil || !strings.Contains(err.Error(), "cannot copy .env") || !strings.Contains(err.Error(), "larger than 1 MiB") {
+			t.Fatalf("err = %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
+			t.Error(".env was written")
+		}
+	})
+}
+
+func TestRmRefusesAnEnvLargerThan1MiB(t *testing.T) {
+	main, wt := setupWorktreeRepo(t)
+	writeRmFixtures(t, main, wt)
+	envPath := filepath.Join(wt, ".env")
+	b, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, envPath, string(b)+envPadding(maxSmallFile))
+	calls := captureRunner(t)
+	in := strings.NewReader("y\n")
+	old := stdin
+	stdin = in
+	t.Cleanup(func() { stdin = old })
+	captureStdout(t)
+	err = cmdRm(nil)
+	if err == nil || !strings.Contains(err.Error(), "larger than 1 MiB") || strings.Contains(err.Error(), "where up has been run") {
+		t.Fatalf("err = %v", err)
+	}
+	if in.Len() == 0 || len(*calls) != 0 {
+		t.Errorf("rm went on: stdin read=%v calls=%v", in.Len() == 0, *calls)
 	}
 }

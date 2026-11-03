@@ -53,38 +53,63 @@ type envFile struct {
 	lines []string
 }
 
+// The refusals of the .env reads wrap these after the quoted path. Each text is the cause, so that a message built
+// without the read's error (mainEnvUnreadable) names it in the same words.
+var (
+	errEnvTooLarge   = errors.New("is larger than 1 MiB")
+	errEnvNotRegular = errors.New("is a symbolic link or not a regular file")
+)
+
+// readEnv reads path through a link: the source a new .env is copied from (up copies the main worktree's .env through a
+// link). Like every .env read it refuses a file larger than maxSmallFile rather than cut it.
 func readEnv(path string) (*envFile, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return parseEnv(f)
+	return parseEnvFile(f, path)
+}
+
+// parseEnvFile reads at most maxSmallFile bytes of f: a cut could drop a port variable silently, so a larger file is
+// refused.
+func parseEnvFile(f *os.File, path string) (*envFile, error) {
+	b, err := io.ReadAll(io.LimitReader(f, maxSmallFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxSmallFile {
+		return nil, fmt.Errorf("%q %w", path, errEnvTooLarge)
+	}
+	return parseEnv(bytes.NewReader(b))
 }
 
 // readEnvIfRegular reads path only if it is a regular file: stop's warning, status, the main worktree's .env for the
-// mains record (up and check, through readMainEnv) and the .env.example a bare layout copies. Links, FIFOs and devices
-// are not read and ok is false. So that open does not block even if the path is swapped for a FIFO between Lstat and
-// open, it opens with O_NONBLOCK (which does not affect reading a regular file) and Stats the opened fd again. A file
-// larger than maxSmallFile is refused (ok is false) rather than cut, since a cut could drop a port variable silently.
-func readEnvIfRegular(path string) (*envFile, bool) {
-	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
-		return nil, false
+// mains record (up and check, through readMainEnv) and the .env.example a bare layout copies. A missing file returns
+// the error of Lstat unwrapped (os.IsNotExist); links, FIFOs and devices are refused with errEnvNotRegular, a file
+// larger than maxSmallFile with errEnvTooLarge. So that open does not block even if the path is swapped for a FIFO
+// between Lstat and open, it opens with O_NONBLOCK (which does not affect reading a regular file) and Stats the opened
+// fd again.
+func readEnvIfRegular(path string) (*envFile, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q %w", path, errEnvNotRegular)
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|openNonBlock|openNoFollow, 0)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return nil, false
+	if fi, err = f.Stat(); err != nil {
+		return nil, err
 	}
-	b, err := io.ReadAll(io.LimitReader(f, maxSmallFile+1))
-	if err != nil || len(b) > maxSmallFile {
-		return nil, false
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%q %w", path, errEnvNotRegular)
 	}
-	e, err := parseEnv(bytes.NewReader(b))
-	return e, err == nil
+	return parseEnvFile(f, path)
 }
 
 func parseEnv(r io.Reader) (*envFile, error) {

@@ -30,7 +30,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 |---|---|
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `upLock` (the lock `up` takes, replaced by tests), `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
-| `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
+| `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnv`/`readEnvIfRegular` (`parseEnvFile`, the 1 MiB limit), `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry), `parseWorktreeRecords` (the `git worktree list --porcelain` parser `ps` shares; paths come unquoted, and `-z` needs git 2.36, so a path with a newline is misread) |
@@ -86,11 +86,13 @@ These come from deliberate decisions; change them only on purpose and update the
   truncate. Its refusals wrap `errNotOwnFile`, so `init` adds advice only to them. A new `.env` is created with mode
   0600 and a new `.sail-worktree.json` with 0644; an existing file keeps its mode. Duplicate keys that `up` writes are
   collapsed to the first line. Reading is asymmetric on purpose: `up`, `stop` and `rm` read a symlinked
-  `.sail-worktree.json`; only writing refuses links, so do not "unify" the two.
+  `.sail-worktree.json`; only writing refuses links, so do not "unify" the two. Every `.env` read (`readEnv`,
+  `readEnvIfRegular`) refuses a file larger than 1 MiB (`maxSmallFile`) rather than cut it (`errEnvTooLarge`), and a
+  refusal names its cause.
 - **Override keys differ per command.** `up` refuses `COMPOSE_FILE`, `COMPOSE_ENV_FILES` and `SAIL_FILES` in `.env`
   (compose would not read the ports and project name `up` writes). `COMPOSE_PROFILES` is allowed. `rm` also refuses
   `COMPOSE_PROFILES` because it cannot be undone. `stop` refuses nothing and only warns (best effort, non-main
-  worktrees, regular files only).
+  worktrees; it reads only a regular file and warns that it could not check an existing `.env` it refused).
 - **`rm` is guarded.** It recomputes the project name and requires `COMPOSE_PROJECT_NAME` in `.env` to match exactly.
   Every refusing check runs *before* the confirmation prompt. It pins `--project-name`, `--project-directory` and `-f`,
   and runs without `COMPOSE_*` from the environment. Values from `.env` are untrusted: they are shown with `%+q`, and
@@ -230,8 +232,9 @@ These come from deliberate decisions; change them only on purpose and update the
   never recorded (`counterpart` may return a lexical path), nor one that is not a project directory by `lookupProject`'s
   rule (`isProjectDir`, `configOrLaravel`; stricter than prune's `projectMarkers` on purpose), as such a main never
   runs; `check`'s "has no project directory" warning covers both. A `.env` that is a link, not a regular file or larger
-  than 1 MiB (`readEnvIfRegular` refuses it rather than cut it) is not read for the record, although `up` copies `.env`
-  through a link: the record keeps its ports, and a new record reserves nothing. The variables are those of the run's
+  than 1 MiB (`readEnvIfRegular` refuses it rather than cut it; `mainEnvUnreadable` names the cause from an `Lstat`) is
+  not read for the record, although `up` copies `.env` through a link: the record keeps its ports, and a new record
+  reserves nothing. The variables are those of the run's
   configuration (`cfg.PortVars`), which may be a branch's, so `recordMain` merges: a variable of the old record's
   `defaults` that the run does not know keeps its recorded default and port. Only a `check` run in the main worktree
   itself (`checkTarget.inMain`) replaces the record, so a variable that left the project is dropped only there (or by

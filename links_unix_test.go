@@ -60,7 +60,7 @@ func TestReadEnvIfRegularDoesNotBlockOnFIFO(t *testing.T) {
 		t.Fatalf("cannot create a FIFO (set TMPDIR to a filesystem that supports them): %v", err)
 	}
 	done := make(chan bool, 1)
-	go func() { _, ok := readEnvIfRegular(p); done <- ok }()
+	go func() { _, err := readEnvIfRegular(p); done <- err == nil }()
 	select {
 	case ok := <-done:
 		if ok {
