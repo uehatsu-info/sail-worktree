@@ -33,7 +33,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
 | `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`markedBelow`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
-| `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry), `parseWorktreeRecords` (the `git worktree list --porcelain` parser `ps` shares; paths come unquoted, and `-z` needs git 2.36, so a path with a newline is misread) |
+| `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry), `runWorktreeList`/`usageRefused` (`git worktree list --porcelain -z`, run once more without `-z` when git before 2.36 refuses it), `parseWorktreeRecords` (the parser `ps` shares, for both formats; paths come unquoted, so without `-z` a path with a newline is misread) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart (`counterpart`, `isProjectDir`) |
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey`/`foldMains` (aliases folded in memory, replaced mains marked), `psPortsCell`, `listWorktrees`/`parseWorktreeList` (on `parseWorktreeRecords`), `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `probePort` (replaceable port probe) |
@@ -130,8 +130,9 @@ These come from deliberate decisions; change them only on purpose and update the
   runs in the registry directories of other repositories (`gitInRegistryDirs` is off), because git itself looks at paths
   from that repository's metadata (`gitdir` targets, a `.git` file's `gitdir:`), and a UNC or device path there can open
   a network connection; those entries are `unattributed`. Elsewhere git runs there only through `listWorktrees`
-  (`worktree list` with `core.fsmonitor=false`, `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_COMMON_DIR`
-  removed); the worktree paths such a listing prints come from that repository's metadata (git itself still reads them),
+  (`worktree list --porcelain -z`, without `-z` if git refuses it (`runWorktreeList`), with `core.fsmonitor=false`,
+  `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_COMMON_DIR` removed); the worktree paths such a listing prints
+  come from that repository's metadata (git itself still reads them),
   so `parseWorktreeList` drops a record whose path fails `registryPathOK` (`validKey`) before anything looks at it (a
   refused main record drops the listing). The listing of the repository the user runs in passes `anyPath`. External
   queries go through `runOutput` (explicit env, timeout, no stdin, stdout capped while read). docker is asked once
@@ -266,6 +267,9 @@ These come from deliberate decisions; change them only on purpose and update the
   A main record is attributed only to the main (first) worktree of a listing (`attributeMain`). On Windows only the
   current repository's worktrees are listed (`gitInRegistryDirs`). One command runs git at most once in a directory, a
   failure included, and adds a repository's listing once (`registryView.list`), since each run may take its timeout.
+  The one exception is inside that attempt: when git refuses `-z` (exit status 129, git before 2.36; a repository cannot
+  cause that status), `runWorktreeList` runs the listing once more without it, and the result of the second run is what
+  counts. Such an old git reads the repository's configuration before it refuses the switch, so both runs can be slow.
 - **`cleanEnv`** removes every `COMPOSE_*` variable, `SAIL_FILES` and the port variables (names compared
   case-insensitively) from the environment passed to `sail` (`up`, `stop`) and to `docker compose down` in `rm`, because
   shell values take precedence over `.env`; the read-only docker queries pass no names to drop (`cleanEnv(nil)`). It

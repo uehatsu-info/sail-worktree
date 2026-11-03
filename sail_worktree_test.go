@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -1872,30 +1873,42 @@ func setupBareWorktreeRepo(t *testing.T) (bare, mainWt, wt string) {
 }
 
 func TestParseMainWorktree(t *testing.T) {
-	bareOut := "worktree /r/app.git\nbare\n\nworktree /r/app-feat\nHEAD abc\nbranch refs/heads/feat\n"
-	if p, bare, err := parseMainWorktree(bareOut, false); err != nil || p != "/r/app.git" || !bare {
+	base := filepath.ToSlash(realTempDir(t))
+	app, appGit, feat := base+"/app", base+"/app.git", base+"/app-feat"
+	bareOut := "worktree " + appGit + "\nbare\n\nworktree " + feat + "\nHEAD abc\nbranch refs/heads/feat\n"
+	if p, bare, err := parseMainWorktree(bareOut, false, false); err != nil || p != appGit || !bare {
 		t.Errorf("bare listing: %q %v %v", p, bare, err)
 	}
-	normal := "worktree /r/app\nHEAD abc\nbranch refs/heads/main\n\nworktree /r/app-feat\nbare\n"
-	if p, bare, err := parseMainWorktree(normal, false); err != nil || p != "/r/app" || bare {
+	normal := "worktree " + app + "\nHEAD abc\nbranch refs/heads/main\n\nworktree " + feat + "\nbare\n"
+	if p, bare, err := parseMainWorktree(normal, false, false); err != nil || p != app || bare {
 		t.Errorf("a bare line of a later record counts: %q %v %v", p, bare, err)
 	}
 	crlf := strings.ReplaceAll(bareOut, "\n", "\r\n")
-	if p, bare, err := parseMainWorktree(crlf, true); err != nil || p != "/r/app.git" || !bare {
+	if p, bare, err := parseMainWorktree(crlf, false, true); err != nil || p != appGit || !bare {
 		t.Errorf("CRLF listing on Windows: %q %v %v", p, bare, err)
 	}
-	for _, bad := range []string{"", "worktree \nbare\n\nworktree /r/app-feat\n"} {
-		if _, _, err := parseMainWorktree(bad, false); err == nil {
+	if p, bare, err := parseMainWorktree(strings.ReplaceAll(bareOut, "\n", "\x00"), true, false); err != nil || p != appGit || !bare {
+		t.Errorf("-z listing: %q %v %v", p, bare, err)
+	}
+	for _, bad := range []string{"", "worktree \nbare\n\nworktree " + feat + "\n", "worktree r/app\n", "worktree \"r/app\n"} {
+		if _, _, err := parseMainWorktree(bad, false, false); err == nil {
 			t.Errorf("accepted %q", bad)
+		}
+		if _, _, err := parseMainWorktree(strings.ReplaceAll(bad, "\n", "\x00"), true, false); err == nil {
+			t.Errorf("accepted %q with -z", bad)
 		}
 	}
 	// A bare line of the next record does not count for the main one, even without a blank line between them.
-	if _, bare, err := parseMainWorktree("worktree /r/app\nworktree /r/app.git\nbare\n", false); err != nil || bare {
+	if _, bare, err := parseMainWorktree("worktree "+app+"\nworktree "+appGit+"\nbare\n", false, false); err != nil || bare {
 		t.Errorf("a later record's bare line counts: %v %v", bare, err)
 	}
-	// A path that starts with a quote is returned as git printed it (ps skips it; see parseWorktreeList).
-	if p, _, err := parseMainWorktree("worktree \"r/app\n", false); err != nil || p != `"r/app` {
+	// An absolute path whose name starts with a quote is returned as git printed it, and with -z a name with a newline
+	// is read whole.
+	if p, _, err := parseMainWorktree("worktree "+base+"/\"app\n", false, false); err != nil || p != base+`/"app` {
 		t.Errorf("leading quote: %q %v", p, err)
+	}
+	if p, _, err := parseMainWorktree("worktree "+base+"/a\nb\x00bare\x00\x00", true, false); err != nil || p != base+"/a\nb" {
+		t.Errorf("newline with -z: %q %v", p, err)
 	}
 }
 
@@ -1903,18 +1916,109 @@ func TestParseWorktreeRecords(t *testing.T) {
 	out := "bare\nworktree /r/app\nHEAD 1\nbranch refs/heads/main\nworktree /r/a\nprunable gone\n\ndetached\n\nworktree \"q\nbare\n"
 	// A bare line before the first record and a key after a blank line belong to no record; a worktree line starts a
 	// record without a blank line before it; the path is kept as git printed it.
-	got := parseWorktreeRecords(out, false)
+	got := parseWorktreeRecords(out, false, false)
 	want := []worktreeInfo{{Path: "/r/app", Branch: "main"}, {Path: "/r/a", Prunable: true}, {Path: `"q`, Bare: true}}
 	if !slices.Equal(got, want) {
 		t.Errorf("records = %+v, want %+v", got, want)
 	}
+	// The same rules hold for NUL-separated fields.
+	if got := parseWorktreeRecords(strings.ReplaceAll(out, "\n", "\x00"), true, false); !slices.Equal(got, want) {
+		t.Errorf("-z records = %+v, want %+v", got, want)
+	}
 	crlf := "worktree /r/app\r\nbare\r\n\r\nworktree /r/b\r\n"
-	if got := parseWorktreeRecords(crlf, true); len(got) != 2 || got[0].Path != "/r/app" || !got[0].Bare || got[1].Path != "/r/b" {
+	if got := parseWorktreeRecords(crlf, false, true); len(got) != 2 || got[0].Path != "/r/app" || !got[0].Bare || got[1].Path != "/r/b" {
 		t.Errorf("CRLF on Windows = %+v", got)
 	}
 	// Elsewhere \r may be part of a name, so it stays (and "\r" alone is no blank line).
-	if got := parseWorktreeRecords(crlf, false); len(got) != 2 || got[0].Path != "/r/app\r" || got[0].Bare {
+	if got := parseWorktreeRecords(crlf, false, false); len(got) != 2 || got[0].Path != "/r/app\r" || got[0].Bare {
 		t.Errorf("CRLF elsewhere = %+v", got)
+	}
+}
+
+// A name with a newline that looks like the start of another record is one path with -z, and a forged record in the
+// line format; a reason with a newline stays one field.
+func TestParseWorktreeRecordsZKeepsNewlines(t *testing.T) {
+	forged := "/r/x\nworktree /r/forged\nbare"
+	z := "worktree /r/app\x00HEAD 1\x00branch refs/heads/main\x00\x00" +
+		"worktree " + forged + "\x00HEAD 2\x00locked why\nworktree /r/l\x00prunable gone\nworktree /r/p\x00\x00" +
+		"worktree \"q\x00detached\x00\x00"
+	got := parseWorktreeRecords(z, true, false)
+	want := []worktreeInfo{{Path: "/r/app", Branch: "main"}, {Path: forged, Prunable: true}, {Path: `"q`, Detached: true}}
+	if !slices.Equal(got, want) {
+		t.Errorf("-z records = %+v, want %+v", got, want)
+	}
+	lines := "worktree /r/app\n\nworktree " + forged + "\n"
+	if got := parseWorktreeRecords(lines, false, false); len(got) != 3 || got[2].Path != "/r/forged" || !got[2].Bare {
+		t.Errorf("line records = %+v (the documented limit of the line format)", got)
+	}
+}
+
+func TestRunWorktreeListFallsBackOnlyWhenGitRefusesZ(t *testing.T) {
+	repo := realTempDir(t)
+	runGit(t, repo, "init", "-q")
+	// A real usage error (exit 129) for the first call, as an older git gives for -z; it needs a repository, since
+	// outside one git exits with 128 first.
+	var calls [][]string
+	out, z, err := runWorktreeList(func(args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		if len(calls) == 1 {
+			_, err := gitRaw(repo, "worktree", "list", "--porcelain", "--no-such-switch")
+			return nil, err
+		}
+		return []byte("worktree /r/app\n"), nil
+	})
+	if err != nil || z || out != "worktree /r/app\n" || len(calls) != 2 || slices.Contains(calls[1], "-z") || !slices.Contains(calls[0], "-z") {
+		t.Errorf("fallback: %q %v %v, calls %q", out, z, err, calls)
+	}
+	// Any other failure is not retried: a timeout or a broken repository could cost a second run.
+	_, notRepo := gitRaw(repo, "-C", filepath.Join(repo, "missing"), "worktree", "list") // exit status 128
+	for _, fail := range []error{errors.New("killed"), fmt.Errorf("git: %w", exec.ErrNotFound), notRepo} {
+		calls = nil
+		if _, _, err := runWorktreeList(func(args ...string) ([]byte, error) {
+			calls = append(calls, args)
+			return nil, fail
+		}); err == nil || len(calls) != 1 {
+			t.Errorf("%v: err %v, calls %q", fail, err, calls)
+		}
+	}
+	calls = nil
+	if out, z, err := runWorktreeList(func(args ...string) ([]byte, error) {
+		calls = append(calls, args)
+		return []byte("worktree /r/app\x00\x00"), nil
+	}); err != nil || !z || out != "worktree /r/app\x00\x00" || len(calls) != 1 {
+		t.Errorf("-z: %q %v %v, calls %q", out, z, err, calls)
+	}
+}
+
+// git itself, through mainWorktree and listWorktrees: the names with a newline and a leading quote that the line format
+// misreads or ps skipped. Neither character is allowed in a Windows file name; the parser tests cover them there.
+func TestWorktreeListReadsNewlineAndQuoteNames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a Windows file name cannot contain a newline or a double quote")
+	}
+	main, _ := setupWorktreeRepo(t)
+	if _, err := gitRaw(main, "worktree", "list", "--porcelain", "-z"); usageRefused(err) {
+		t.Skip("git before 2.36 has no -z, and the line format misreads these names by design")
+	}
+	base := filepath.Dir(main)
+	forged := filepath.Join(base, "forged")
+	nl := filepath.Join(base, "x\nworktree "+forged)
+	quote := filepath.Join(base, `"q`)
+	runGit(t, main, "worktree", "add", "-q", "-b", "nl", nl)
+	runGit(t, main, "worktree", "add", "-q", "-b", "quote", quote)
+	if p, _, err := mainWorktree(quote); err != nil || p != main {
+		t.Errorf("mainWorktree = %q %v", p, err)
+	}
+	l, err := listWorktrees(nl, anyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, w := range l {
+		paths = append(paths, w.Path)
+	}
+	if !slices.Contains(paths, nl) || !slices.Contains(paths, quote) || slices.Contains(paths, forged) || paths[0] != main {
+		t.Errorf("listed %q", paths)
 	}
 }
 

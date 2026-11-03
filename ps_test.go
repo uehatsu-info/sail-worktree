@@ -86,7 +86,7 @@ func TestParseWorktreeList(t *testing.T) {
 		"worktree " + slash(gone) + "\nHEAD 4444\nbranch refs/heads/old\nprunable gitdir file points to non-existent location\n\n" +
 		"worktree \"" + slash(base) + "/caf\\303\\251\"\nHEAD 5555\nbranch refs/heads/q\n\n" +
 		"worktree " + slash(filepath.Join(base, "bare")) + "\nbare\n"
-	got := parseWorktreeList(out, anyPath)
+	got := parseWorktreeList(out, false, anyPath)
 	want := []worktreeInfo{
 		{Path: a, Branch: "main"},
 		{Path: b, Branch: "feature/x"},
@@ -104,14 +104,23 @@ func TestParseWorktreeList(t *testing.T) {
 	}
 	// A skipped main record would shift every index, so the listing is dropped as a whole.
 	quotedMain := "worktree \"" + slash(base) + "/caf\\303\\251\"\nHEAD 1\nbranch refs/heads/main\n\nworktree " + slash(b) + "\nHEAD 2\nbranch refs/heads/x\n"
-	if l := parseWorktreeList(quotedMain, anyPath); l != nil {
+	if l := parseWorktreeList(quotedMain, false, anyPath); l != nil {
 		t.Errorf("listing with a skipped main record = %+v", l)
 	}
+	// A name that starts with a quote is a name like any other, so a listing whose main has one is kept; a
+	// quoted-looking path is not absolute and drops it.
+	qMain := "worktree " + slash(base) + "/\"q\x00branch refs/heads/main\x00\x00worktree " + slash(b) + "\x00\x00"
+	if l := parseWorktreeList(qMain, true, anyPath); len(l) != 2 || l[0].Path != filepath.Join(base, `"q`) || l[1].Path != b {
+		t.Errorf("-z listing with a quote-led main name = %+v", l)
+	}
+	if l := parseWorktreeList(strings.ReplaceAll(quotedMain, "\n", "\x00"), true, anyPath); l != nil {
+		t.Errorf("-z listing with a relative main path = %+v", l)
+	}
 	// A listing without any prunable line (git before 2.31) still parses.
-	if l := parseWorktreeList("worktree "+slash(a)+"\nHEAD 1\nbranch refs/heads/main\n", anyPath); len(l) != 1 || l[0].Prunable {
+	if l := parseWorktreeList("worktree "+slash(a)+"\nHEAD 1\nbranch refs/heads/main\n", false, anyPath); len(l) != 1 || l[0].Prunable {
 		t.Errorf("old git listing = %+v", l)
 	}
-	if l := parseWorktreeList("", anyPath); len(l) != 0 {
+	if l := parseWorktreeList("", false, anyPath); len(l) != 0 {
 		t.Errorf("empty listing = %+v", l)
 	}
 }
@@ -829,7 +838,7 @@ func TestParseWorktreeListSkipsRefusedPaths(t *testing.T) {
 		seen = append(seen, p)
 		return p != b
 	}
-	l := parseWorktreeList(out, refuseB)
+	l := parseWorktreeList(out, false, refuseB)
 	if len(l) != 2 || l[0].Path != a || l[1].Path != c {
 		t.Errorf("a refused linked worktree is kept: %+v", l)
 	}
@@ -837,20 +846,41 @@ func TestParseWorktreeListSkipsRefusedPaths(t *testing.T) {
 	if len(seen) != 3 || seen[1] != b {
 		t.Errorf("filter saw %q", seen)
 	}
-	if l := parseWorktreeList(out, func(p string) bool { return p != a }); l != nil {
+	if l := parseWorktreeList(out, false, func(p string) bool { return p != a }); l != nil {
 		t.Errorf("a refused main worktree does not drop the listing: %+v", l)
 	}
 	// An empty path or one that starts with a quote never reaches the filter (an empty one would be cleaned to ".").
 	seen = nil
 	odd := "worktree " + slash(a) + "\n\nworktree \n\nworktree \"" + slash(b) + "\n\nworktree " + slash(c) + "\n"
-	if l := parseWorktreeList(odd, refuseB); len(l) != 2 || l[0].Path != a || l[1].Path != c {
+	if l := parseWorktreeList(odd, false, refuseB); len(l) != 2 || l[0].Path != a || l[1].Path != c {
 		t.Errorf("empty or quoted linked paths are kept: %+v", l)
 	}
 	if len(seen) != 2 || seen[0] != a || seen[1] != c {
 		t.Errorf("filter saw %q", seen)
 	}
-	if l := parseWorktreeList("worktree \nbranch refs/heads/main\n\nworktree "+slash(b)+"\n", anyPath); l != nil {
+	if l := parseWorktreeList("worktree \nbranch refs/heads/main\n\nworktree "+slash(b)+"\n", false, anyPath); l != nil {
 		t.Errorf("an empty main path does not drop the listing: %+v", l)
+	}
+
+	// With -z: a name with a newline and one that starts with a quote reach the filter whole, a refused or relative
+	// linked path is skipped, and a refused or relative main path still drops the listing. The name holds no absolute
+	// path (TestParseWorktreeRecordsZKeepsNewlines has the forged record): on Windows its drive letter would be read as
+	// a volume in the middle of the path.
+	nl, quote := filepath.Join(base, "n\nworktree x"), filepath.Join(base, `"q`)
+	z := "worktree " + slash(a) + "\x00branch refs/heads/main\x00\x00worktree " + slash(nl) + "\x00\x00worktree " +
+		slash(quote) + "\x00\x00worktree rel\x00\x00worktree " + slash(b) + "\x00\x00"
+	seen = nil
+	if l := parseWorktreeList(z, true, refuseB); len(l) != 3 || l[0].Path != a || l[1].Path != nl || l[2].Path != quote {
+		t.Errorf("-z listing = %+v", l)
+	}
+	if len(seen) != 4 || seen[1] != nl || seen[2] != quote || seen[3] != b {
+		t.Errorf("filter saw %q", seen)
+	}
+	if l := parseWorktreeList(z, true, func(p string) bool { return p != a }); l != nil {
+		t.Errorf("-z: a refused main worktree does not drop the listing: %+v", l)
+	}
+	if l := parseWorktreeList("worktree rel\x00\x00worktree "+slash(b)+"\x00\x00", true, anyPath); l != nil {
+		t.Errorf("-z: a relative main path does not drop the listing: %+v", l)
 	}
 }
 
