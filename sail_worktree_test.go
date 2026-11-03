@@ -1168,7 +1168,7 @@ func TestUpFailsOnTheCopySourceBeforeTheLock(t *testing.T) {
 	t.Cleanup(func() { upLock = old })
 	captureRunner(t)
 	captureStdout(t)
-	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "cannot read the source .env") {
+	if err := cmdUp(nil); err == nil || !strings.Contains(err.Error(), "cannot copy .env from the main worktree's project directory") {
 		t.Errorf("err = %v", err)
 	}
 }
@@ -2250,7 +2250,7 @@ func TestUpRefusesAnEnvLargerThan1MiB(t *testing.T) {
 		captureStdout(t)
 		captureStderr(t)
 		err := cmdUp(nil)
-		if err == nil || !strings.Contains(err.Error(), "cannot read the source .env") || !strings.Contains(err.Error(), "larger than 1 MiB") {
+		if err == nil || !strings.Contains(err.Error(), "cannot copy .env from the main worktree's project directory") || !strings.Contains(err.Error(), "larger than 1 MiB") {
 			t.Fatalf("err = %v", err)
 		}
 		if _, err := os.Lstat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {

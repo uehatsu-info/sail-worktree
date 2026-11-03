@@ -730,8 +730,49 @@ func TestUpRootProjectWithoutSourceEnv(t *testing.T) {
 	writeFakeSail(t, wt)
 	captureRunner(t)
 	err := cmdUp(nil)
-	if err == nil || !strings.Contains(err.Error(), "cannot read the source .env from the main worktree:") || strings.Contains(err.Error(), "same relative path") {
+	if err == nil || !strings.Contains(err.Error(), "cannot copy .env from the main worktree's project directory") || strings.Contains(err.Error(), "same relative path") {
 		t.Errorf("error = %v", err)
+	}
+}
+
+// A main counterpart that is a project but whose .env and .env.example cannot be read gets a message that names the
+// files and the directory, not the hint about a missing project (#127). It fails before the lock and any write.
+func TestUpCannotReadTheMainsEnvFiles(t *testing.T) {
+	for _, sub := range []bool{true, false} {
+		for _, exampleDir := range []bool{false, true} {
+			t.Run(fmt.Sprintf("subdir=%v/exampleDir=%v", sub, exampleDir), func(t *testing.T) {
+				var main, root string
+				if sub {
+					m, wt := setupSubdirWorktreeRepo(t, false)
+					main, root = filepath.Join(m, "laravel"), filepath.Join(wt, "laravel")
+				} else {
+					main, root = setupWorktreeRepo(t)
+				}
+				if exampleDir {
+					if err := os.Mkdir(filepath.Join(main, ".env.example"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				writeFakeSail(t, root)
+				calls := captureRunner(t)
+				locked := false
+				orig := upLock
+				t.Cleanup(func() { upLock = orig })
+				upLock = func() (func(), error) { locked = true; return orig() }
+				err := cmdUp(nil)
+				want := fmt.Sprintf("cannot copy .env from the main worktree's project directory %q: reading .env (or .env.example when there is no .env) failed: ", main)
+				if err == nil || !strings.HasPrefix(err.Error(), want) || !strings.HasSuffix(err.Error(), "; create .env in this worktree first") ||
+					strings.Contains(err.Error(), "same relative path") {
+					t.Fatalf("error = %v", err)
+				}
+				if exampleDir != strings.Contains(err.Error(), "is not a regular file") {
+					t.Errorf("error = %v", err)
+				}
+				if _, err := os.Lstat(filepath.Join(root, ".env")); !os.IsNotExist(err) || len(*calls) != 0 || locked {
+					t.Errorf(".env written, sail ran or the lock was taken: %v, %v, %v", err, *calls, locked)
+				}
+			})
+		}
 	}
 }
 
