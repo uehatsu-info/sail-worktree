@@ -203,7 +203,7 @@ func configOrLaravel(dir string) (string, bool, error) {
 // isProjectDir reports whether dir itself is a project directory by lookupProject's rule (configOrLaravel: markers
 // through links, regular files only). An error counts as "not a project", as lookupProject would fail there. up and
 // check record a main only when it holds; for registry keys, which must not be followed through links, check and
-// prune use surelyNotProject, and replacedMain the looser projectMarkers.
+// prune use surelyNotProject, and replacedMain the looser projectMarkers for the record it replaces.
 func isProjectDir(dir string) bool {
 	_, ok, err := configOrLaravel(dir)
 	return err == nil && ok
