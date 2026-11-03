@@ -31,7 +31,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `main.go` | Command dispatch (`run`, `helpRequested`: `-h`/`--help` of every command), usage text, `version`, `printErr`/`escapeControl` |
 | `cmd.go` | `init`, `up`, `stop`, `rm`, `parseYes`/`confirm` (the `-y` argument and prompt of `rm` and `prune`), `mainPorts`/`readMainEnv`/`portsFromEnv`/`mainEnvPorts` (a main worktree's ports), `mainRead`/`recordMainRead`, `upLock` (the lock `up` takes, replaced by tests), `readCopySource` (the source of a new `.env`), `readOwnEnvExample` (the `.env` source in a bare layout), error messages, `sailPath`, `cleanEnv`/`filterEnv`, `runOutput`/`output` (read-only queries) |
 | `env.go` | `.env` parsing and writing (`Raw`, `Get`, `Set`, `portValue`, `duplicateKeys`), port variable detection, override keys, `checkOwnEnv`, `readEnvIfRegular`, `writeFileNoFollow` |
-| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`projectMarkers` (main records a move left behind) |
+| `config.go` | `.sail-worktree.json` (project config, `validatePortVars`), `detectConfig`, `readSmallFile`, the port registry (`writeFileAtomic`, `validKey`/`windowsDriveKey`/`keyLinksOK`/`linksStayLocal`, `usableDir`, `MainRecord`, `recordMain`, `forgetWorktree`), `unsafeComposePath`, `composeInsideProject`, `Registry.migrate` (`aliasesOf`, `migrateAliases`), `replacedMain`/`markedBelow`/`projectMarkers` (main records a move left behind) |
 | `ports.go` | Port allocation, `portFree`, `loopbackBindBlocked` |
 | `git.go` | Worktree root and the cwd below it (`worktreeRootAndPrefix`, one `rev-parse` call), main worktree detection (real paths; `parseMainWorktree` flags a bare first entry), `parseWorktreeRecords` (the `git worktree list --porcelain` parser `ps` shares; paths come unquoted, and `-z` needs git 2.36, so a path with a newline is misread) |
 | `project.go` | Project directory lookup (`projectCandidates`, `findMarker`, `findProject` with a `matcher`: `hasConfig`, `isLaravelProject`, `configOrLaravel`; `lookupProject`, `within`), the not-found error and its hints, the main worktree's counterpart (`counterpart`, `isProjectDir`) |
@@ -197,27 +197,29 @@ These come from deliberate decisions; change them only on purpose and update the
   that are stale by `staleWorktreeKey` (the rule of `worktrees` keys: an older version recorded aliases there too, and
   one of a live worktree is kept). Main keys are never folded, so without `replacedMain` a record that a move left
   behind would conflict with the new one for ever. `replacedMain` is tested only for a key that passes `usableDir`, and
-  finds a record replaced in two cases. One is an alias whose real path is a usable key of its own. The other is a key
-  that is its own real path and a directory without project markers, while a usable key that is its own real path and
-  has markers lies strictly below it; the markers (`projectMarkers`) are `.sail-worktree.json`, or `artisan` and a
-  compose file, looked at with `Lstat` only, so a link counts and an error other than not-exist counts as present. A
-  `realPath` failure keeps the record, a main without such a second record keeps its ports, and git is not asked.
-  `validKey` always comes first, so an invalid key is never looked at (on Windows its walk reads only the elements and
-  links on the way, up to the first refused link). It lists and asks (package `stdin`/`stdout`, `-y` skips) without the
-  lock, then takes `lockRegistry`, reads the registry again and removes only listed records that are still recorded and
-  still unusable (with the same per-kind test), saving only when something was removed; records that became unusable
-  after the prompt are left for the next run, because the user did not confirm them. A replaced main is tested again
-  after the prompt and before the lock (`recheckReplaced`, so that the lock is not held while it reads the filesystem)
-  and under the lock only compared in the registry (`stillPrunable`: its record equals the listed one, and the record
-  that replaces it is still there). It never writes `.env` or `.sail-worktree.json` and runs neither docker, sail nor
-  git: the containers, networks and volumes of a removed worktree are left alone and the output says so (`docker compose
-  ls -a`). Untrusted keys are printed with `%q` and port names through `cell`. A directory that is only out of reach for
-  the moment counts as missing. So removing the record of a project that is still in use (one on a disk that is out of
-  reach for the moment, on Windows one run from a UNC path or through a link to one, which is not a usable key, or a
-  main whose checkout has no project markers at the moment while a main record with markers lies below it: a branch
-  without the project there) frees its ports in the registry until `up`, or for a main worktree also `check` in its
-  project directory, records it again; a port bound at that moment is still skipped by `up`'s `portFree`. The prompt
-  lists the records first.
+  finds a record replaced in two cases. One is an alias whose real path is a usable key of its own. The other is a
+  directory without project markers, while a usable key that is its own real path and has markers lies strictly below it
+  (`markedBelow`). That directory is the key when it is its own real path, or the real path of an alias that has no
+  record of its own, which must pass `usableDir` before its markers are looked at (#105). The markers (`projectMarkers`)
+  are `.sail-worktree.json`, or `artisan` and a compose file, looked at with `Lstat` only, so a link counts and an error
+  other than not-exist counts as present. A `realPath` failure keeps the record, a main without such a second record
+  keeps its ports, and git is not asked. `validKey` always comes first, so an invalid key is never looked at (on Windows
+  its walk reads only the elements and links on the way, up to the first refused link). It lists and asks (package
+  `stdin`/`stdout`, `-y` skips) without the lock, then takes `lockRegistry`, reads the registry again and removes only
+  listed records that are still recorded and still unusable (with the same per-kind test), saving only when something
+  was removed; records that became unusable after the prompt are left for the next run, because the user did not confirm
+  them. A replaced main is tested again after the prompt and before the lock (`recheckReplaced`, so that the lock is not
+  held while it reads the filesystem) and under the lock only compared in the registry (`stillPrunable`: its record
+  equals the listed one, and the record that replaces it is still there). It never writes `.env` or
+  `.sail-worktree.json` and runs neither docker, sail nor git: the containers, networks and volumes of a removed
+  worktree are left alone and the output says so (`docker compose ls -a`). Untrusted keys are printed with `%q` and port
+  names through `cell`. A directory that is only out of reach for the moment counts as missing. So removing the record
+  of a project that is still in use (one on a disk that is out of reach for the moment, on Windows one run from a UNC
+  path or through a link to one, which is not a usable key, or a main whose checkout, reached directly or through an
+  alias key, has no project markers at the moment while a main record with markers lies below it: a branch without the
+  project there) frees its ports in the registry until `up`, or for a main worktree also `check` in its project
+  directory, records it again; a port bound at that moment is still skipped by `up`'s `portFree`. The prompt lists the
+  records first.
 - **Main worktree records (`mains`).** The registry's `mains` map is keyed by the main worktree's project directory
   (`ctx.main`) and holds `ports`, `defaults` (the compose defaults, used when `.env` drops a variable) and `worktrees`
   (linked worktrees that have a `worktrees` record). It is a cache: an older version drops it on save, and `up` and
