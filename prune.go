@@ -195,8 +195,9 @@ func findPrunable(reg *Registry) pruneList {
 // and returns what it removed and the listed records it kept (quoted for the report). Records that became unusable
 // after the list are left for the next prune: the user did not confirm them. A replaced main record is not tested
 // again here, under the lock (recheckReplaced did it just before): it is removed only when it is unchanged since the
-// list and the record that replaces it is still there. A main record that is not a project is tested again here, with
-// Lstat only like the unusable kind, and removed only when it is also unchanged.
+// list and the record that replaces it is still there, or is removed as replaced in the same run with a replacement of
+// its own that stays (replacementStays). A main record that is not a project is tested again here, with Lstat only like
+// the unusable kind, and removed only when it is also unchanged.
 func (r *Registry) prune(list pruneList) (done pruneList, kept []string) {
 	for _, k := range list.worktrees {
 		if _, ok := r.Worktrees[k]; !ok {
@@ -209,12 +210,24 @@ func (r *Registry) prune(list pruneList) (done pruneList, kept []string) {
 		delete(r.Worktrees, k)
 		done.worktrees = append(done.worktrees, k)
 	}
-	for _, m := range list.mains {
-		rec, ok := r.Mains[m.key]
-		if !ok {
+	// Decide every listed main before deleting any: a replaced record whose replacement is removed in this run as well
+	// is tested on the registry as read under the lock (replacementStays). stillPrunable runs once per record, so that
+	// a directory that changes meanwhile cannot get two answers.
+	prunable := make([]bool, len(list.mains))
+	for i, m := range list.mains {
+		if rec, ok := r.Mains[m.key]; ok {
+			prunable[i] = m.stillPrunable(r, rec)
+		}
+	}
+	remove := make([]bool, len(list.mains))
+	for i, m := range list.mains {
+		remove[i] = prunable[i] && r.replacementStays(m, list.mains, prunable)
+	}
+	for i, m := range list.mains {
+		if _, ok := r.Mains[m.key]; !ok {
 			continue
 		}
-		if !m.stillPrunable(r, rec) {
+		if !remove[i] {
 			kept = append(kept, fmt.Sprintf("main worktree %q", m.key))
 			continue
 		}
@@ -237,10 +250,10 @@ func (r *Registry) prune(list pruneList) (done pruneList, kept []string) {
 }
 
 // stillPrunable tests a listed main record under the lock: an unusable one with usableDir again, a replaced one only in
-// the registry (rec, the record now, is the one listed, and the record that replaces it is still there), and one that
-// is not a project with notProjectMain again and unchanged (up or check recording it meanwhile read a project there).
-// Unlike replacedMain, which may resolve links, notProjectMain is only a few Lstat calls, like usableDir, so it runs
-// under the lock.
+// the registry (rec, the record now, is the one listed, and the record that replaces it is still there; prune also asks
+// replacementStays when that record is listed too), and one that is not a project with notProjectMain again and
+// unchanged (up or check recording it meanwhile read a project there). Unlike replacedMain, which may resolve links,
+// notProjectMain is only a few Lstat calls, like usableDir, so it runs under the lock.
 func (m prunedMain) stillPrunable(r *Registry, rec MainRecord) bool {
 	switch m.kind {
 	case mainReplaced:
@@ -250,6 +263,37 @@ func (m prunedMain) stillPrunable(r *Registry, rec MainRecord) bool {
 		return sameRecord(rec, m.rec) && notProjectMain(m.key)
 	}
 	return !usableDir(m.key)
+}
+
+// replacementStays reports whether a replaced main record m that stillPrunable accepts keeps a replacement in the
+// registry when the listed mains are removed (#116): an alias's real path record that is no longer a project is listed
+// as replaced too, and once it is gone the record below it replaces the alias (replacedMain's #105 rule). The chain is
+// followed inside the list and ends well at a record that stays recorded (not listed, or kept by stillPrunable); m is
+// kept when a link is removed for another reason, or the walk does not end (a cycle; replacedMain makes chains of at
+// most two). prunable is stillPrunable of each listed record. Every record on a chain that ends well is removed too,
+// as its own walk is a part of this one.
+func (r *Registry) replacementStays(m prunedMain, mains []prunedMain, prunable []bool) bool {
+	if m.kind != mainReplaced {
+		return true
+	}
+	by := m.by // recorded: stillPrunable checked it
+	for range len(mains) + 1 {
+		i := slices.IndexFunc(mains, func(l prunedMain) bool { return l.key == by })
+		if i < 0 {
+			return true
+		}
+		_, recorded := r.Mains[by]
+		switch {
+		case !recorded:
+			return false
+		case !prunable[i]:
+			return true // kept, so it stays recorded
+		case mains[i].kind != mainReplaced:
+			return false
+		}
+		by = mains[i].by
+	}
+	return false
 }
 
 func sameRecord(a, b MainRecord) bool {

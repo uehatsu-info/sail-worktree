@@ -38,7 +38,7 @@ Commands: `init`, `up [args...]`, `stop`, `rm [-y]`, `ps`, `ports`, `status`, `c
 | `ps.go` | `ps` and its registry view: `entry`, `collectEntries`/`mainEntries` (`registryView.place`/`list`, `gitInRegistryDirs`, `registryPathOK`), `noteHidden`, `foldRegistry`/`foldKey`/`foldMains` (aliases folded in memory, replaced mains marked), `psPortsCell`, `listWorktrees`/`parseWorktreeList` (on `parseWorktreeRecords`; git through `runGitList`), `attribute`, `cell`/`jsonEscape` |
 | `status.go` | `status`: `report`, `statusEnv`, `statusPorts` (`hostState`, `otherHolders`), `statusAppURL`, `upHint`, `probePort` (replaceable port probe) |
 | `portsview.go` | `ports` (not `ports.go`, which allocates): `portRow`, `portsOf`, `fillHost`, `lookupOwner`/`lsofOwner`, `parseLsof` |
-| `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `staleWorktreeKey`, `recheckReplaced`, `prunedMain` (`stillPrunable`), `pruneLock` (the lock `prune` takes, replaced by tests) |
+| `prune.go` | `prune`: `findPrunable`, `Registry.prune`, `staleWorktreeKey`, `recheckReplaced`, `prunedMain` (`stillPrunable`), `replacementStays`, `pruneLock` (the lock `prune` takes, replaced by tests) |
 | `check.go` | `check`: `currentMain`, `checkRecord` (records the main worktree), `readMains`, `refreshMains`, `checkConflicts`, `notProjectMain`, `holder`, `suggestion` |
 | `lock.go` | The registry lock: `lockRegistry`, `breakStale`, `claimStale`/`claimPath`, `releaser`, `lockTiming` |
 | `links_unix.go` / `links_other.go` | Build-tagged helpers (`O_NOFOLLOW`, `O_NONBLOCK`, `O_NOCTTY`, hard link count) |
@@ -234,10 +234,12 @@ These come from deliberate decisions; change them only on purpose and update the
   are left for the next run, because the user did not confirm them. A replaced main is tested again after the prompt and
   before the lock (`recheckReplaced`, so that the lock is not held while it reads the filesystem) and under the lock
   only compared in the registry (`stillPrunable`: its record equals the listed one, and the record that replaces it is
-  still there). A main that is not a project is tested again under the lock (`stillPrunable`: `notProjectMain` again,
-  with `Lstat` only like the unusable kind's `usableDir`, and its record equal to the listed one, since `up` or `check`
-  recording it meanwhile read a project there). It never writes `.env` or `.sail-worktree.json` and runs neither docker,
-  sail nor git: the containers, networks and volumes of a removed worktree are left alone and the output says so
+  still there; if that record is listed too, `replacementStays` follows the chain inside the listed records, which ends
+  well at one that stays recorded, so one run removes a chain, #116, and keeps a record whose chain breaks under the
+  lock or does not end). A main that is not a project is tested again under the lock (`stillPrunable`: `notProjectMain`
+  again, with `Lstat` only like the unusable kind's `usableDir`, and its record equal to the listed one, since `up` or
+  `check` recording it meanwhile read a project there). It never writes `.env` or `.sail-worktree.json` and runs neither
+  docker, sail nor git: the containers, networks and volumes of a removed worktree are left alone and the output says so
   (`docker compose ls -a`). Untrusted keys are printed with `%q` and port names through `cell`. A directory that is only
   out of reach for the moment counts as missing. So removing the record of a project that is still in use (one on a disk
   that is out of reach for the moment, on Windows one run from a UNC path or through a link to one, which is not a

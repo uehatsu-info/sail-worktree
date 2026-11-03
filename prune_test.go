@@ -622,6 +622,146 @@ func TestPruneRemovesAnAliasWhoseRealPathRecordIsNotAProject(t *testing.T) {
 	}
 }
 
+// replacedChain returns the main keys of a chain of replaced records (#116): alias (base/work/app through the link
+// base/work -> base/data) is replaced by its real path rp, which has its own record, and rp, with no project markers,
+// by sub below it. rp's artisan is a link and it has no compose file: projectMarkers needs a compose file, and
+// surelyNotProject is in doubt on the link, so rp counts as a replacing record and is replaced itself.
+func replacedChain(t *testing.T) (alias, rp, sub string) {
+	t.Helper()
+	alias, sub = aliasOfMovedRoot(t)
+	rp = filepath.Dir(sub)
+	target := filepath.Join(realTempDir(t), artisanName)
+	writeFile(t, target, "x")
+	symlinkOrSkip(t, target, filepath.Join(rp, artisanName))
+	if got, err := realPath(alias); err != nil || got != rp || projectMarkers(rp) || surelyNotProject(rp) {
+		t.Fatalf("not a chain: realPath = %q, %v; projectMarkers = %v; surelyNotProject = %v", got, err,
+			projectMarkers(rp), surelyNotProject(rp))
+	}
+	return alias, rp, sub
+}
+
+// One prune removes a whole chain of replaced records that check warns about (#116).
+func TestPruneRemovesAChainOfReplacedMains(t *testing.T) {
+	isolatedRegistry(t)
+	alias, rp, sub := replacedChain(t)
+	saveRegistry(t, &Registry{Mains: map[string]MainRecord{alias: mainRec(80), rp: mainRec(80), sub: mainRec(80)}})
+	out, err := runCheck(t)
+	if err != nil || strings.Contains(out, "conflicts:") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("the record of main worktree %q keeps ports free, but its real path %q has its own record: "+
+			"APP_PORT=80", alias, rp),
+		fmt.Sprintf("the record of main worktree %q keeps ports free, but it is no longer a project directory and "+
+			"main worktree %q below it is recorded: APP_PORT=80", rp, sub),
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	out, err = runPrune(t, strings.NewReader(""), "-y")
+	if err != nil || strings.Contains(out, "kept (changed since the list)") ||
+		!strings.Contains(out, "removed 0 worktree record(s), 2 main worktree record(s)") {
+		t.Fatalf("err = %v\n%s", err, out)
+	}
+	if reg, _ := loadRegistry(); len(reg.Mains) != 1 || reg.Mains[sub].Ports == nil {
+		t.Errorf("mains = %+v", reg.Mains)
+	}
+}
+
+// Under the lock a chain is followed in the registry only: a record whose replacement stays recorded is removed, and
+// one whose replacement is gone is kept for the next prune. The records are named as in replacedChain.
+func TestPruneFollowsAChainOfReplacedMainsUnderTheLock(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		change     map[string]int // the records (name: port) another run leaves before the lock
+		kept, left []string
+	}{
+		// rp loses its replacement and is kept, so it still replaces alias.
+		{"record below gone", map[string]int{"alias": 80, "rp": 80}, []string{"rp"}, []string{"rp"}},
+		{"real path record changed", map[string]int{"alias": 80, "rp": 82, "sub": 80}, []string{"rp"},
+			[]string{"rp", "sub"}},
+		// alias's replacement is gone; the next prune finds sub replacing it.
+		{"real path record gone", map[string]int{"alias": 80, "sub": 80}, []string{"alias"}, []string{"alias", "sub"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolatedRegistry(t)
+			alias, rp, sub := replacedChain(t)
+			key := map[string]string{"alias": alias, "rp": rp, "sub": sub}
+			keys := func(names []string) []string {
+				var l []string
+				for _, n := range names {
+					l = append(l, key[n])
+				}
+				return slices.Sorted(slices.Values(l))
+			}
+			saveRegistry(t, &Registry{Mains: map[string]MainRecord{alias: mainRec(80), rp: mainRec(80), sub: mainRec(80)}})
+			orig := pruneLock
+			t.Cleanup(func() { pruneLock = orig })
+			pruneLock = func() (func(), error) {
+				mains := map[string]MainRecord{}
+				for n, port := range tc.change {
+					mains[key[n]] = mainRec(port)
+				}
+				saveRegistry(t, &Registry{Mains: mains})
+				return orig()
+			}
+			out, err := runPrune(t, strings.NewReader(""), "-y")
+			if err != nil {
+				t.Fatalf("err = %v\n%s", err, out)
+			}
+			if got := strings.Count(out, "kept (changed since the list)"); got != len(tc.kept) {
+				t.Errorf("%d kept, want %d:\n%s", got, len(tc.kept), out)
+			}
+			for _, k := range keys(tc.kept) {
+				want := fmt.Sprintf("kept (changed since the list): main worktree %q", k)
+				if !strings.Contains(out, want) {
+					t.Errorf("missing %q in:\n%s", want, out)
+				}
+			}
+			reg, _ := loadRegistry()
+			if got, want := slices.Sorted(maps.Keys(reg.Mains)), keys(tc.left); !slices.Equal(got, want) {
+				t.Errorf("mains = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// A chain is removed whatever the order of the list, and kept when it does not end in a record that stays: a cycle
+// (replacedMain makes none; the walk is bounded for defense) or a replacement removed for another reason. b is a
+// directory and gone is not, for the records listed as unusable.
+func TestRegistryPruneChains(t *testing.T) {
+	base := realTempDir(t)
+	a, b, c, gone := filepath.Join(base, "a"), mustMkdir(t, filepath.Join(base, "b")), filepath.Join(base, "c"),
+		filepath.Join(base, "gone")
+	replaced := func(key, by string) prunedMain {
+		return prunedMain{kind: mainReplaced, key: key, by: by, rec: mainRec(80)}
+	}
+	unusable := func(key string) prunedMain { return prunedMain{key: key, rec: mainRec(80)} }
+	for _, tc := range []struct {
+		name  string
+		mains []prunedMain
+		left  []string
+	}{
+		{"chain", []prunedMain{replaced(a, b), replaced(b, c)}, []string{c, gone}},
+		{"chain listed backwards", []prunedMain{replaced(b, c), replaced(a, b)}, []string{c, gone}},
+		{"cycle", []prunedMain{replaced(a, b), replaced(b, a)}, []string{a, b, c, gone}},
+		{"replacement removed as unusable", []prunedMain{replaced(a, gone), unusable(gone)}, []string{a, b, c}},
+		// Listed as unusable but usable again under the lock: it stays, so it still replaces a.
+		{"replacement listed as unusable but kept", []prunedMain{replaced(a, b), unusable(b)}, []string{b, c, gone}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Registry{Mains: map[string]MainRecord{a: mainRec(80), b: mainRec(80), c: mainRec(80),
+				gone: mainRec(80)}}
+			r.prune(pruneList{mains: tc.mains})
+			got, want := slices.Sorted(maps.Keys(r.Mains)), slices.Sorted(slices.Values(tc.left))
+			if !slices.Equal(got, want) {
+				t.Errorf("mains = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 // replyAfter is a prompt answer that runs fn first, as a user would act while the prompt waits.
 type replyAfter struct {
 	fn   func()
